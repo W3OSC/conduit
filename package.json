@@ -1,0 +1,21 @@
+{
+  "name": "conduit",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/server",
+    "packages/client",
+    "packages/openclaw-plugin"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,client -c blue,green \"PORT=3100 npm run dev --workspace=packages/server\" \"wait-on tcp:3100 && npm run dev --workspace=packages/client\"",
+    "build": "npm run build --workspace=packages/server && npm run build --workspace=packages/client",
+    "migrate": "npm run migrate --workspace=packages/server",
+    "test": "npm run test --workspace=packages/server && npm run test --workspace=packages/client",
+    "lint": "npm run lint --workspace=packages/server && npm run lint --workspace=packages/client"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "wait-on": "^9.0.4"
+  }
+}

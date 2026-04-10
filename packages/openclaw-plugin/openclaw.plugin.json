@@ -1,0 +1,37 @@
+{
+  "id": "conduit",
+  "kind": "channel",
+  "channels": ["conduit"],
+  "name": "Conduit",
+  "description": "Conduit personal communications hub — read messages, emails, and calendar; queue outbound sends for approval.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "conduit": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["baseUrl", "apiKey"],
+        "properties": {
+          "baseUrl": {
+            "type": "string",
+            "description": "Base URL of your Conduit server, e.g. http://localhost:3101"
+          },
+          "apiKey": {
+            "type": "string",
+            "description": "Conduit API key (sk-arb-...). Generate one in Settings → Permissions."
+          },
+          "allowFrom": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Allowlist of OpenClaw user identifiers permitted to receive Conduit messages. Leave empty to allow all."
+          },
+          "webhookSecret": {
+            "type": "string",
+            "description": "Optional secret Conduit sends as Authorization: Bearer <secret> on each inbound message for request verification."
+          }
+        }
+      }
+    }
+  }
+}

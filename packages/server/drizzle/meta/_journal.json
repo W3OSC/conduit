@@ -1,0 +1,111 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1775195121868,
+      "tag": "0000_strange_mac_gargan",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1775195200000,
+      "tag": "0001_sync_state_unique",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1775195300000,
+      "tag": "0002_message_unique_constraints",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1775195400000,
+      "tag": "0003_contacts",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1775195500000,
+      "tag": "0004_gmail_calendar",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1775195600000,
+      "tag": "0005_twitter_dms",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1775195700000,
+      "tag": "0006_api_key_permissions",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1775195800000,
+      "tag": "0007_telegram_chattype_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1775195900000,
+      "tag": "0008_mark_read_permission",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1775196000000,
+      "tag": "0009_meet_notes",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1775196100000,
+      "tag": "0010_discord_channel_mute_state",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1775196200000,
+      "tag": "0011_ai_chat",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1775196300000,
+      "tag": "0012_ai_connection",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1775196400000,
+      "tag": "0013_chat_state",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1775196500000,
+      "tag": "0014_obsidian_vault",
+      "breakpoints": true
+    }
+  ]
+}

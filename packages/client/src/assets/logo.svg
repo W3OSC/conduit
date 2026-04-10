@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60" fill="none">
+  <!-- Shield mark -->
+  <g transform="translate(2, 2)">
+    <!-- Shield outline -->
+    <path d="M28 4 L52 12 L52 32 C52 44 40 52 28 56 C16 52 4 44 4 32 L4 12 Z"
+      fill="none" stroke="#6366f1" stroke-width="2.5" stroke-linejoin="round"/>
+    <!-- Circuit traces inside shield -->
+    <!-- Horizontal rail top -->
+    <line x1="14" y1="20" x2="42" y2="20" stroke="#6366f1" stroke-width="1.5" stroke-linecap="round"/>
+    <!-- Horizontal rail bottom -->
+    <line x1="16" y1="32" x2="40" y2="32" stroke="#6366f1" stroke-width="1.5" stroke-linecap="round"/>
+    <!-- Vertical spine left -->
+    <line x1="18" y1="20" x2="18" y2="32" stroke="#6366f1" stroke-width="1.5" stroke-linecap="round"/>
+    <!-- Vertical spine right -->
+    <line x1="38" y1="20" x2="38" y2="32" stroke="#6366f1" stroke-width="1.5" stroke-linecap="round"/>
+    <!-- Vertical center spine -->
+    <line x1="28" y1="16" x2="28" y2="40" stroke="#6366f1" stroke-width="1.5" stroke-linecap="round"/>
+    <!-- Horizontal center -->
+    <line x1="18" y1="26" x2="38" y2="26" stroke="#4f46e5" stroke-width="1" stroke-linecap="round"/>
+    <!-- Nodes at intersections -->
+    <rect x="16.5" y="18.5" width="3" height="3" rx="0.5" fill="#818cf8"/>
+    <rect x="36.5" y="18.5" width="3" height="3" rx="0.5" fill="#818cf8"/>
+    <rect x="26.5" y="24.5" width="3" height="3" rx="0.5" fill="#a5b4fc"/>
+    <rect x="16.5" y="30.5" width="3" height="3" rx="0.5" fill="#818cf8"/>
+    <rect x="36.5" y="30.5" width="3" height="3" rx="0.5" fill="#818cf8"/>
+    <!-- Bottom connector -->
+    <line x1="28" y1="40" x2="28" y2="45" stroke="#6366f1" stroke-width="1.5" stroke-linecap="round"/>
+    <circle cx="28" cy="46" r="1.5" fill="#6366f1"/>
+  </g>
+  <!-- Wordmark -->
+  <text x="68" y="38" font-family="Inter, system-ui, sans-serif" font-size="22" font-weight="600"
+    letter-spacing="3" fill="#f1f5f9">ARBITER</text>
+</svg>

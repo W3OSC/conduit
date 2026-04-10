@@ -1,0 +1,25 @@
+version: '3.9'
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: packages/server/Dockerfile
+    ports:
+      - "3101:3101"
+    volumes:
+      # Persists the SQLite database, Telegram sessions, and all credentials across
+      # container rebuilds and restarts. Never remove this volume.
+      - ./data:/data
+    environment:
+      - DATABASE_PATH=/data/conduit.db
+      - PORT=3101
+      - CLIENT_DIST=/app/packages/client/dist
+      - DOCKER=true
+    restart: unless-stopped
+    networks:
+      - conduit-net
+
+networks:
+  conduit-net:
+    driver: bridge

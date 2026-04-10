@@ -1,0 +1,29 @@
+# ── OS / editor ───────────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── Node ──────────────────────────────────────────────────────────────────────
+node_modules/
+packages/server/dist/
+packages/client/dist/
+packages/openclaw-plugin/dist/
+
+# ── Database & runtime data ───────────────────────────────────────────────────
+*.db
+*.db-shm
+*.db-wal
+*.session
+/data/*
+!/data/.gitkeep
+.service.pid
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Test / coverage ───────────────────────────────────────────────────────────
+coverage/
