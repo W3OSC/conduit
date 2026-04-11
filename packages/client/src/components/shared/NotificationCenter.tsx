@@ -24,7 +24,7 @@ const TYPE_ICON: Record<NotificationType, React.ComponentType<{ className?: stri
 };
 
 const TYPE_COLOR: Record<NotificationType, string> = {
-  message:  'text-amber-400',
+  message:  'text-primary',
   email:    'text-blue-400',
   calendar: 'text-emerald-400',
   outbox:   'text-purple-400',

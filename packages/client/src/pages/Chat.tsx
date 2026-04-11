@@ -6,7 +6,7 @@ import remarkGfm from 'remark-gfm';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Send, Search, MessageSquare, ArrowDown, ChevronDown, ChevronRight,
-  Hash, MessageCircle, Users, Radio, Inbox, Twitter, Loader2 as Loader2Chat,
+  Hash, MessageCircle, Users, Radio, Inbox, X as Twitter, Loader2 as Loader2Chat,
   CheckCheck, ExternalLink,
 } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';

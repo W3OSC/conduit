@@ -1,9 +1,13 @@
 /**
- * Conduit app icon — a human-in-the-loop gateway/hub mark.
+ * Conduit app icon — a flow-through gateway mark.
  *
- * Concept: multiple data streams (left arcs) converge through a secure
- * central gateway (shield + lock node), with a single controlled output
- * path on the right. Captures: unified hub, security, human oversight.
+ * Concept: three data streams (parallel lines) enter from the left,
+ * converge through a central gateway node (diamond), and exit as a
+ * single controlled output on the right. The amber accent on the node
+ * marks the human-in-the-loop control point.
+ *
+ * The overall silhouette reads as a stylised "C" rotated — open on
+ * the right — which ties back to the Conduit name.
  */
 
 import { cn } from '@/lib/utils';
@@ -31,7 +35,7 @@ const ICON_CLASSES = {
 export function AppIcon({ className, size = 'sm' }: AppIconProps) {
   return (
     <div className={cn(
-      'rounded-xl bg-amber-gradient flex items-center justify-center flex-shrink-0 shadow-amber',
+      'rounded-lg bg-amber-gradient flex items-center justify-center flex-shrink-0 shadow-amber',
       SIZE_CLASSES[size],
       className,
     )}>
@@ -41,7 +45,10 @@ export function AppIcon({ className, size = 'sm' }: AppIconProps) {
 }
 
 export function AppIconSvg({ className }: { className?: string }) {
-  const fg = 'hsl(20 6% 7%)';
+  // Dark foreground that sits on the primary gradient background
+  const ink = 'hsl(20 8% 8%)';
+  // Inner diamond: bright accent on the gradient background
+  const amber = 'rgba(255,255,255,0.85)';
 
   return (
     <svg
@@ -51,90 +58,65 @@ export function AppIconSvg({ className }: { className?: string }) {
       className={className}
       aria-label="Conduit"
     >
-      {/* ── Shield / gateway outer shape ── */}
-      {/* A flat-topped hexagonal shield — wide at top, pointed base */}
+      {/* ── Three input streams entering from the left ── */}
+      {/* Top stream — curves down toward the central node */}
       <path
-        d="M12 2L20 5.5V13C20 17 16.5 20.5 12 22C7.5 20.5 4 17 4 13V5.5L12 2Z"
-        fill={fg}
-        fillOpacity="0.85"
-      />
-
-      {/* ── Inner gateway opening — lighter negative space ── */}
-      {/* The "chamber" the data passes through */}
-      <path
-        d="M12 4.5L18 7.25V13C18 15.8 15.5 18.4 12 19.8C8.5 18.4 6 15.8 6 13V7.25L12 4.5Z"
-        fill={fg}
-        fillOpacity="0.12"
-      />
-
-      {/* ── Three input streams — left side arcs converging inward ── */}
-      {/* Top stream */}
-      <path
-        d="M6 7.5C7.5 8 8.5 9 9 10.5"
-        stroke={fg}
-        strokeOpacity="0.7"
-        strokeWidth="1.2"
+        d="M2 7 C5 7 7 9.5 9.5 11.5"
+        stroke={ink}
+        strokeWidth="1.6"
         strokeLinecap="round"
-      />
-      {/* Middle stream */}
-      <path
-        d="M6 10C7.2 10 8.2 10.5 9 11.5"
-        stroke={fg}
-        strokeOpacity="0.7"
-        strokeWidth="1.2"
-        strokeLinecap="round"
-      />
-      {/* Bottom stream */}
-      <path
-        d="M6 12.5C7.5 12 8.5 11.5 9 12.5"
-        stroke={fg}
-        strokeOpacity="0.7"
-        strokeWidth="1.2"
-        strokeLinecap="round"
-      />
-
-      {/* ── Central node — the conduit / control point ── */}
-      <circle
-        cx="12"
-        cy="12"
-        r="2.8"
-        fill={fg}
-        fillOpacity="0.9"
-      />
-
-      {/* ── Lock keyhole — human oversight symbol ── */}
-      {/* Arc (top of keyhole) */}
-      <path
-        d="M10.8 11.5A1.2 1.2 0 0 1 13.2 11.5"
-        stroke="hsl(38 92% 55%)"
-        strokeWidth="0.9"
-        strokeLinecap="round"
+        strokeOpacity="0.8"
         fill="none"
       />
-      {/* Body of keyhole */}
+      {/* Middle stream — straight through the center */}
       <path
-        d="M11.3 12H12.7V13.2H11.3V12Z"
-        fill="hsl(38 92% 55%)"
-        fillOpacity="0.95"
+        d="M2 12 L9.5 12"
+        stroke={ink}
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeOpacity="0.8"
+        fill="none"
+      />
+      {/* Bottom stream — curves up toward the central node */}
+      <path
+        d="M2 17 C5 17 7 14.5 9.5 12.5"
+        stroke={ink}
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeOpacity="0.8"
+        fill="none"
       />
 
-      {/* ── Single controlled output — right side ── */}
-      {/* One clean path out — approved, controlled */}
+      {/* ── Central gateway node (diamond) ── */}
+      {/* Outer dark diamond */}
       <path
-        d="M15 12C16 11.8 17 11.5 18 11.8"
-        stroke={fg}
-        strokeOpacity="0.7"
-        strokeWidth="1.2"
-        strokeLinecap="round"
+        d="M12 8.5 L15.5 12 L12 15.5 L8.5 12 Z"
+        fill={ink}
+        fillOpacity="0.85"
       />
-      {/* Arrow tip on output */}
+      {/* Inner amber diamond — the human-control accent */}
       <path
-        d="M17 11L18 11.8L17 12.6"
-        stroke={fg}
-        strokeOpacity="0.7"
-        strokeWidth="1"
+        d="M12 10.2 L13.8 12 L12 13.8 L10.2 12 Z"
+        fill={amber}
+      />
+
+      {/* ── Single controlled output exiting right ── */}
+      <path
+        d="M15.5 12 L22 12"
+        stroke={ink}
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeOpacity="0.8"
+        fill="none"
+      />
+      {/* Arrow head on the output */}
+      <path
+        d="M19.5 10 L22 12 L19.5 14"
+        stroke={ink}
+        strokeWidth="1.4"
         strokeLinecap="round"
         strokeLinejoin="round"
+        strokeOpacity="0.8"
         fill="none"
       />
     </svg>

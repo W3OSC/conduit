@@ -22,7 +22,7 @@ import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import {
-  MessageSquare, Mail, CalendarDays, Twitter,
+  MessageSquare, Mail, CalendarDays, X as Twitter,
   CheckCheck, ChevronRight, Clock, MapPin, Video, Star,
   ExternalLink, AtSign, BellOff,
 } from 'lucide-react';
@@ -428,7 +428,7 @@ function InboxEmailSection() {
                 {/* Star indicator — fixed width column so text always aligns */}
                 <div className="w-3.5 flex-shrink-0 mt-0.5">
                   {msg.isStarred
-                    ? <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />
+                    ? <Star className="w-3.5 h-3.5 text-primary fill-primary" />
                     : <div className="w-3.5 h-3.5" />
                   }
                 </div>
@@ -552,7 +552,7 @@ function InboxCalendarSection() {
       <CardHeader
         icon={CalendarDays}
         title="Calendar"
-        iconClass="text-amber-400"
+        iconClass="text-primary"
         linkLabel={calConnected ? 'Open' : undefined}
         linkTo={calConnected ? '/calendar' : undefined}
       />
@@ -597,7 +597,7 @@ function InboxCalendarSection() {
                         className={cn(
                           'w-full rounded text-[9px] leading-tight px-1 py-0.5 truncate flex-shrink-0',
                           isRecentlyChanged(e)
-                            ? 'bg-amber-500/20 text-amber-400'
+                            ? 'bg-primary/20 text-primary'
                             : isSoon(e)
                               ? 'bg-primary/20 text-primary'
                               : 'bg-secondary/80 text-muted-foreground/70',

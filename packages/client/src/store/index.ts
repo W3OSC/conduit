@@ -4,6 +4,9 @@ import type { ConnectionStatus, OutboxItem, Message, ActiveSyncRun, UpdateStatus
 export { useAiChatStore } from './aiChat';
 export type { StreamingMessage } from './aiChat';
 
+export { useThemeStore } from './theme';
+export type { ColorMode, PrimaryColor, FontSize, BorderRadius, ThemeSettings } from './theme';
+
 // ── Connection Store ──────────────────────────────────────────────────────────
 
 interface ConnectionStore {

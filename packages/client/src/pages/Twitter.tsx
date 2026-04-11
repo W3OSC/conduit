@@ -14,7 +14,7 @@ import {
   MessageSquare, Search, RefreshCw, Loader2, Heart, Repeat2,
   MessageCircle, Quote, User, TrendingUp, X, Send,
   ExternalLink, ChevronRight, ArrowLeft, AtSign, Home,
-  Newspaper, Twitter, Hash, BarChart3, ChevronUp, ChevronDown as ChevronDownIcon,
+  Newspaper, X as Twitter, Hash, BarChart3, ChevronUp, ChevronDown as ChevronDownIcon,
 } from 'lucide-react';
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis,
@@ -402,7 +402,7 @@ function FeedTab() {
             onClick={() => setView(id)}
             className={cn(
               'flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors text-left',
-              view === id ? 'bg-primary/12 text-amber-400' : 'text-muted-foreground hover:text-foreground hover:bg-white/5',
+              view === id ? 'bg-primary/12 text-primary' : 'text-muted-foreground hover:text-foreground hover:bg-white/5',
             )}
           >
             <Icon className="w-4 h-4 flex-shrink-0" />
@@ -747,7 +747,7 @@ function AnalyticsTab({ handle }: { handle: string }) {
       {/* Stat cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <StatCard label="Followers" value={profile?.followersCount ?? '—'} sub={`${profile?.followingCount ?? 0} following`} color="text-sky-400" />
-        <StatCard label="Total Likes" value={summary.totalLikes} sub={`${summary.avgLikes} avg / tweet`} color="text-amber-400" />
+        <StatCard label="Total Likes" value={summary.totalLikes} sub={`${summary.avgLikes} avg / tweet`} color="text-primary" />
         <StatCard label="Total Retweets" value={summary.totalRetweets} sub={`${summary.avgRetweets} avg / tweet`} color="text-sky-400" />
         <StatCard label="Avg Engagement" value={summary.avgEngagement} sub={`${summary.totalReplies} total replies`} color="text-violet-400" />
       </div>
@@ -758,7 +758,7 @@ function AnalyticsTab({ handle }: { handle: string }) {
           <p className="text-2xs text-muted-foreground uppercase tracking-wider mb-2">Best performing tweet</p>
           <p className="text-sm leading-relaxed line-clamp-3 text-foreground/90 mb-2">{summary.bestTweet.text}</p>
           <div className="flex items-center gap-4 text-xs text-muted-foreground">
-            <span><Heart className="w-3 h-3 inline mr-0.5 text-amber-400" />{summary.bestTweet.likes}</span>
+            <span><Heart className="w-3 h-3 inline mr-0.5 text-primary" />{summary.bestTweet.likes}</span>
             <span><Repeat2 className="w-3 h-3 inline mr-0.5 text-sky-400" />{summary.bestTweet.retweets}</span>
             <span><MessageCircle className="w-3 h-3 inline mr-0.5 text-violet-400" />{summary.bestTweet.replies}</span>
             <span className="ml-auto chip chip-amber">{summary.bestTweet.totalEngagement} total</span>
@@ -867,7 +867,7 @@ function AnalyticsTab({ handle }: { handle: string }) {
                   )}
                 </div>
                 <span className="text-muted-foreground text-right whitespace-nowrap">{tweet.date ? formatDate(tweet.date, 'MMM d') : '—'}</span>
-                <span className="text-amber-400 font-medium text-right">{tweet.likes}</span>
+                <span className="text-primary font-medium text-right">{tweet.likes}</span>
                 <span className="text-sky-400 font-medium text-right">{tweet.retweets}</span>
                 <span className="text-violet-400 font-medium text-right">{tweet.replies}</span>
                 <span className="font-semibold text-foreground text-right">{tweet.totalEngagement}</span>
@@ -914,7 +914,7 @@ export default function TwitterPage() {
             onClick={() => setTab(id)}
             className={cn(
               'flex items-center gap-2 py-3 text-sm font-medium border-b-2 transition-all',
-              tab === id ? 'border-primary text-amber-400' : 'border-transparent text-muted-foreground hover:text-foreground',
+              tab === id ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground',
             )}
           >
             <Icon className="w-4 h-4" />

@@ -3,16 +3,16 @@ import { NavLink, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard, MessageSquare, SendHorizonal, Sliders, ScrollText,
-  Users, Mail, CalendarDays, Twitter, Inbox, Bot, BookOpen,
+  Users, Mail, CalendarDays, X as Twitter, Inbox, Bot, BookOpen,
   ArrowUpCircle, Copy, Check, RefreshCw,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
-import { useOutboxStore, useConnectionStore, useUnreadStore, useUpdateStore } from '@/store';
+import { useOutboxStore, useConnectionStore, useUnreadStore, useUpdateStore, useSyncStore, useThemeStore } from '@/store';
 import { api } from '@/lib/api';
 import { toast } from '@/store';
-import { StatusDot } from '@/components/shared/StatusDot';
 import { AppIcon } from '@/components/shared/AppIcon';
+import { ServiceLogo, SERVICE_CONFIG } from '@/components/shared/ServiceBadge';
 
 const SERVICES = [
   { id: 'slack',    label: 'Slack'    },
@@ -97,12 +97,12 @@ function SidebarVersionFooter() {
       <div className="flex items-center gap-1.5">
         <span className={cn(
           'text-[10px] font-mono tabular-nums',
-          hasUpdate ? 'text-amber-500' : 'text-warm-600',
+          hasUpdate ? 'text-primary' : 'text-warm-600',
         )}>
           {version || '…'}
         </span>
         {hasUpdate && (
-          <span className="flex items-center gap-0.5 text-[9px] font-medium text-amber-500">
+          <span className="flex items-center gap-0.5 text-[9px] font-medium text-primary">
             <ArrowUpCircle className="w-2.5 h-2.5" />
             {commitsBehind} new
           </span>
@@ -120,8 +120,8 @@ function SidebarVersionFooter() {
             transition={{ duration: 0.2 }}
             className="overflow-hidden"
           >
-            <div className="rounded-lg border border-amber-500/25 bg-amber-500/8 px-2 py-1.5 space-y-1.5">
-              <p className="text-[10px] text-amber-400 font-medium leading-snug">
+            <div className="rounded-lg border border-primary/25 bg-primary/8 px-2 py-1.5 space-y-1.5">
+              <p className="text-[10px] text-primary font-medium leading-snug">
                 Update available
               </p>
 
@@ -136,9 +136,9 @@ function SidebarVersionFooter() {
                     disabled={applying}
                     className={cn(
                       'w-full flex items-center justify-center gap-1',
-                      'rounded-md bg-amber-500/15 hover:bg-amber-500/25',
-                      'text-[10px] font-medium text-amber-400',
-                      'border border-amber-500/20 px-2 py-1',
+                      'rounded-md bg-primary/15 hover:bg-primary/25',
+                      'text-[10px] font-medium text-primary',
+                      'border border-primary/20 px-2 py-1',
                       'transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
                     )}
                   >
@@ -188,24 +188,29 @@ export function Sidebar() {
   const pendingCount = useOutboxStore((s) => s.pendingCount);
   const statuses = useConnectionStore((s) => s.statuses);
   const totalUnread = useUnreadStore((s) => s.getTotalUnread());
+  const syncProgress = useSyncStore((s) => s.progress);
+  const sidebarCompact = useThemeStore((s) => s.sidebarCompact);
 
   const connectedCount = SERVICES.filter((s) => statuses[s.id]?.status === 'connected').length;
 
   return (
-    <aside className="flex flex-col w-56 h-full bg-sidebar border-r border-sidebar-border flex-shrink-0 overflow-hidden">
+    <aside className={cn(
+      'flex flex-col h-full bg-sidebar border-r border-sidebar-border flex-shrink-0 overflow-hidden transition-all duration-200',
+      sidebarCompact ? 'w-14' : 'w-56',
+    )}>
       {/* Wordmark */}
-      <div className="flex items-center h-14 px-5 border-b border-sidebar-border">
+      <div className={cn('flex items-center h-14 border-b border-sidebar-border', sidebarCompact ? 'px-3 justify-center' : 'px-5')}>
         <div className="flex items-center gap-2.5">
           <AppIcon size="sm" />
-          <span className="text-sm font-bold tracking-tight text-foreground">Conduit</span>
+          {!sidebarCompact && <span className="text-sm font-bold tracking-tight text-foreground">Conduit</span>}
         </div>
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 px-2.5 py-3 space-y-0.5 overflow-y-auto">
+      <nav className="flex-1 px-2 py-3 space-y-0.5 overflow-y-auto">
         {NAV_ITEMS.map((item, idx) => {
           if ('divider' in item) {
-            return <div key={`divider-${idx}`} className="my-1.5 mx-3 h-px bg-sidebar-border" />;
+            return <div key={`divider-${idx}`} className={cn('my-1.5 h-px bg-sidebar-border', sidebarCompact ? 'mx-1' : 'mx-3')} />;
           }
 
           const { to, icon: Icon, label } = item;
@@ -215,13 +220,14 @@ export function Sidebar() {
             : location.pathname.startsWith(to);
 
           return (
-            <NavLink key={to} to={to}>
+            <NavLink key={to} to={to} title={sidebarCompact ? label : undefined}>
               {() => (
                 <div className={cn(
-                  'relative flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium',
+                  'relative flex items-center rounded-xl text-sm font-medium',
                   'transition-all duration-150 group',
+                  sidebarCompact ? 'justify-center px-2 py-2.5 gap-0' : 'gap-3 px-3 py-2.5',
                   isActive
-                    ? 'bg-amber-500/12 text-amber-400'
+                    ? 'bg-primary/12 text-primary'
                     : 'text-sidebar-foreground hover:bg-white/5 hover:text-foreground',
                 )}>
                   {isActive && (
@@ -233,13 +239,14 @@ export function Sidebar() {
                   )}
                   <Icon
                     className={cn(
-                      'w-[17px] h-[17px] flex-shrink-0 transition-colors',
-                      isActive ? 'text-amber-400' : 'text-warm-500 group-hover:text-foreground',
+                      'flex-shrink-0 transition-colors',
+                      sidebarCompact ? 'w-5 h-5' : 'w-[17px] h-[17px]',
+                      isActive ? 'text-primary' : 'text-warm-500 group-hover:text-foreground',
                     )}
                     strokeWidth={isActive ? 2.2 : 1.7}
                   />
-                  <span className="flex-1">{label}</span>
-                  {badge && to === '/outbox' && pendingCount > 0 && (
+                  {!sidebarCompact && <span className="flex-1">{label}</span>}
+                  {!sidebarCompact && badge && to === '/outbox' && pendingCount > 0 && (
                     <motion.span
                       initial={{ scale: 0 }}
                       animate={{ scale: 1 }}
@@ -248,7 +255,7 @@ export function Sidebar() {
                       {pendingCount > 99 ? '99+' : pendingCount}
                     </motion.span>
                   )}
-                  {to === '/chat' && totalUnread > 0 && (
+                  {!sidebarCompact && to === '/chat' && totalUnread > 0 && (
                     <motion.span
                       initial={{ scale: 0 }}
                       animate={{ scale: 1 }}
@@ -256,6 +263,13 @@ export function Sidebar() {
                     >
                       {totalUnread > 99 ? '99+' : totalUnread}
                     </motion.span>
+                  )}
+                  {/* Compact mode badges — dot only */}
+                  {sidebarCompact && badge && to === '/outbox' && pendingCount > 0 && (
+                    <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-primary" />
+                  )}
+                  {sidebarCompact && to === '/chat' && totalUnread > 0 && (
+                    <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-primary" />
                   )}
                 </div>
               )}
@@ -265,29 +279,81 @@ export function Sidebar() {
       </nav>
 
       {/* Bottom — service status + version */}
-      <div className="px-3 py-3 border-t border-sidebar-border space-y-2.5">
-        <p className="section-label px-2">Services</p>
-        <div className="space-y-0.5">
+      <div className={cn('py-3 border-t border-sidebar-border space-y-2', sidebarCompact ? 'px-1' : 'px-3')}>
+        {!sidebarCompact && (
+          <div className="flex items-center justify-between px-2">
+            <p className="section-label">Connections</p>
+            <span className={cn('text-[10px] font-medium',
+              connectedCount === SERVICES.length ? 'text-emerald-500' : connectedCount > 0 ? 'text-primary' : 'text-warm-600',
+            )}>
+              {connectedCount}/{SERVICES.length}
+            </span>
+          </div>
+        )}
+
+        {/* Logo circles row */}
+        <div className={cn('flex flex-wrap gap-1.5', sidebarCompact ? 'justify-center px-0' : 'px-2')}>
           {SERVICES.map(({ id, label }) => {
             const status = (statuses[id]?.status ?? 'disconnected') as 'connected' | 'disconnected' | 'connecting' | 'error';
+            const isSyncing = syncProgress[id]?.status === 'running';
+            const cfg = SERVICE_CONFIG[id];
+
+            const iconColor =
+              status === 'connected'    ? cfg?.text ?? 'text-warm-400' :
+              status === 'error'        ? 'text-red-400' :
+              status === 'connecting'   ? 'text-primary' :
+              'text-warm-600';
+
+            const ringColor =
+              status === 'connected'    ? 'ring-emerald-500/50' :
+              status === 'error'        ? 'ring-red-500/50' :
+              status === 'connecting'   ? 'ring-primary/50' :
+              'ring-warm-700/40';
+
+            const bgColor =
+              status === 'connected'    ? (cfg?.bg ?? 'bg-warm-800/40') :
+              status === 'error'        ? 'bg-red-500/8' :
+              status === 'connecting'   ? 'bg-primary/8' :
+              'bg-warm-800/30';
+
+            const statusLabel =
+              status === 'connected'    ? 'Connected' :
+              status === 'error'        ? 'Error' :
+              status === 'connecting'   ? 'Connecting' :
+              'Disconnected';
+
             return (
-              <div key={id} className="flex items-center gap-2.5 px-2 py-1">
-                <StatusDot status={status} className="w-1.5 h-1.5" />
-                <span className={cn('text-xs flex-1', status === 'connected' ? 'text-sidebar-foreground' : 'text-warm-500')}>
-                  {label}
-                </span>
+              <div
+                key={id}
+                className="relative flex-shrink-0"
+                title={`${label} — ${isSyncing ? 'Syncing…' : statusLabel}`}
+              >
+                {/* Logo circle */}
+                <div className={cn(
+                  'w-7 h-7 rounded-full flex items-center justify-center ring-1 transition-all duration-300',
+                  bgColor,
+                  ringColor,
+                  status === 'connecting' && 'animate-pulse',
+                )}>
+                  <ServiceLogo service={id} className={cn('w-3.5 h-3.5 transition-colors duration-300', iconColor)} />
+                </div>
+
+                {/* Sync spinner overlay */}
+                {isSyncing && (
+                  <div className="absolute inset-0 rounded-full pointer-events-none">
+                    <div className="w-full h-full rounded-full border-2 border-transparent border-t-primary/80 animate-spin" />
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
-        <div className="px-2 pt-1 flex items-center justify-between">
-          <SidebarVersionFooter />
-          <span className={cn('text-[10px] font-medium self-start',
-            connectedCount === SERVICES.length ? 'text-emerald-500' : connectedCount > 0 ? 'text-amber-500' : 'text-warm-600',
-          )}>
-            {connectedCount}/{SERVICES.length} online
-          </span>
-        </div>
+
+        {!sidebarCompact && (
+          <div className="px-2 pt-0.5">
+            <SidebarVersionFooter />
+          </div>
+        )}
       </div>
     </aside>
   );

@@ -127,12 +127,12 @@ function FileTreeNode({ entry, selectedPath, onSelect, depth, filterQuery }: Fil
         'flex items-center gap-2 w-full px-2 py-1.5 rounded-lg text-left text-xs truncate',
         'transition-colors',
         isSelected
-          ? 'bg-amber-500/15 text-amber-400'
+          ? 'bg-primary/15 text-primary'
           : 'text-sidebar-foreground hover:bg-white/5 hover:text-foreground',
       )}
       style={{ paddingLeft: `${8 + depth * 12}px` }}
     >
-      <FileText className={cn('w-3.5 h-3.5 flex-shrink-0', isSelected ? 'text-amber-400' : 'text-warm-500')} />
+      <FileText className={cn('w-3.5 h-3.5 flex-shrink-0', isSelected ? 'text-primary' : 'text-warm-500')} />
       <span className="truncate">{isMd ? entry.name.replace(/\.md$/, '') : entry.name}</span>
     </button>
   );
@@ -191,7 +191,7 @@ function MarkdownView({ content, onWikilinkClick }: MarkdownViewProps) {
             return (
               <button
                 onClick={() => onWikilinkClick(target)}
-                className="text-amber-400 hover:text-amber-300 underline underline-offset-2 cursor-pointer"
+                className="text-primary hover:text-primary/80 underline underline-offset-2 cursor-pointer"
               >
                 {children}
               </button>
@@ -199,7 +199,7 @@ function MarkdownView({ content, onWikilinkClick }: MarkdownViewProps) {
           }
           return (
             <a href={href} {...props} target="_blank" rel="noopener noreferrer"
-              className="text-amber-400 hover:text-amber-300 underline underline-offset-2">
+              className="text-primary hover:text-primary/80 underline underline-offset-2">
               {children}
             </a>
           );
@@ -213,7 +213,7 @@ function MarkdownView({ content, onWikilinkClick }: MarkdownViewProps) {
         ol: ({ children }) => <ol className="list-decimal list-inside space-y-1 mb-3 text-sm text-foreground/90">{children}</ol>,
         li: ({ children }) => <li className="leading-relaxed">{children}</li>,
         blockquote: ({ children }) => (
-          <blockquote className="border-l-2 border-amber-500/40 pl-4 my-3 text-muted-foreground italic">{children}</blockquote>
+          <blockquote className="border-l-2 border-primary/40 pl-4 my-3 text-muted-foreground italic">{children}</blockquote>
         ),
         code: ({ children, className }) => {
           const isBlock = className?.startsWith('language-');
@@ -224,7 +224,7 @@ function MarkdownView({ content, onWikilinkClick }: MarkdownViewProps) {
               </pre>
             );
           }
-          return <code className="bg-black/20 text-amber-300 px-1.5 py-0.5 rounded text-xs font-mono">{children}</code>;
+          return <code className="bg-black/20 text-primary/80 px-1.5 py-0.5 rounded text-xs font-mono">{children}</code>;
         },
         hr: () => <hr className="border-white/10 my-6" />,
         table: ({ children }) => (
@@ -242,7 +242,7 @@ function MarkdownView({ content, onWikilinkClick }: MarkdownViewProps) {
         em: ({ children }) => <em className="italic text-foreground/80">{children}</em>,
         input: ({ type, checked }) => (
           type === 'checkbox'
-            ? <input type="checkbox" checked={checked} readOnly className="mr-2 accent-amber-500" />
+            ? <input type="checkbox" checked={checked} readOnly className="mr-2 accent-primary" />
             : null
         ),
       }}
@@ -257,7 +257,7 @@ function MarkdownView({ content, onWikilinkClick }: MarkdownViewProps) {
 function SyncBadge({ status, lastSync }: { status: string; lastSync: string | null }) {
   if (status === 'syncing') {
     return (
-      <div className="flex items-center gap-1.5 text-xs text-amber-400">
+      <div className="flex items-center gap-1.5 text-xs text-primary">
         <Loader2 className="w-3 h-3 animate-spin" />
         <span>Syncing...</span>
       </div>
@@ -402,8 +402,8 @@ export default function ObsidianVault() {
     return (
       <div className="flex h-full items-center justify-center">
         <div className="text-center max-w-sm space-y-4">
-          <div className="w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center mx-auto">
-            <BookOpen className="w-7 h-7 text-amber-400" />
+          <div className="w-14 h-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center mx-auto">
+            <BookOpen className="w-7 h-7 text-primary" />
           </div>
           <div>
             <h2 className="text-lg font-semibold text-foreground">Obsidian Vault</h2>
@@ -466,7 +466,7 @@ export default function ObsidianVault() {
       <aside className="w-64 flex-shrink-0 flex flex-col border-r border-white/8 overflow-hidden bg-sidebar">
         {/* Header */}
         <div className="flex items-center gap-2 px-3 py-3 border-b border-white/8">
-          <BookOpen className="w-4 h-4 text-amber-400 flex-shrink-0" />
+          <BookOpen className="w-4 h-4 text-primary flex-shrink-0" />
           <span className="text-sm font-semibold text-foreground flex-1 truncate">
             {configData.vault?.name || 'Vault'}
           </span>
@@ -503,7 +503,7 @@ export default function ObsidianVault() {
               placeholder="Search notes..."
               value={filterQuery}
               onChange={(e) => setFilterQuery(e.target.value)}
-              className="w-full bg-black/20 border border-white/8 rounded-lg pl-8 pr-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-amber-500/40"
+              className="w-full bg-black/20 border border-white/8 rounded-lg pl-8 pr-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/40"
             />
             {filterQuery && (
               <button onClick={() => setFilterQuery('')} className="absolute right-2.5 top-1/2 -translate-y-1/2">
@@ -607,7 +607,7 @@ export default function ObsidianVault() {
                 {meta.tags && Array.isArray(meta.tags) && meta.tags.length > 0 && (
                   <div className="flex items-center gap-1.5">
                     {(meta.tags as string[]).map((tag) => (
-                      <span key={tag} className="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 text-[10px] font-medium">
+                      <span key={tag} className="px-1.5 py-0.5 rounded bg-primary/10 text-primary text-[10px] font-medium">
                         #{tag}
                       </span>
                     ))}
@@ -639,14 +639,14 @@ export default function ObsidianVault() {
                 editMode ? (
                   // Edit mode — raw textarea
                   <div className="p-6 h-full flex flex-col gap-3">
-                    <div className="flex items-center gap-2 text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
+                    <div className="flex items-center gap-2 text-xs text-primary bg-primary/10 border border-primary/20 rounded-lg px-3 py-2">
                       <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
                       <span>Changes are queued for human approval before being committed and pushed.</span>
                     </div>
                     <textarea
                       value={editContent}
                       onChange={(e) => setEditContent(e.target.value)}
-                      className="flex-1 w-full bg-black/20 border border-white/10 rounded-xl p-4 text-sm font-mono text-foreground focus:outline-none focus:border-amber-500/40 resize-none leading-relaxed"
+                      className="flex-1 w-full bg-black/20 border border-white/10 rounded-xl p-4 text-sm font-mono text-foreground focus:outline-none focus:border-primary/40 resize-none leading-relaxed"
                       spellCheck={false}
                     />
                   </div>

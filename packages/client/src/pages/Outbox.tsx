@@ -119,7 +119,7 @@ function OutboxCard({ item }: { item: OutboxItem }) {
         exit={{ opacity: 0, y: -4 }}
         className={cn(
           'card-warm p-4 space-y-3 transition-all duration-200',
-          isPending && 'border-amber-500/20 amber-surface',
+          isPending && 'border-primary/20 amber-surface',
         )}
       >
         {/* Header */}
@@ -148,7 +148,7 @@ function OutboxCard({ item }: { item: OutboxItem }) {
           {truncate(content, 200)}
         </p>
         {item.editedContent && item.editedContent !== item.content && (
-          <p className="text-[11px] text-amber-400 -mt-1">Message was edited</p>
+          <p className="text-[11px] text-primary -mt-1">Message was edited</p>
         )}
 
         {/* Error */}

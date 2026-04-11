@@ -71,11 +71,11 @@ export function TopBar() {
       {/* Right-side controls */}
       <div className="flex items-center gap-2 flex-shrink-0">
         <div className={cn(
-          'flex items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/8 px-2.5 py-1',
+          'flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/8 px-2.5 py-1',
           !anyRunning && 'invisible',
         )}>
-          <RefreshCw className="w-3 h-3 animate-spin text-amber-400" />
-          <span className="text-xs text-amber-400 font-medium">Syncing</span>
+          <RefreshCw className="w-3 h-3 animate-spin text-primary" />
+          <span className="text-xs text-primary font-medium">Syncing</span>
         </div>
         {isInbox && (
           <button

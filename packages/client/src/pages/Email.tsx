@@ -302,7 +302,7 @@ function MessageDetail({ message, onClose }: { message: GmailMessage; onClose: (
           <button onClick={() => action.mutate({ action: 'archive', messageId: message.gmailId })} className="btn-ghost text-xs gap-1.5"><Archive className="w-3.5 h-3.5" />Archive</button>
           <button onClick={() => action.mutate({ action: 'trash', messageId: message.gmailId })} className="btn-ghost text-xs gap-1.5 text-red-400 hover:text-red-300"><Trash2 className="w-3.5 h-3.5" />Trash</button>
           <button onClick={() => action.mutate({ action: 'spam', messageId: message.gmailId })} className="btn-ghost text-xs gap-1.5 text-orange-400 hover:text-orange-300"><Flag className="w-3.5 h-3.5" />Spam</button>
-          <button onClick={() => action.mutate({ action: isStarred ? 'unstar' : 'star', messageId: message.gmailId })} className={cn('btn-ghost text-xs gap-1.5', isStarred ? 'text-amber-400' : '')}>{isStarred ? <StarOff className="w-3.5 h-3.5" /> : <Star className="w-3.5 h-3.5" />}{isStarred ? 'Unstar' : 'Star'}</button>
+          <button onClick={() => action.mutate({ action: isStarred ? 'unstar' : 'star', messageId: message.gmailId })} className={cn('btn-ghost text-xs gap-1.5', isStarred ? 'text-primary' : '')}>{isStarred ? <StarOff className="w-3.5 h-3.5" /> : <Star className="w-3.5 h-3.5" />}{isStarred ? 'Unstar' : 'Star'}</button>
           <button onClick={() => action.mutate({ action: isRead ? 'mark_unread' : 'mark_read', messageId: message.gmailId })} className="btn-ghost text-xs gap-1.5">{isRead ? <Mail className="w-3.5 h-3.5" /> : <MailOpen className="w-3.5 h-3.5" />}{isRead ? 'Mark Unread' : 'Mark Read'}</button>
           <button onClick={() => action.mutate({ action: 'unsubscribe', messageId: message.gmailId })} className="btn-ghost text-xs gap-1.5 text-muted-foreground/60"><X className="w-3.5 h-3.5" />Unsubscribe</button>
         </div>
@@ -367,7 +367,7 @@ function MessageItem({ message, selected, onClick }: { message: GmailMessage; se
       <div className="flex flex-col items-center gap-1.5 flex-shrink-0 mt-0.5">
         {isUnread && !selected && <span className="w-2 h-2 rounded-full bg-primary flex-shrink-0" />}
         {(!isUnread || selected) && <span className="w-2 h-2" />}
-        {message.isStarred && <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />}
+        {message.isStarred && <Star className="w-3.5 h-3.5 text-primary fill-primary" />}
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-baseline justify-between gap-2 mb-0.5">
@@ -409,7 +409,7 @@ function LabelSidebar({ activeLabel, onSelect }: { activeLabel: string; onSelect
             className={cn(
               'w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors mx-2',
               activeLabel === id
-                ? 'bg-primary/12 text-amber-400'
+                ? 'bg-primary/12 text-primary'
                 : 'text-muted-foreground hover:text-foreground hover:bg-white/5',
             )}
             style={{ width: 'calc(100% - 16px)' }}
@@ -431,7 +431,7 @@ function LabelSidebar({ activeLabel, onSelect }: { activeLabel: string; onSelect
                 className={cn(
                   'w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors mx-2',
                   activeLabel === l.id
-                    ? 'bg-primary/12 text-amber-400'
+                    ? 'bg-primary/12 text-primary'
                     : 'text-muted-foreground hover:text-foreground hover:bg-white/5',
                 )}
                 style={{ width: 'calc(100% - 16px)' }}

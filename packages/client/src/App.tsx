@@ -7,6 +7,7 @@ import { Sidebar } from '@/components/layout/Sidebar';
 import { TopBar } from '@/components/layout/TopBar';
 import { Toaster } from '@/components/shared/Toaster';
 import { useWebSocket } from '@/hooks/useWebSocket';
+import { useThemeStore, PRIMARY_COLOR_MAP } from '@/store/theme';
 
 // Critical routes — loaded eagerly
 import Inbox from '@/pages/Inbox';
@@ -23,6 +24,66 @@ const Calendar       = lazy(() => import('@/pages/Calendar'));
 const TwitterPage    = lazy(() => import('@/pages/Twitter'));
 const AuditLog       = lazy(() => import('@/pages/AuditLog'));
 const ObsidianVault  = lazy(() => import('@/pages/ObsidianVault'));
+
+// ── Theme Provider ────────────────────────────────────────────────────────────
+// Reads the Zustand theme store and reflects it onto the <html> element via
+// CSS classes and custom properties. No context needed — the store is global.
+
+function ThemeProvider({ children }: { children: React.ReactNode }) {
+  const { colorMode, primaryColor, fontSize, borderRadius, reducedMotion } = useThemeStore();
+
+  useEffect(() => {
+    const html = document.documentElement;
+
+    // ── Color mode ──
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const isDark = colorMode === 'dark' || (colorMode === 'system' && prefersDark);
+    html.classList.toggle('dark', isDark);
+    html.classList.toggle('light', !isDark);
+
+    // ── Primary color CSS vars ──
+    const { hsl } = PRIMARY_COLOR_MAP[primaryColor];
+    const [h, s, l] = hsl.split(' ');
+    html.style.setProperty('--primary-h', h);
+    html.style.setProperty('--primary-s', s);
+    html.style.setProperty('--primary-l', l);
+
+    // Light colors (high luminance) look better with dark text on primary bg
+    const lVal = parseFloat(l);
+    const fgDark = isDark ? '20 6% 7%' : '20 10% 12%';
+    const fgLight = '0 0% 100%';
+    html.style.setProperty('--primary-fg-dark', fgDark);
+    html.style.setProperty('--primary-fg-light', fgLight);
+    // Use dark foreground for light primaries (emerald, amber, sky at high L)
+    html.style.setProperty(
+      '--primary-foreground',
+      lVal >= 55 && !isDark ? fgDark : fgLight,
+    );
+
+    // ── Font size ──
+    html.setAttribute('data-font-size', fontSize);
+
+    // ── Border radius ──
+    html.setAttribute('data-radius', borderRadius);
+
+    // ── Reduced motion ──
+    html.setAttribute('data-reduced-motion', String(reducedMotion));
+  }, [colorMode, primaryColor, fontSize, borderRadius, reducedMotion]);
+
+  // Also react to system preference changes when mode === 'system'
+  useEffect(() => {
+    if (colorMode !== 'system') return;
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const handler = (e: MediaQueryListEvent) => {
+      document.documentElement.classList.toggle('dark', e.matches);
+      document.documentElement.classList.toggle('light', !e.matches);
+    };
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, [colorMode]);
+
+  return <>{children}</>;
+}
 
 function PageLoader() {
   return (
@@ -55,8 +116,8 @@ function AppInner() {
               <Route path="/chat/:service/:chatId" element={<Chat />} />
               <Route path="/ai" element={<AiChat />} />
               <Route path="/outbox" element={<Outbox />} />
-              <Route path="/connections" element={<Navigate to="/settings/messaging" replace />} />
-              <Route path="/settings" element={<Navigate to="/settings/messaging" replace />} />
+              <Route path="/connections" element={<Navigate to="/settings/connections" replace />} />
+              <Route path="/settings" element={<Navigate to="/settings/connections" replace />} />
               <Route path="/settings/:tab" element={<Connections />} />
               <Route path="/vault" element={<ObsidianVault />} />
               <Route path="/audit-log" element={<AuditLog />} />
@@ -109,9 +170,11 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <AuthGate>
-        <AppInner />
-      </AuthGate>
+      <ThemeProvider>
+        <AuthGate>
+          <AppInner />
+        </AuthGate>
+      </ThemeProvider>
     </QueryClientProvider>
   );
 }

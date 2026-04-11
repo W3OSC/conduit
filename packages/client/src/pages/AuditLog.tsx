@@ -147,7 +147,7 @@ export default function AuditLog() {
         />
         {(actionFilter || serviceFilter || actorFilter) && (
           <button onClick={() => { setActionFilter(''); setServiceFilter(''); setActorFilter(''); }}
-            className="btn-ghost text-xs text-amber-400"
+            className="btn-ghost text-xs text-primary"
           >Clear filters</button>
         )}
       </div>

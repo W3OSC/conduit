@@ -17,7 +17,7 @@ const STATUS_LABELS: Record<Status, string> = {
 const STATUS_CHIP: Record<Status, string> = {
   connected:    'border-emerald-500/20 bg-emerald-500/8  text-emerald-400',
   disconnected: 'border-warm-600/40    bg-warm-800/50    text-warm-400',
-  connecting:   'border-amber-500/20   bg-amber-500/8    text-amber-400',
+  connecting:   'border-primary/20     bg-primary/8      text-primary',
   error:        'border-red-500/20     bg-red-500/8      text-red-400',
 };
 
@@ -44,7 +44,7 @@ export function StatusPill({ status, label }: { status: Status; label?: string }
     <span className={cn(
       'inline-flex items-center gap-1.5 text-xs font-medium',
       status === 'connected'    ? 'text-emerald-400' :
-      status === 'connecting'   ? 'text-amber-400' :
+      status === 'connecting'   ? 'text-primary' :
       status === 'error'        ? 'text-red-400' : 'text-warm-400',
     )}>
       <StatusDot status={status} className="w-1.5 h-1.5" />

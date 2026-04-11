@@ -9,7 +9,7 @@
  * and API Key management.
  */
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -19,8 +19,9 @@ import {
   Send, Server, Shield, Settings, PlugZap, UserCircle2, Clock, Users, ExternalLink,
   MessageSquare as MessageSquareIcon, Mail as MailIcon, Lock, ShieldCheck, QrCode,
   LogOut, Zap, FileText, Bot, Unplug, ArrowRight, CircleCheck, CircleX, Bell, Volume2, VolumeX,
-  BookOpen, GitBranch,
+  BookOpen, GitBranch, Palette,
 } from 'lucide-react';
+import { AppearanceTab } from '@/components/settings/AppearanceTab';
 import {
   api, uiAuth, type ServiceCredential, type DiscordGuildInfo, type Permission, type ApiKeyItem,
   type ContactCriteria, type KeyPermissionsResponse, type KeyServicePerm, type AiConnection, type AiPermissions,
@@ -247,10 +248,10 @@ function OverviewSection({ service, testSteps, testRunning, runTest, clearTestSt
       <div className={cn(
         'rounded-xl border p-4',
         status === 'connected' && allPassed  ? 'border-emerald-500/20 bg-emerald-500/5' :
-        status === 'connected' && anyFailed  ? 'border-amber-500/20  bg-amber-500/5' :
+        status === 'connected' && anyFailed  ? 'border-primary/20  bg-primary/5' :
         status === 'connected'               ? 'border-emerald-500/20 bg-emerald-500/5' :
         status === 'error'                   ? 'border-red-500/20    bg-red-500/5' :
-        status === 'connecting'              ? 'border-amber-500/20  bg-amber-500/5' :
+        status === 'connecting'              ? 'border-primary/20  bg-primary/5' :
                                                'border-border        bg-secondary/30',
       )}>
         {/* Header row: status badge + re-run button */}
@@ -301,7 +302,7 @@ function OverviewSection({ service, testSteps, testRunning, runTest, clearTestSt
                 className="flex items-center gap-2.5"
               >
                 <div className="flex-shrink-0 w-4">
-                  {step.status === 'running' && <Loader2 className="w-3.5 h-3.5 text-amber-400 animate-spin" />}
+                  {step.status === 'running' && <Loader2 className="w-3.5 h-3.5 text-primary animate-spin" />}
                   {step.status === 'success' && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />}
                   {step.status === 'error'   && <XCircle className="w-3.5 h-3.5 text-red-400" />}
                 </div>
@@ -355,16 +356,16 @@ function OverviewSection({ service, testSteps, testRunning, runTest, clearTestSt
 
       {/* Sync progress — shown when running (survives page refresh via DB seed) */}
       {isRunning && (
-        <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3.5 space-y-2.5">
+        <div className="rounded-xl border border-primary/20 bg-primary/5 p-3.5 space-y-2.5">
           <div className="flex items-center gap-2.5">
-            <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400 flex-shrink-0" />
+            <RefreshCw className="w-3.5 h-3.5 animate-spin text-primary flex-shrink-0" />
             <div className="flex-1 min-w-0">
               <div className="flex items-center justify-between gap-2">
-                <p className="text-xs font-semibold text-amber-400">
+                <p className="text-xs font-semibold text-primary">
                   {syncProgress?.type === 'full' ? 'Full sync' : 'Sync'} in progress
                 </p>
                 {syncProgress?.startedAt && (
-                  <span className="text-[10px] text-amber-400/60">
+                  <span className="text-[10px] text-primary/60">
                     {timeAgo(syncProgress.startedAt)}
                   </span>
                 )}
@@ -374,12 +375,12 @@ function OverviewSection({ service, testSteps, testRunning, runTest, clearTestSt
 
           {/* Live counters */}
           {(liveSaved !== undefined || liveChats !== undefined) && (
-            <div className="flex items-center gap-4 text-xs text-amber-400/80 pl-6">
+            <div className="flex items-center gap-4 text-xs text-primary/80 pl-6">
               {liveChats !== undefined && liveChats > 0 && (
-                <span><span className="font-semibold text-amber-400">{liveChats}</span> chats visited</span>
+                <span><span className="font-semibold text-primary">{liveChats}</span> chats visited</span>
               )}
               {liveSaved !== undefined && liveSaved > 0 && (
-                <span><span className="font-semibold text-amber-400">+{liveSaved.toLocaleString()}</span> messages saved</span>
+                <span><span className="font-semibold text-primary">+{liveSaved.toLocaleString()}</span> messages saved</span>
               )}
             </div>
           )}
@@ -387,7 +388,7 @@ function OverviewSection({ service, testSteps, testRunning, runTest, clearTestSt
           {/* Animated progress bar */}
           <div className="h-0.5 bg-warm-700/60 rounded-full overflow-hidden ml-6">
             <motion.div
-              className="h-full bg-amber-400 rounded-full"
+              className="h-full bg-primary rounded-full"
               animate={{ x: ['-100%', '100%'] }}
               transition={{ duration: 1.6, repeat: Infinity, ease: 'linear' }}
             />
@@ -402,7 +403,7 @@ function OverviewSection({ service, testSteps, testRunning, runTest, clearTestSt
             <button
               onClick={() => cancelSyncMutation.mutate()}
               disabled={cancelSyncMutation.isPending}
-              className="btn-ghost text-xs text-amber-400/70 hover:text-amber-400 gap-1.5"
+              className="btn-ghost text-xs text-primary/70 hover:text-primary gap-1.5"
             >
               <XCircle className="w-3.5 h-3.5" />
               {cancelSyncMutation.isPending ? 'Cancelling…' : 'Cancel Sync'}
@@ -549,9 +550,9 @@ function TelegramOTPFlow({ onDone, savedApiId = '', savedApiHash = '', savedPhon
 
   if (step === 'password') return (
     <div className="space-y-3">
-      <div className="flex items-center gap-2 rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2.5">
-        <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
-        <p className="text-xs text-amber-400">Two-factor authentication is enabled on this account. Enter your Telegram cloud password to continue.</p>
+      <div className="flex items-center gap-2 rounded-xl border border-primary/20 bg-primary/5 px-3 py-2.5">
+        <AlertTriangle className="w-4 h-4 text-primary flex-shrink-0" />
+        <p className="text-xs text-primary">Two-factor authentication is enabled on this account. Enter your Telegram cloud password to continue.</p>
       </div>
       <div className="space-y-1.5">
         <label className="block text-xs font-medium text-muted-foreground">Cloud Password</label>
@@ -610,7 +611,7 @@ function TelegramOTPFlow({ onDone, savedApiId = '', savedApiHash = '', savedPhon
           <li>Click <strong className="text-foreground/80">Create application</strong> — your <strong className="text-foreground/80">App api_id</strong> (a number) and <strong className="text-foreground/80">App api_hash</strong> (a 32-character string) will appear on the page</li>
           <li>Paste them below along with your phone number, then click <strong className="text-foreground/80">Send Code</strong> — Telegram will send a login code to your Telegram app</li>
         </ol>
-        <p className="text-[11px] text-amber-400/80 flex items-start gap-1.5 pt-1 border-t border-border/40">
+        <p className="text-[11px] text-primary/80 flex items-start gap-1.5 pt-1 border-t border-border/40">
           <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
           If the form fails to submit or shows an error, disable browser extensions (especially ad blockers or privacy shields) and try again in a plain browser window.
         </p>
@@ -1037,7 +1038,7 @@ function DataSection({ service }: { service: Service }) {
         </div>
         {confirming ? (
           <div className="flex items-center gap-3">
-            <span className="text-xs text-amber-400 font-medium flex items-center gap-1.5">
+            <span className="text-xs text-primary font-medium flex items-center gap-1.5">
               <AlertTriangle className="w-3.5 h-3.5" />
               This will delete all {service} data. Continue?
             </span>
@@ -1333,7 +1334,7 @@ function ServiceAccordion({ service }: { service: Service }) {
             {connStatus?.mode && <span>• {connStatus.mode}</span>}
             {/* Sync running indicator — visible even when accordion is collapsed */}
             {isSyncing && (
-              <span className="text-amber-400 flex items-center gap-1">
+              <span className="text-primary flex items-center gap-1">
                 <RefreshCw className="w-3 h-3 animate-spin" />
                 {syncProgress?.type === 'full' ? 'Full sync' : 'Syncing'}
                 {syncProgress?.messagesSaved ? ` · +${syncProgress.messagesSaved.toLocaleString()}` : ''}
@@ -1345,7 +1346,7 @@ function ServiceAccordion({ service }: { service: Service }) {
                 : testSteps.some((s) => s.status === 'error')
                   ? <span className="text-red-400 flex items-center gap-1"><XCircle className="w-3 h-3" />Test failed</span>
                   : testRunning
-                    ? <span className="text-amber-400 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" />Testing…</span>
+                    ? <span className="text-primary flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" />Testing…</span>
                     : null
             )}
           </div>
@@ -1387,7 +1388,7 @@ function ServiceAccordion({ service }: { service: Service }) {
                     className={cn(
                       'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all duration-150',
                       activeSection === id
-                        ? 'bg-primary/15 text-amber-400 border border-primary/25'
+                        ? 'bg-primary/15 text-primary border border-primary/25'
                         : 'text-muted-foreground hover:text-foreground hover:bg-secondary',
                     )}
                   >
@@ -1459,7 +1460,7 @@ function ApiKeysPanel() {
           {newKey ? (
             <>
               <p className="text-sm font-medium">Key Generated</p>
-              <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-2 text-xs text-amber-400">
+              <div className="rounded-xl border border-primary/20 bg-primary/5 p-2 text-xs text-primary">
                 Copy this key now — it will not be shown again.
               </div>
               <div className="flex items-center gap-2 bg-secondary rounded-xl p-3 border border-border">
@@ -1577,7 +1578,7 @@ const SVC_LABEL: Record<string, string> = {
 
 const SVC_COLOR: Record<string, string> = {
   slack: 'text-violet-400', discord: 'text-indigo-400', telegram: 'text-sky-400',
-  gmail: 'text-red-400', calendar: 'text-amber-400', twitter: 'text-sky-300', notion: 'text-zinc-300',
+  gmail: 'text-red-400', calendar: 'text-primary', twitter: 'text-sky-300', notion: 'text-zinc-300',
 };
 
 // ── Permissions tab ───────────────────────────────────────────────────────────
@@ -1827,7 +1828,7 @@ function ApiKeyRow({ apiKey }: { apiKey: ApiKeyItem }) {
                                 />
                                 {isOverridden ? (
                                   <button onClick={() => update.mutate({ service: perm.service, field: c.key, value: null })}
-                                    className="text-[9px] text-amber-400 hover:underline leading-tight">reset</button>
+                                    className="text-[9px] text-primary hover:underline leading-tight">reset</button>
                                 ) : (
                                   <span className="text-[9px] text-muted-foreground/35 leading-tight">inherit</span>
                                 )}
@@ -2008,7 +2009,7 @@ function SecurityTab() {
           <MiniToggle checked={loginEnabled} onChange={handleToggleLogin} />
         </div>
         {!authConfig?.hasPassword && !loginEnabled && (
-          <p className="text-[11px] text-amber-400 mt-3 flex items-center gap-1.5">
+          <p className="text-[11px] text-primary mt-3 flex items-center gap-1.5">
             <AlertTriangle className="w-3 h-3" /> Set a password below before enabling login
           </p>
         )}
@@ -2174,7 +2175,7 @@ function AddGoogleAccountForm({ onCancel, onSuccess }: { onCancel: () => void; o
         <p className="text-sm font-semibold">Add Google Account</p>
         <button onClick={onCancel} className="btn-ghost p-1"><X className="w-4 h-4" /></button>
       </div>
-      <div className="text-xs text-muted-foreground rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-3 space-y-2.5">
+      <div className="text-xs text-muted-foreground rounded-xl border border-primary/20 bg-primary/5 px-3 py-3 space-y-2.5">
         <p className="font-semibold text-foreground/80">1. Create a Google Cloud project</p>
         <p>
           Go to{' '}
@@ -2383,9 +2384,9 @@ function GmailAccountAccordion({
               <span className={cn('w-1.5 h-1.5 rounded-full', calStatus === 'connected' ? 'bg-emerald-400' : calStatus === 'error' ? 'bg-red-400' : 'bg-warm-600')} />
               Calendar
             </span>
-            {!tokenValid && <span className="text-amber-400">Token expired</span>}
+            {!tokenValid && <span className="text-primary">Token expired</span>}
             {isRunning && (
-              <span className="text-amber-400 flex items-center gap-1">
+              <span className="text-primary flex items-center gap-1">
                 <RefreshCw className="w-3 h-3 animate-spin" />
                 {syncProgress?.type === 'full' ? 'Full sync' : 'Syncing'}
               </span>
@@ -2409,7 +2410,7 @@ function GmailAccountAccordion({
                     className={cn(
                       'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all duration-150',
                       activeSection === id
-                        ? 'bg-primary/15 text-amber-400 border border-primary/25'
+                        ? 'bg-primary/15 text-primary border border-primary/25'
                         : 'text-muted-foreground hover:text-foreground hover:bg-secondary',
                     )}
                   >
@@ -2433,7 +2434,7 @@ function GmailAccountAccordion({
                         <div className={cn(
                           'rounded-xl border p-4',
                           isConnected && allPassed  ? 'border-emerald-500/20 bg-emerald-500/5' :
-                          isConnected && anyFailed  ? 'border-amber-500/20  bg-amber-500/5' :
+                          isConnected && anyFailed  ? 'border-primary/20  bg-primary/5' :
                           isConnected               ? 'border-emerald-500/20 bg-emerald-500/5' :
                           hasError                  ? 'border-red-500/20    bg-red-500/5' :
                                                       'border-border        bg-secondary/30',
@@ -2463,7 +2464,7 @@ function GmailAccountAccordion({
                               {testSteps.map((step) => (
                                 <motion.div key={step.step} initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} className="flex items-center gap-2.5">
                                   <div className="flex-shrink-0 w-4">
-                                    {step.status === 'running' && <Loader2 className="w-3.5 h-3.5 text-amber-400 animate-spin" />}
+                                    {step.status === 'running' && <Loader2 className="w-3.5 h-3.5 text-primary animate-spin" />}
                                     {step.status === 'success' && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />}
                                     {step.status === 'error'   && <XCircle className="w-3.5 h-3.5 text-red-400" />}
                                   </div>
@@ -2502,23 +2503,23 @@ function GmailAccountAccordion({
 
                         {/* Sync progress */}
                         {isRunning && (
-                          <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3.5 space-y-2.5">
+                          <div className="rounded-xl border border-primary/20 bg-primary/5 p-3.5 space-y-2.5">
                             <div className="flex items-center gap-2.5">
-                              <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400 flex-shrink-0" />
-                              <p className="text-xs font-semibold text-amber-400 flex-1">
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin text-primary flex-shrink-0" />
+                              <p className="text-xs font-semibold text-primary flex-1">
                                 {syncProgress?.type === 'full' ? 'Full sync' : 'Sync'} in progress
                               </p>
                             </div>
                             {(syncProgress?.messagesSaved ?? 0) > 0 && (
-                              <p className="text-xs text-amber-400/80 pl-6">
-                                <span className="font-semibold text-amber-400">+{syncProgress!.messagesSaved!.toLocaleString()}</span> messages saved
+                              <p className="text-xs text-primary/80 pl-6">
+                                <span className="font-semibold text-primary">+{syncProgress!.messagesSaved!.toLocaleString()}</span> messages saved
                               </p>
                             )}
                             <div className="h-0.5 bg-warm-700/60 rounded-full overflow-hidden ml-6">
-                              <motion.div className="h-full bg-amber-400 rounded-full" animate={{ x: ['-100%', '100%'] }} transition={{ duration: 1.6, repeat: Infinity, ease: 'linear' }} />
+                              <motion.div className="h-full bg-primary rounded-full" animate={{ x: ['-100%', '100%'] }} transition={{ duration: 1.6, repeat: Infinity, ease: 'linear' }} />
                             </div>
                             <div className="flex justify-end">
-                              <button onClick={() => cancelSyncMutation.mutate()} disabled={cancelSyncMutation.isPending} className="btn-ghost text-xs text-amber-400/70 hover:text-amber-400 gap-1.5">
+                              <button onClick={() => cancelSyncMutation.mutate()} disabled={cancelSyncMutation.isPending} className="btn-ghost text-xs text-primary/70 hover:text-primary gap-1.5">
                                 <XCircle className="w-3.5 h-3.5" />
                                 {cancelSyncMutation.isPending ? 'Cancelling…' : 'Cancel Sync'}
                               </button>
@@ -2551,7 +2552,7 @@ function GmailAccountAccordion({
                     {activeSection === 'credentials' && (
                       <div className="space-y-5">
                         <SectionHeader icon={Key} title="Credentials" subtitle="OAuth tokens for this Google account" />
-                        <div className="rounded-xl border border-amber-500/15 bg-amber-500/5 px-3.5 py-3 text-xs text-muted-foreground">
+                        <div className="rounded-xl border border-primary/15 bg-primary/5 px-3.5 py-3 text-xs text-muted-foreground">
                           Credentials are managed at the account level. To update tokens for <span className="text-foreground font-medium">{email}</span>, remove this account and re-add it with fresh tokens.
                         </div>
                         <div className="flex gap-2 flex-wrap">
@@ -2613,7 +2614,7 @@ function GmailAccountAccordion({
                           </div>
                           {confirmReset ? (
                             <div className="flex items-center gap-3">
-                              <span className="text-xs text-amber-400 font-medium flex items-center gap-1.5">
+                              <span className="text-xs text-primary font-medium flex items-center gap-1.5">
                                 <AlertTriangle className="w-3.5 h-3.5" />
                                 This will delete all data for {email}. Continue?
                               </span>
@@ -2969,7 +2970,7 @@ function TwitterAccordion() {
           <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground flex-wrap">
             <span>{msgCount.toLocaleString()} DMs</span>
             {isRunning && (
-              <span className="text-amber-400 flex items-center gap-1">
+              <span className="text-primary flex items-center gap-1">
                 <RefreshCw className="w-3 h-3 animate-spin" />
                 {syncProgress?.type === 'full' ? 'Full sync' : 'Syncing'}
               </span>
@@ -3002,7 +3003,7 @@ function TwitterAccordion() {
                     className={cn(
                       'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all duration-150',
                       activeSection === id
-                        ? 'bg-primary/15 text-amber-400 border border-primary/25'
+                        ? 'bg-primary/15 text-primary border border-primary/25'
                         : 'text-muted-foreground hover:text-foreground hover:bg-secondary',
                     )}
                   >
@@ -3026,10 +3027,10 @@ function TwitterAccordion() {
                         <div className={cn(
                           'rounded-xl border p-4',
                           status === 'connected' && allPassed  ? 'border-emerald-500/20 bg-emerald-500/5' :
-                          status === 'connected' && anyFailed  ? 'border-amber-500/20  bg-amber-500/5' :
+                          status === 'connected' && anyFailed  ? 'border-primary/20  bg-primary/5' :
                           status === 'connected'               ? 'border-emerald-500/20 bg-emerald-500/5' :
                           status === 'error'                   ? 'border-red-500/20    bg-red-500/5' :
-                          status === 'connecting'              ? 'border-amber-500/20  bg-amber-500/5' :
+                          status === 'connecting'              ? 'border-primary/20  bg-primary/5' :
                                                                  'border-border        bg-secondary/30',
                         )}>
                           <div className="flex items-start justify-between gap-3">
@@ -3060,7 +3061,7 @@ function TwitterAccordion() {
                               {testSteps.map((step) => (
                                 <motion.div key={step.step} initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} className="flex items-center gap-2.5">
                                   <div className="flex-shrink-0 w-4">
-                                    {step.status === 'running' && <Loader2 className="w-3.5 h-3.5 text-amber-400 animate-spin" />}
+                                    {step.status === 'running' && <Loader2 className="w-3.5 h-3.5 text-primary animate-spin" />}
                                     {step.status === 'success' && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />}
                                     {step.status === 'error'   && <XCircle className="w-3.5 h-3.5 text-red-400" />}
                                   </div>
@@ -3099,23 +3100,23 @@ function TwitterAccordion() {
 
                         {/* Sync progress */}
                         {isRunning && (
-                          <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3.5 space-y-2.5">
+                          <div className="rounded-xl border border-primary/20 bg-primary/5 p-3.5 space-y-2.5">
                             <div className="flex items-center gap-2.5">
-                              <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400 flex-shrink-0" />
-                              <p className="text-xs font-semibold text-amber-400 flex-1">
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin text-primary flex-shrink-0" />
+                              <p className="text-xs font-semibold text-primary flex-1">
                                 {syncProgress?.type === 'full' ? 'Full sync' : 'Sync'} in progress
                               </p>
                             </div>
                             {(syncProgress?.messagesSaved ?? 0) > 0 && (
-                              <p className="text-xs text-amber-400/80 pl-6">
-                                <span className="font-semibold text-amber-400">+{syncProgress!.messagesSaved!.toLocaleString()}</span> DMs saved
+                              <p className="text-xs text-primary/80 pl-6">
+                                <span className="font-semibold text-primary">+{syncProgress!.messagesSaved!.toLocaleString()}</span> DMs saved
                               </p>
                             )}
                             <div className="h-0.5 bg-warm-700/60 rounded-full overflow-hidden ml-6">
-                              <motion.div className="h-full bg-amber-400 rounded-full" animate={{ x: ['-100%', '100%'] }} transition={{ duration: 1.6, repeat: Infinity, ease: 'linear' }} />
+                              <motion.div className="h-full bg-primary rounded-full" animate={{ x: ['-100%', '100%'] }} transition={{ duration: 1.6, repeat: Infinity, ease: 'linear' }} />
                             </div>
                             <div className="flex justify-end">
-                              <button onClick={() => cancelSync.mutate()} disabled={cancelSync.isPending} className="btn-ghost text-xs text-amber-400/70 hover:text-amber-400 gap-1.5">
+                              <button onClick={() => cancelSync.mutate()} disabled={cancelSync.isPending} className="btn-ghost text-xs text-primary/70 hover:text-primary gap-1.5">
                                 <XCircle className="w-3.5 h-3.5" />
                                 {cancelSync.isPending ? 'Cancelling…' : 'Cancel Sync'}
                               </button>
@@ -3216,7 +3217,7 @@ function TwitterAccordion() {
                           </div>
                           {confirmReset ? (
                             <div className="flex items-center gap-3">
-                              <span className="text-xs text-amber-400 font-medium flex items-center gap-1.5">
+                              <span className="text-xs text-primary font-medium flex items-center gap-1.5">
                                 <AlertTriangle className="w-3.5 h-3.5" />
                                 This will delete all Twitter DMs. Continue?
                               </span>
@@ -3417,7 +3418,7 @@ function NotionAccordion() {
                     className={cn(
                       'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all duration-150',
                       activeSection === id
-                        ? 'bg-primary/15 text-amber-400 border border-primary/25'
+                        ? 'bg-primary/15 text-primary border border-primary/25'
                         : 'text-muted-foreground hover:text-foreground hover:bg-secondary',
                     )}
                   >
@@ -3441,10 +3442,10 @@ function NotionAccordion() {
                         <div className={cn(
                           'rounded-xl border p-4',
                           status === 'connected' && allPassed  ? 'border-emerald-500/20 bg-emerald-500/5' :
-                          status === 'connected' && anyFailed  ? 'border-amber-500/20  bg-amber-500/5' :
+                          status === 'connected' && anyFailed  ? 'border-primary/20  bg-primary/5' :
                           status === 'connected'               ? 'border-emerald-500/20 bg-emerald-500/5' :
                           status === 'error'                   ? 'border-red-500/20    bg-red-500/5' :
-                          status === 'connecting'              ? 'border-amber-500/20  bg-amber-500/5' :
+                          status === 'connecting'              ? 'border-primary/20  bg-primary/5' :
                                                                  'border-border        bg-secondary/30',
                         )}>
                           <div className="flex items-start justify-between gap-3">
@@ -3475,7 +3476,7 @@ function NotionAccordion() {
                               {testSteps.map((step) => (
                                 <motion.div key={step.step} initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} className="flex items-center gap-2.5">
                                   <div className="flex-shrink-0 w-4">
-                                    {step.status === 'running' && <Loader2 className="w-3.5 h-3.5 text-amber-400 animate-spin" />}
+                                    {step.status === 'running' && <Loader2 className="w-3.5 h-3.5 text-primary animate-spin" />}
                                     {step.status === 'success' && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />}
                                     {step.status === 'error'   && <XCircle className="w-3.5 h-3.5 text-red-400" />}
                                   </div>
@@ -3622,7 +3623,7 @@ function CopyField({ label, value, mono = true }: { label: string; value: string
       <div className="flex items-center gap-2">
         <div className={cn(
           'flex-1 rounded-xl border border-border bg-secondary px-3 py-2.5 text-sm overflow-x-auto whitespace-nowrap',
-          mono ? 'font-mono text-amber-300' : 'text-foreground',
+          mono ? 'font-mono text-primary/80' : 'text-foreground',
         )}>
           {value}
         </div>
@@ -3636,8 +3637,8 @@ function CopyField({ label, value, mono = true }: { label: string; value: string
 
 function StepNumber({ n }: { n: number }) {
   return (
-    <div className="flex-shrink-0 w-6 h-6 rounded-full bg-amber-500/15 border border-amber-500/25 flex items-center justify-center">
-      <span className="text-[11px] font-bold text-amber-400">{n}</span>
+    <div className="flex-shrink-0 w-6 h-6 rounded-full bg-primary/15 border border-primary/25 flex items-center justify-center">
+      <span className="text-[11px] font-bold text-primary">{n}</span>
     </div>
   );
 }
@@ -3719,7 +3720,7 @@ function AiPermissionsPanel() {
                         type="checkbox"
                         checked={local[key]}
                         onChange={(e) => set({ [key]: e.target.checked })}
-                        className="w-3 h-3 rounded accent-amber-500 cursor-pointer"
+                        className="w-3 h-3 rounded accent-primary cursor-pointer"
                       />
                       <span className="text-[11px] text-muted-foreground">{label}</span>
                     </label>
@@ -3837,8 +3838,8 @@ function AiConnectionTab() {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-start gap-4">
-        <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center flex-shrink-0">
-          <Bot className="w-5 h-5 text-amber-400" />
+        <div className="w-10 h-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center flex-shrink-0">
+          <Bot className="w-5 h-5 text-primary" />
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2.5 flex-wrap">
@@ -3853,7 +3854,7 @@ function AiConnectionTab() {
             )}
           </div>
           {configured && (
-            <button onClick={() => navigate('/ai')} className="mt-2 inline-flex items-center gap-1.5 text-xs text-amber-400 hover:text-amber-300 transition-colors">
+            <button onClick={() => navigate('/ai')} className="mt-2 inline-flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 transition-colors">
               Open AI Chat <ArrowRight className="w-3 h-3" />
             </button>
           )}
@@ -3873,7 +3874,7 @@ function AiConnectionTab() {
               className={cn(
                 'flex-1 min-w-[140px] rounded-xl border px-3 py-2.5 text-left transition-colors',
                 method === m.id
-                  ? 'border-amber-500/40 bg-amber-500/10 text-foreground'
+                  ? 'border-primary/40 bg-primary/10 text-foreground'
                   : 'border-border bg-secondary/20 text-muted-foreground hover:border-border/80 hover:bg-secondary/40',
               )}
             >
@@ -3921,7 +3922,7 @@ function AiConnectionTab() {
                 </div>
                 <div className="pl-8 space-y-2">
                   <p className="text-xs text-muted-foreground">
-                    Edit <code className="font-mono text-amber-300/80 text-[11px]">~/.openclaw/openclaw.json</code> and add:
+                    Edit <code className="font-mono text-primary/70 text-[11px]">~/.openclaw/openclaw.json</code> and add:
                   </p>
                   <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80 leading-relaxed">{                   `{
   "channels": {
@@ -3934,10 +3935,10 @@ function AiConnectionTab() {
   }
 }`}</pre>
                   <p className="text-xs text-muted-foreground">
-                    Restart the Gateway: <code className="font-mono text-amber-300/80 text-[11px]">openclaw gateway</code>
+                    Restart the Gateway: <code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    The plugin registers an inbound route at: <code className="font-mono text-amber-300/80 text-[11px]">http://&lt;openclaw-host&gt;:18789/channels/conduit/inbound</code>
+                    The plugin registers an inbound route at: <code className="font-mono text-primary/70 text-[11px]">http://&lt;openclaw-host&gt;:18789/channels/conduit/inbound</code>
                   </p>
                 </div>
               </div>
@@ -3949,7 +3950,7 @@ function AiConnectionTab() {
                 </div>
                 <div className="pl-8 space-y-3">
                   <p className="text-xs text-muted-foreground">
-                    Conduit will POST AI chat messages to this URL. If you set a <code className="font-mono text-amber-300/80 text-[11px]">webhookSecret</code> above, Conduit sends it as <code className="font-mono text-amber-300/80 text-[11px]">Authorization: Bearer &lt;secret&gt;</code>.
+                    Conduit will POST AI chat messages to this URL. If you set a <code className="font-mono text-primary/70 text-[11px]">webhookSecret</code> above, Conduit sends it as <code className="font-mono text-primary/70 text-[11px]">Authorization: Bearer &lt;secret&gt;</code>.
                   </p>
                   <input
                     type="url"
@@ -3980,7 +3981,7 @@ function AiConnectionTab() {
                 </div>
                 <div className="pl-8 space-y-2">
                   <p className="text-xs text-muted-foreground">
-                    Edit <code className="font-mono text-amber-300/80 text-[11px]">~/.openclaw/openclaw.json</code> and add:
+                    Edit <code className="font-mono text-primary/70 text-[11px]">~/.openclaw/openclaw.json</code> and add:
                   </p>
                   <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80 leading-relaxed">{`{
   "plugins": {
@@ -4002,13 +4003,13 @@ function AiConnectionTab() {
   }
 }`}</pre>
                   <p className="text-xs text-muted-foreground">
-                    Restart the Gateway: <code className="font-mono text-amber-300/80 text-[11px]">openclaw gateway</code>
+                    Restart the Gateway: <code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    Webhook URL (local): <code className="font-mono text-amber-300/80 text-[11px]">http://&lt;machine-ip&gt;:18789/plugins/webhooks/conduit</code>
+                    Webhook URL (local): <code className="font-mono text-primary/70 text-[11px]">http://&lt;machine-ip&gt;:18789/plugins/webhooks/conduit</code>
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    Webhook URL (Tailscale Serve): <code className="font-mono text-amber-300/80 text-[11px]">https://&lt;magicdns&gt;/plugins/webhooks/conduit</code>
+                    Webhook URL (Tailscale Serve): <code className="font-mono text-primary/70 text-[11px]">https://&lt;magicdns&gt;/plugins/webhooks/conduit</code>
                   </p>
                 </div>
               </div>
@@ -4020,7 +4021,7 @@ function AiConnectionTab() {
                 </div>
                 <div className="pl-8 space-y-3">
                   <p className="text-xs text-muted-foreground">
-                    Conduit will send <code className="font-mono text-amber-300/80 text-[11px]">Authorization: Bearer &lt;secret&gt;</code> on every request.
+                    Conduit will send <code className="font-mono text-primary/70 text-[11px]">Authorization: Bearer &lt;secret&gt;</code> on every request.
                   </p>
                   <input
                     type="url"
@@ -4052,7 +4053,7 @@ function AiConnectionTab() {
                 </div>
                 <div className="pl-8 space-y-2">
                   <p className="text-xs text-muted-foreground">
-                    Go to <strong>Settings → Permissions</strong> and generate an API key. All CLI requests must include <code className="font-mono text-amber-300/80 text-[11px]">X-API-Key: &lt;your-key&gt;</code>.
+                    Go to <strong>Settings → Permissions</strong> and generate an API key. All CLI requests must include <code className="font-mono text-primary/70 text-[11px]">X-API-Key: &lt;your-key&gt;</code>.
                   </p>
                 </div>
               </div>
@@ -4100,7 +4101,7 @@ function AiConnectionTab() {
   "systemPrompt": "..."
 }`}</pre>
                   <p className="text-xs text-muted-foreground">
-                    Stream your response back by POSTing chunks to <code className="font-mono text-amber-300/80 text-[11px]">streamUrl</code>:
+                    Stream your response back by POSTing chunks to <code className="font-mono text-primary/70 text-[11px]">streamUrl</code>:
                   </p>
                   <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80 leading-relaxed">{`# First chunk — omit messageId, save the returned one
 POST <streamUrl>
@@ -4127,7 +4128,7 @@ X-API-Key: <your-key>
                 </div>
                 <div className="pl-8 space-y-2">
                   <p className="text-xs text-muted-foreground">
-                    Go to <strong>Settings → Permissions</strong> and generate an API key. Include it as <code className="font-mono text-amber-300/80 text-[11px]">X-API-Key: &lt;your-key&gt;</code> on every request.
+                    Go to <strong>Settings → Permissions</strong> and generate an API key. Include it as <code className="font-mono text-primary/70 text-[11px]">X-API-Key: &lt;your-key&gt;</code> on every request.
                   </p>
                 </div>
               </div>
@@ -4143,7 +4144,7 @@ X-API-Key: <your-key>
                   </p>
                   <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80">{`GET ${typeof window !== 'undefined' ? window.location.origin : '<baseUrl>'}/api/openapi.json`}</pre>
                   <p className="text-xs text-muted-foreground">
-                    Configure your tool (n8n, Zapier, custom script, etc.) to use that spec URL and set <code className="font-mono text-amber-300/80 text-[11px]">X-API-Key</code> as an auth header.
+                    Configure your tool (n8n, Zapier, custom script, etc.) to use that spec URL and set <code className="font-mono text-primary/70 text-[11px]">X-API-Key</code> as an auth header.
                   </p>
                 </div>
               </div>
@@ -4191,7 +4192,7 @@ X-API-Key: <your-key>
   "systemPrompt": "..."
 }`}</pre>
                   <p className="text-xs text-muted-foreground">
-                    POST token chunks to <code className="font-mono text-amber-300/80 text-[11px]">streamUrl</code> with <code className="font-mono text-amber-300/80 text-[11px]">X-API-Key</code>:
+                    POST token chunks to <code className="font-mono text-primary/70 text-[11px]">streamUrl</code> with <code className="font-mono text-primary/70 text-[11px]">X-API-Key</code>:
                   </p>
                   <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80 leading-relaxed">{`{ "delta": "text chunk", "done": false }              // first — save returned messageId
 { "delta": "next chunk", "done": false, "messageId": "<id>" }
@@ -4206,12 +4207,12 @@ X-API-Key: <your-key>
 
           {/* Shown-once API key banner */}
           {shownApiKey && (
-            <div className="rounded-xl border border-amber-500/30 bg-amber-500/8 p-4 space-y-3">
+            <div className="rounded-xl border border-primary/30 bg-primary/8 p-4 space-y-3">
               <div className="flex items-start gap-2.5">
-                <Key className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                <Key className="w-4 h-4 text-primary flex-shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-amber-300">Conduit API key — save it now</p>
-                  <p className="text-xs text-amber-300/70 mt-0.5">Shown once. Add it to your agent or tool as <code className="font-mono text-[11px]">X-API-Key</code>.</p>
+                  <p className="text-sm font-semibold text-primary/90">Conduit API key — save it now</p>
+                  <p className="text-xs text-primary/70 mt-0.5">Shown once. Add it to your agent or tool as <code className="font-mono text-[11px]">X-API-Key</code>.</p>
                 </div>
               </div>
               <CopyField label="Conduit API Key" value={shownApiKey} />
@@ -4243,7 +4244,7 @@ X-API-Key: <your-key>
                 </div>
                 <div className="pl-8 space-y-2">
                   <p className="text-xs text-muted-foreground">
-                    Create <code className="font-mono text-amber-300/80 text-[11px]">~/.openclaw/workspace/skills/conduit/SKILL.md</code>:
+                    Create <code className="font-mono text-primary/70 text-[11px]">~/.openclaw/workspace/skills/conduit/SKILL.md</code>:
                   </p>
                   <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80 leading-relaxed whitespace-pre-wrap break-all">{`---
 name: conduit
@@ -4274,7 +4275,7 @@ Body: { "delta": "text chunk", "done": false, "messageId": "<id>" }
 - Send { "done": true } on the final chunk.
 - Always include X-API-Key: <key>.`}</pre>
                   <p className="text-xs text-muted-foreground">
-                    Restart the Gateway: <code className="font-mono text-amber-300/80 text-[11px]">openclaw gateway</code>
+                    Restart the Gateway: <code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>
                   </p>
                 </div>
               </div>
@@ -4299,7 +4300,7 @@ Body: { "delta": "text chunk", "done": false, "messageId": "<id>" }
               <h3 className="text-sm font-semibold">Test the connection</h3>
             </div>
             <p className="text-xs text-muted-foreground pl-8">
-              Ensure your Gateway is running (<code className="font-mono text-amber-300/80 text-[11px]">openclaw gateway</code>), then send a test ping.
+              Ensure your Gateway is running (<code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>), then send a test ping.
             </p>
             <div className="pl-8 flex items-center gap-3 flex-wrap">
               <button
@@ -4559,8 +4560,8 @@ function ObsidianVaultTab() {
     <div className="space-y-6">
       {/* Status overview */}
       <div className="flex items-start gap-3">
-        <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center flex-shrink-0">
-          <BookOpen className="w-5 h-5 text-amber-400" />
+        <div className="w-10 h-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center flex-shrink-0">
+          <BookOpen className="w-5 h-5 text-primary" />
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2.5 flex-wrap">
@@ -4646,7 +4647,7 @@ function ObsidianVaultTab() {
             className={cn(
               'flex-1 px-3 py-2 rounded-xl border text-sm font-medium transition-all',
               authType === 'https'
-                ? 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+                ? 'bg-primary/10 border-primary/30 text-primary'
                 : 'border-white/10 text-muted-foreground hover:border-white/20',
             )}
           >
@@ -4657,7 +4658,7 @@ function ObsidianVaultTab() {
             className={cn(
               'flex-1 px-3 py-2 rounded-xl border text-sm font-medium transition-all',
               authType === 'ssh'
-                ? 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+                ? 'bg-primary/10 border-primary/30 text-primary'
                 : 'border-white/10 text-muted-foreground hover:border-white/20',
             )}
           >
@@ -4699,7 +4700,7 @@ function ObsidianVaultTab() {
                   <button
                     onClick={() => generateSshKey.mutate()}
                     disabled={generateSshKey.isPending}
-                    className="flex items-center gap-1 text-[11px] text-amber-400 hover:text-amber-300"
+                    className="flex items-center gap-1 text-[11px] text-primary hover:text-primary/80"
                   >
                     {generateSshKey.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
                     Generate new key
@@ -4791,8 +4792,46 @@ function ObsidianVaultTab() {
 // Page
 // ─────────────────────────────────────────────────────────────────────────────
 
-type TabId = 'messaging' | 'email-calendar' | 'ai' | 'vault' | 'settings' | 'notifications' | 'install' | 'security';
-const VALID_TABS = new Set<TabId>(['messaging', 'email-calendar', 'ai', 'vault', 'settings', 'notifications', 'install', 'security']);
+// Legacy connection tab IDs that now live under the 'connections' tab — kept in
+// VALID_TABS so old /settings/<id> URLs redirect gracefully instead of 404-ing.
+type ConnectionSubTabId = 'messaging' | 'email-calendar' | 'ai' | 'vault' | 'install';
+type TopTabId = 'connections' | 'permissions' | 'notifications' | 'security' | 'appearance';
+type TabId = TopTabId | 'settings' | ConnectionSubTabId; // 'settings' kept for backward-compat
+
+const VALID_TABS = new Set<TabId>([
+  'connections', 'permissions', 'notifications', 'security', 'appearance',
+  // legacy / backward-compat aliases that map → 'connections'
+  'messaging', 'email-calendar', 'ai', 'vault', 'install', 'settings',
+]);
+
+// Sub-tabs shown inside the Connections section
+const CONNECTION_SUB_TABS: { id: ConnectionSubTabId; label: string; icon: React.ElementType }[] = [
+  { id: 'messaging',      label: 'Messaging', icon: MessageSquareIcon },
+  { id: 'email-calendar', label: 'Google',    icon: MailIcon },
+  { id: 'ai',             label: 'AI',        icon: Bot },
+  { id: 'vault',          label: 'Vault',     icon: FileText },
+  { id: 'install',        label: 'Install',   icon: Zap },
+];
+
+// Map legacy connection tab ids to the top-level 'connections' tab so that old
+// bookmarks / redirects still land on the right top-level section.
+const LEGACY_TO_TOP: Partial<Record<TabId, TopTabId>> = {
+  messaging: 'connections',
+  'email-calendar': 'connections',
+  ai: 'connections',
+  vault: 'connections',
+  install: 'connections',
+  settings: 'permissions',
+};
+
+// Map legacy connection tab ids to their connection sub-tab equivalent.
+const LEGACY_TO_SUB: Partial<Record<TabId, ConnectionSubTabId>> = {
+  messaging: 'messaging',
+  'email-calendar': 'email-calendar',
+  ai: 'ai',
+  vault: 'vault',
+  install: 'install',
+};
 
 export default function Connections() {
   const qc = useQueryClient();
@@ -4802,8 +4841,23 @@ export default function Connections() {
   const seedFromActiveSyncs = useSyncStore((s) => s.seedFromActiveSyncs);
   const syncProgress = useSyncStore((s) => s.progress);
 
-  const activeTab: TabId = (tab && VALID_TABS.has(tab as TabId)) ? (tab as TabId) : 'messaging';
-  const setActiveTab = (id: TabId) => navigate(`/settings/${id}`, { replace: true });
+  // Resolve the URL param → a valid top-level tab, falling back to 'connections'.
+  const resolvedTopTab: TopTabId = (() => {
+    if (!tab || !VALID_TABS.has(tab as TabId)) return 'connections';
+    const mapped = LEGACY_TO_TOP[tab as TabId];
+    if (mapped) return mapped;
+    return tab as TopTabId;
+  })();
+
+  const [activeTab, setActiveTabState] = React.useState<TopTabId>(resolvedTopTab);
+  const setActiveTab = (id: TopTabId) => {
+    setActiveTabState(id);
+    navigate(`/settings/${id}`, { replace: true });
+  };
+
+  // Connection sub-tab state — initialise from legacy URL param if present.
+  const initialSubTab: ConnectionSubTabId = LEGACY_TO_SUB[tab as TabId] ?? 'messaging';
+  const [activeConnTab, setActiveConnTab] = React.useState<ConnectionSubTabId>(initialSubTab);
 
   const anyRunning = Object.values(syncProgress).some((p) => p?.status === 'running');
 
@@ -4835,17 +4889,14 @@ export default function Connections() {
 
   return (
     <div className="p-4 space-y-3 animate-fade-in max-w-4xl mx-auto overflow-y-auto h-full">
-      {/* Tab switcher */}
+      {/* Top-level tab switcher */}
       <div className="flex items-center gap-0.5 bg-secondary border border-border rounded-xl p-1 flex-wrap">
         {([
-          { id: 'messaging',      label: 'Messaging',       icon: MessageSquareIcon },
-          { id: 'email-calendar', label: 'Google',           icon: MailIcon },
-          { id: 'ai',             label: 'AI',              icon: Bot },
-          { id: 'vault',          label: 'Vault',           icon: FileText },
-          { id: 'settings',       label: 'Permissions',     icon: Shield },
-          { id: 'notifications',  label: 'Notifications',   icon: Bell },
-          { id: 'install',        label: 'Install',         icon: Zap },
-          { id: 'security',       label: 'Security',        icon: Lock },
+          { id: 'connections',   label: 'Connections',  icon: PlugZap },
+          { id: 'permissions',   label: 'Permissions',  icon: Shield },
+          { id: 'notifications', label: 'Notifications', icon: Bell },
+          { id: 'security',      label: 'Security',     icon: Lock },
+          { id: 'appearance',    label: 'Appearance',   icon: Palette },
         ] as const).map(({ id, label, icon: Icon }) => (
           <button
             key={id}
@@ -4866,37 +4917,81 @@ export default function Connections() {
         <motion.div key={activeTab} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.15 }}
           className="space-y-3"
         >
-          {activeTab === 'messaging' && (
+          {activeTab === 'connections' && (
             <>
-              {SERVICES.map((svc) => (
-                <ServiceAccordion key={svc} service={svc} />
-              ))}
-              <TwitterAccordion />
-              <NotionAccordion />
+              {/* Connection sub-tab bar */}
+              <div className="flex items-center gap-0.5 border border-border rounded-lg p-0.5 self-start w-fit">
+                {CONNECTION_SUB_TABS.map(({ id, label, icon: Icon }) => (
+                  <button
+                    key={id}
+                    onClick={() => setActiveConnTab(id)}
+                    className={cn(
+                      'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all whitespace-nowrap',
+                      activeConnTab === id
+                        ? 'bg-background text-foreground shadow-warm-sm'
+                        : 'text-muted-foreground hover:text-foreground',
+                    )}
+                  >
+                    <Icon className="w-3 h-3" />
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Connection sub-tab content */}
+              <AnimatePresence mode="wait">
+                <motion.div
+                  key={activeConnTab}
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -3 }}
+                  transition={{ duration: 0.12 }}
+                  className="space-y-3"
+                >
+                  {activeConnTab === 'messaging' && (
+                    <>
+                      {SERVICES.map((svc) => (
+                        <ServiceAccordion key={svc} service={svc} />
+                      ))}
+                      <TwitterAccordion />
+                      <NotionAccordion />
+                    </>
+                  )}
+                  {activeConnTab === 'email-calendar' && (
+                    <GoogleServicesAccordion />
+                  )}
+                  {activeConnTab === 'ai' && (
+                    <div className="card-warm overflow-hidden">
+                      <div className="px-4 py-3 border-b border-border bg-secondary/20">
+                        <h2 className="text-sm font-semibold">AI Connection</h2>
+                        <p className="text-xs text-muted-foreground mt-0.5">Connect an AI agent like OpenClaw to the Conduit chat</p>
+                      </div>
+                      <div className="p-4"><AiConnectionTab /></div>
+                    </div>
+                  )}
+                  {activeConnTab === 'vault' && (
+                    <div className="card-warm overflow-hidden">
+                      <div className="px-4 py-3 border-b border-border bg-secondary/20">
+                        <h2 className="text-sm font-semibold">Obsidian Vault</h2>
+                        <p className="text-xs text-muted-foreground mt-0.5">Connect a git-synced Obsidian vault for AI-assisted note reading and editing</p>
+                      </div>
+                      <div className="p-4"><ObsidianVaultTab /></div>
+                    </div>
+                  )}
+                  {activeConnTab === 'install' && (
+                    <div className="card-warm overflow-hidden">
+                      <div className="px-4 py-3 border-b border-border bg-secondary/20">
+                        <h2 className="text-sm font-semibold">Install as a Skill</h2>
+                        <p className="text-xs text-muted-foreground mt-0.5">Connect Conduit to your AI agent</p>
+                      </div>
+                      <div className="p-4"><InstallTab /></div>
+                    </div>
+                  )}
+                </motion.div>
+              </AnimatePresence>
             </>
           )}
-          {activeTab === 'email-calendar' && (
-            <GoogleServicesAccordion />
-          )}
-          {activeTab === 'ai' && (
-            <div className="card-warm overflow-hidden">
-              <div className="px-4 py-3 border-b border-border bg-secondary/20">
-                <h2 className="text-sm font-semibold">AI Connection</h2>
-                <p className="text-xs text-muted-foreground mt-0.5">Connect an AI agent like OpenClaw to the Conduit chat</p>
-              </div>
-              <div className="p-4"><AiConnectionTab /></div>
-            </div>
-          )}
-          {activeTab === 'vault' && (
-            <div className="card-warm overflow-hidden">
-              <div className="px-4 py-3 border-b border-border bg-secondary/20">
-                <h2 className="text-sm font-semibold">Obsidian Vault</h2>
-                <p className="text-xs text-muted-foreground mt-0.5">Connect a git-synced Obsidian vault for AI-assisted note reading and editing</p>
-              </div>
-              <div className="p-4"><ObsidianVaultTab /></div>
-            </div>
-          )}
-          {activeTab === 'settings' && (
+          {activeTab === 'permissions' && (
             <div className="card-warm overflow-hidden">
               <div className="px-4 py-3 border-b border-border bg-secondary/20">
                 <h2 className="text-sm font-semibold">Permissions</h2>
@@ -4914,15 +5009,6 @@ export default function Connections() {
               <div className="p-4"><NotificationsTab /></div>
             </div>
           )}
-          {activeTab === 'install' && (
-            <div className="card-warm overflow-hidden">
-              <div className="px-4 py-3 border-b border-border bg-secondary/20">
-                <h2 className="text-sm font-semibold">Install as a Skill</h2>
-                <p className="text-xs text-muted-foreground mt-0.5">Connect Conduit to your AI agent</p>
-              </div>
-              <div className="p-4"><InstallTab /></div>
-            </div>
-          )}
           {activeTab === 'security' && (
             <div className="card-warm overflow-hidden">
               <div className="px-4 py-3 border-b border-border bg-secondary/20">
@@ -4930,6 +5016,15 @@ export default function Connections() {
                 <p className="text-xs text-muted-foreground mt-0.5">Password login and two-factor authentication</p>
               </div>
               <div className="p-4"><SecurityTab /></div>
+            </div>
+          )}
+          {activeTab === 'appearance' && (
+            <div className="card-warm overflow-hidden">
+              <div className="px-4 py-3 border-b border-border bg-secondary/20">
+                <h2 className="text-sm font-semibold">Appearance</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">Customize the look and feel of the interface</p>
+              </div>
+              <div className="p-4 max-w-lg"><AppearanceTab /></div>
             </div>
           )}
         </motion.div>

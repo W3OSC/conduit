@@ -161,7 +161,7 @@ function MessageBubble({ message, isStreaming, streamContent, streamToolCalls }:
       const isBlock = !!className;
       if (!isBlock) {
         return (
-          <code className="font-mono text-[0.85em] bg-secondary px-1.5 py-0.5 rounded-md text-amber-300" {...props}>
+          <code className="font-mono text-[0.85em] bg-secondary px-1.5 py-0.5 rounded-md text-primary/80" {...props}>
             {children}
           </code>
         );
@@ -188,7 +188,7 @@ function MessageBubble({ message, isStreaming, streamContent, streamToolCalls }:
     a({ children, href, ...props }: React.ComponentPropsWithoutRef<'a'>) {
       return (
         <a href={href} target="_blank" rel="noopener noreferrer"
-          className="text-amber-400 hover:text-amber-300 underline underline-offset-2 transition-colors" {...props}>
+          className="text-primary hover:text-primary/80 underline underline-offset-2 transition-colors" {...props}>
           {children}
         </a>
       );
@@ -203,15 +203,15 @@ function MessageBubble({ message, isStreaming, streamContent, streamToolCalls }:
       className={cn('flex gap-3', isUser ? 'flex-row-reverse' : 'flex-row')}
     >
       {!isUser && (
-        <div className="flex-shrink-0 w-7 h-7 rounded-full bg-amber-500/15 border border-amber-500/20 flex items-center justify-center mt-0.5">
-          <Bot className="w-3.5 h-3.5 text-amber-400" />
+        <div className="flex-shrink-0 w-7 h-7 rounded-full bg-primary/15 border border-primary/20 flex items-center justify-center mt-0.5">
+          <Bot className="w-3.5 h-3.5 text-primary" />
         </div>
       )}
       <div className={cn('max-w-[78%] flex flex-col gap-1', isUser ? 'items-end' : 'items-start')}>
         <div className={cn(
           'rounded-2xl px-4 py-3 text-sm leading-relaxed',
           isUser
-            ? 'bg-amber-500/14 border border-amber-500/20 text-foreground rounded-tr-md'
+            ? 'bg-primary/12 border border-primary/20 text-foreground rounded-tr-md'
             : 'bg-card border border-border text-foreground/90 rounded-tl-md',
         )}>
           {isUser ? (
@@ -294,7 +294,7 @@ function TabBar({ sessions, activeId, onSelect, onNew, onClose, onRename, creati
                     transition={{ type: 'spring', bounce: 0.2, duration: 0.35 }}
                   />
                 )}
-                <Bot className={cn('w-3.5 h-3.5 flex-shrink-0', isActive ? 'text-amber-400' : 'text-muted-foreground/50')} />
+                <Bot className={cn('w-3.5 h-3.5 flex-shrink-0', isActive ? 'text-primary' : 'text-muted-foreground/50')} />
                 {editingId === session.id ? (
                   <input
                     ref={inputRef}
@@ -350,14 +350,14 @@ function TabBar({ sessions, activeId, onSelect, onNew, onClose, onRename, creati
 function NotConnectedBanner() {
   const navigate = useNavigate();
   return (
-    <div className="mx-4 mt-3 flex items-center gap-3 px-4 py-3 rounded-xl bg-amber-500/8 border border-amber-500/20">
-      <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
-      <p className="text-xs text-amber-300/80 flex-1">
+    <div className="mx-4 mt-3 flex items-center gap-3 px-4 py-3 rounded-xl bg-primary/8 border border-primary/20">
+      <AlertTriangle className="w-4 h-4 text-primary flex-shrink-0" />
+      <p className="text-xs text-primary/80 flex-1">
         No AI agent connected.
       </p>
       <button
         onClick={() => navigate('/settings/ai')}
-        className="btn-ghost text-amber-400 hover:text-amber-300 text-xs px-2 py-1 flex items-center gap-1 flex-shrink-0"
+        className="btn-ghost text-primary hover:text-primary/80 text-xs px-2 py-1 flex items-center gap-1 flex-shrink-0"
       >
         Set up <ArrowRight className="w-3 h-3" />
       </button>
@@ -391,8 +391,8 @@ function EmptyState({ onNew, creating, connected }: { onNew: () => void; creatin
   return (
     <div className="flex-1 flex items-center justify-center p-8">
       <div className="text-center max-w-xs space-y-4">
-        <div className="mx-auto w-14 h-14 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
-          <Bot className="w-7 h-7 text-amber-400" />
+        <div className="mx-auto w-14 h-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center">
+          <Bot className="w-7 h-7 text-primary" />
         </div>
         {connected ? (
           <>
@@ -543,8 +543,8 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
         ) : items.length === 0 ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-center space-y-3 max-w-xs">
-              <div className="w-10 h-10 mx-auto rounded-xl bg-amber-500/10 border border-amber-500/15 flex items-center justify-center">
-                <Bot className="w-5 h-5 text-amber-400/60" />
+              <div className="w-10 h-10 mx-auto rounded-xl bg-primary/10 border border-primary/15 flex items-center justify-center">
+                <Bot className="w-5 h-5 text-primary/60" />
               </div>
               <p className="text-sm text-muted-foreground">
                 {connected
@@ -564,8 +564,8 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
               if (item.type === 'thinking') {
                 return (
                   <div className="px-6 py-2 flex gap-3 items-start">
-                    <div className="flex-shrink-0 w-7 h-7 rounded-full bg-amber-500/15 border border-amber-500/20 flex items-center justify-center mt-0.5">
-                      <Bot className="w-3.5 h-3.5 text-amber-400" />
+                    <div className="flex-shrink-0 w-7 h-7 rounded-full bg-primary/15 border border-primary/20 flex items-center justify-center mt-0.5">
+                      <Bot className="w-3.5 h-3.5 text-primary" />
                     </div>
                     <div className="bg-card border border-border rounded-2xl rounded-tl-md px-4 py-3">
                       <ThinkingDots />
@@ -632,7 +632,7 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
           'flex items-end gap-3 rounded-2xl border bg-secondary px-4 py-3 transition-all duration-150',
           !connected || isBusy
             ? 'border-border opacity-75'
-            : 'border-border focus-within:border-primary/40 focus-within:shadow-[0_0_0_3px_hsl(38_92%_55%/0.1)]',
+            : 'border-border focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10',
         )}>
           <textarea
             ref={composerRef}
