@@ -67,7 +67,7 @@ async function main() {
     const { existsSync } = await import('fs');
     if (existsSync(CLIENT_DIST)) {
       app.use(express.static(CLIENT_DIST));
-      app.get('*', (req, res) => {
+      app.get('/*path', (req, res) => {
         res.sendFile(path.join(CLIENT_DIST, 'index.html'));
       });
     }

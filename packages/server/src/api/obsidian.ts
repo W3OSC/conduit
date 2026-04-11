@@ -283,7 +283,7 @@ router.get('/files', optionalAuth, async (_req, res) => {
 // ── GET /obsidian/files/* ───────────────────────────────────────────────────
 // Read a file by relative path. The path comes after /files/ in the URL.
 
-router.get('/files/*', optionalAuth, async (req, res) => {
+router.get('/files/*path', optionalAuth, async (req, res) => {
   const manager = getConnectionManager();
   const obsidian = manager.getObsidian();
 
@@ -292,8 +292,8 @@ router.get('/files/*', optionalAuth, async (req, res) => {
     return;
   }
 
-  // Express wildcard captures everything after /files/
-  const rawPath = (req.params as Record<string, string>)['0'] || '';
+  // Express v5 wildcard captures everything after /files/ into req.params.path
+  const rawPath = (req.params as Record<string, string>)['path'] || '';
   const filePath = decodeURIComponent(rawPath);
 
   if (!filePath) {

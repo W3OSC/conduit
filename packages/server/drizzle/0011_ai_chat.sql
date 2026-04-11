@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS `ai_sessions` (
   `created_at` text DEFAULT (datetime('now')),
   `updated_at` text DEFAULT (datetime('now'))
 );
-
+--> statement-breakpoint
 -- AI Chat Messages
 CREATE TABLE IF NOT EXISTS `ai_messages` (
   `id` text PRIMARY KEY NOT NULL,
@@ -19,5 +19,5 @@ CREATE TABLE IF NOT EXISTS `ai_messages` (
   `streaming` integer NOT NULL DEFAULT 0,
   `created_at` text DEFAULT (datetime('now'))
 );
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS `ai_messages_session_idx` ON `ai_messages` (`session_id`);

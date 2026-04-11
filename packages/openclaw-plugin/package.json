@@ -30,7 +30,7 @@
   "license": "MIT",
   "devDependencies": {
     "openclaw": "latest",
-    "typescript": "^5.7.2",
+    "typescript": "^6.0.2",
     "@types/node": "^22.10.0"
   },
   "peerDependencies": {

@@ -34,13 +34,14 @@
 import { Router } from 'express';
 import { createHash, randomBytes } from 'crypto';
 import bcrypt from 'bcryptjs';
-import { authenticator } from 'otplib';
+import { OTP } from 'otplib/class';
 import { getDb } from '../db/client.js';
 import { settings } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import type { Request, Response, NextFunction } from 'express';
 
 const router = Router();
+const otp = new OTP({ strategy: 'totp' });
 const SETTINGS_KEY = 'ui.auth';
 const SESSION_COOKIE_NAME = 'conduit-session';
 const SESSION_DURATION_HOURS = 24 * 7; // 1 week
@@ -233,7 +234,8 @@ router.post('/login/totp', (req, res) => {
     return res.status(401).json({ error: 'Invalid or expired intermediate token' });
   }
 
-  if (!code || !authenticator.verify({ token: code, secret: cfg.totpSecret })) {
+  const verifyResult = otp.verifySync({ token: code || '', secret: cfg.totpSecret });
+  if (!code || !verifyResult.valid) {
     return res.status(401).json({ error: 'Invalid 2FA code' });
   }
 
@@ -265,8 +267,8 @@ router.post('/logout', (req, res) => {
 // POST /api/ui-auth/totp/setup — generate a new secret (not yet enabled)
 router.post('/totp/setup', (req, res) => {
   const cfg = getConfig();
-  const secret = authenticator.generateSecret();
-  const otpauthUrl = authenticator.keyuri('Conduit', 'Conduit', secret);
+  const secret = otp.generateSecret();
+  const otpauthUrl = otp.generateURI({ issuer: 'Conduit', label: 'Conduit', secret });
   // Store the new secret before the user verifies it — totpEnabled stays false until /totp/verify succeeds.
   cfg.totpSecret = secret;
   cfg.totpEnabled = false;
@@ -283,7 +285,8 @@ router.post('/totp/verify', (req, res) => {
     return res.status(400).json({ error: 'Run /setup first' });
   }
 
-  if (!code || !authenticator.verify({ token: code, secret: cfg.totpSecret })) {
+  const verifyResult2 = otp.verifySync({ token: code || '', secret: cfg.totpSecret });
+  if (!code || !verifyResult2.valid) {
     return res.status(401).json({ error: 'Invalid code — check your authenticator app' });
   }
 

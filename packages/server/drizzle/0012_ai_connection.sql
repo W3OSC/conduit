@@ -7,11 +7,11 @@ CREATE TABLE IF NOT EXISTS `ai_sessions_new` (
   `created_at` text DEFAULT (datetime('now')),
   `updated_at` text DEFAULT (datetime('now'))
 );
-
+--> statement-breakpoint
 INSERT INTO `ai_sessions_new` (`id`, `title`, `system_prompt_sent`, `created_at`, `updated_at`)
 SELECT `id`, `title`, `system_prompt_sent`, `created_at`, `updated_at`
 FROM `ai_sessions`;
-
+--> statement-breakpoint
 DROP TABLE `ai_sessions`;
-
+--> statement-breakpoint
 ALTER TABLE `ai_sessions_new` RENAME TO `ai_sessions`;

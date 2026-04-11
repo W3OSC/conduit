@@ -12,10 +12,18 @@
     "build": "npm run build --workspace=packages/server && npm run build --workspace=packages/client",
     "migrate": "npm run migrate --workspace=packages/server",
     "test": "npm run test --workspace=packages/server && npm run test --workspace=packages/client",
-    "lint": "npm run lint --workspace=packages/server && npm run lint --workspace=packages/client"
+    "lint": "npm run lint --workspace=packages/server && npm run lint --workspace=packages/client",
+    "postinstall": "node scripts/patch-react-swc.mjs"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2",
-    "wait-on": "^9.0.4"
+    "concurrently": "^9.2.1",
+    "wait-on": "^9.0.5"
+  },
+  "overrides": {
+    "vite": "6.4.2",
+    "tar": "^7.5.13",
+    "axios": "^1.15.0",
+    "@hono/node-server": "1.19.13",
+    "esbuild": "^0.25.0"
   }
 }

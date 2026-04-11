@@ -552,8 +552,7 @@ export class GmailSync {
       // POST method
       const url = listUnsub.match(/<(https?:[^>]+)>/)?.[1];
       if (url) {
-        const res = await import('node-fetch');
-        await res.default(url, { method: 'POST', body: 'List-Unsubscribe=One-Click' });
+          await fetch(url, { method: 'POST', body: 'List-Unsubscribe=One-Click' });
         await this.archive(messageId);
         return;
       }

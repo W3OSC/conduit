@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS `chat_read_state` (
 	`updated_at` text DEFAULT (datetime('now')),
 	UNIQUE(`source`, `chat_id`)
 );
-
+--> statement-breakpoint
 CREATE TABLE IF NOT EXISTS `chat_mute_state` (
 	`source` text NOT NULL,
 	`chat_id` text NOT NULL,

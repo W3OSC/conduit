@@ -312,8 +312,8 @@ export class SlackSync {
       logLevel: LogLevel.ERROR,
     });
 
-    this.socketClient.on('message', async ({ event, ack }: { event: Record<string, unknown>; ack: () => Promise<void> }) => {
-      await ack();
+    this.socketClient.on('message', async ({ event, ack }: { event: Record<string, unknown>; ack: () => void }) => {
+      ack();
       if (!event || event.subtype) return;
 
       const channelId = event.channel as string;
@@ -385,14 +385,14 @@ export class SlackSync {
 
     // channel_marked / im_marked: user read a channel in another Slack client.
     // Write to chat_read_state so the count stays accurate cross-device.
-    this.socketClient.on('channel_marked', async ({ event, ack }: { event: Record<string, unknown>; ack: () => Promise<void> }) => {
-      await ack();
+    this.socketClient.on('channel_marked', async ({ event, ack }: { event: Record<string, unknown>; ack: () => void }) => {
+      ack();
       const channelId = event.channel as string;
       if (channelId) markChatRead('slack', channelId);
     });
 
-    this.socketClient.on('im_marked', async ({ event, ack }: { event: Record<string, unknown>; ack: () => Promise<void> }) => {
-      await ack();
+    this.socketClient.on('im_marked', async ({ event, ack }: { event: Record<string, unknown>; ack: () => void }) => {
+      ack();
       const channelId = event.channel as string;
       if (channelId) markChatRead('slack', channelId);
     });

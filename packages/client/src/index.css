@@ -1,6 +1,100 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+@theme {
+  /* ── Colors ── */
+  --color-border:     hsl(var(--border));
+  --color-input:      hsl(var(--input));
+  --color-ring:       hsl(var(--ring));
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+
+  --color-primary:             hsl(var(--primary));
+  --color-primary-foreground:  hsl(var(--primary-foreground));
+
+  --color-secondary:            hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+
+  --color-destructive:            hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+
+  --color-muted:            hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+
+  --color-accent:            hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+
+  --color-card:            hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+
+  --color-popover:            hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+
+  --color-sidebar:            hsl(var(--sidebar));
+  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+  --color-sidebar-border:     hsl(var(--sidebar-border));
+
+  --color-slack:    #7C3AED;
+  --color-discord:  #5865F2;
+  --color-telegram: #0EA5E9;
+
+  --color-warm-50:  hsl(30 20% 96%);
+  --color-warm-100: hsl(28 15% 88%);
+  --color-warm-200: hsl(26 12% 72%);
+  --color-warm-300: hsl(24 10% 58%);
+  --color-warm-400: hsl(22 9% 44%);
+  --color-warm-500: hsl(20 8% 32%);
+  --color-warm-600: hsl(20 8% 22%);
+  --color-warm-700: hsl(20 7% 16%);
+  --color-warm-800: hsl(20 7% 12%);
+  --color-warm-900: hsl(20 6% 8%);
+  --color-warm-950: hsl(20 6% 5%);
+
+  /* ── Border radius ── */
+  --radius-sm:  calc(var(--radius) - 4px);
+  --radius-md:  calc(var(--radius) - 2px);
+  --radius-lg:  var(--radius);
+  --radius-xl:  calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+
+  /* ── Font families ── */
+  --font-sans: Inter, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", Consolas, monospace;
+
+  /* ── Font sizes ── */
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+
+  /* ── Box shadows ── */
+  --shadow-warm-sm:    0 1px 3px hsl(20 6% 4% / 0.4);
+  --shadow-warm-md:    0 4px 16px hsl(20 6% 4% / 0.5);
+  --shadow-warm-lg:    0 8px 32px hsl(20 6% 4% / 0.6);
+  --shadow-amber:      0 0 24px hsl(38 92% 55% / 0.18);
+  --shadow-inner-warm: inset 0 1px 2px hsl(20 6% 4% / 0.35);
+  --shadow-inner-light: inset 0 1px 0 hsl(0 0% 100% / 0.05);
+
+  /* ── Background images ── */
+  --background-image-amber-gradient: linear-gradient(135deg, hsl(38 92% 58%) 0%, hsl(34 88% 48%) 100%);
+  --background-image-warm-surface:   linear-gradient(180deg, hsl(20 6% 12%) 0%, hsl(20 6% 10%) 100%);
+
+  /* ── Animations ── */
+  --animate-fade-in:    fadeIn 0.22s ease-out both;
+  --animate-slide-up:   slideUp 0.24s ease-out both;
+  --animate-pulse-soft: pulse 2.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-shimmer:    shimmer 1.4s ease-in-out infinite;
+
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes shimmer {
+    0%   { background-position: -400px 0; }
+    100% { background-position:  400px 0; }
+  }
+}
 
 @layer base {
   :root {
@@ -43,7 +137,7 @@
 }
 
 @layer base {
-  * { @apply border-border; }
+  * { border-color: hsl(var(--border)); }
 
   html {
     -webkit-font-smoothing: antialiased;
