@@ -1876,7 +1876,7 @@ function ApiKeyRow({ apiKey }: { apiKey: ApiKeyItem }) {
                                   <button onClick={() => update.mutate({ service: perm.service, field: c.key, value: null })}
                                     className="text-[9px] text-primary hover:underline leading-tight">reset</button>
                                 ) : (
-                                  <span className="text-[9px] text-muted-foreground/35 leading-tight">inherit</span>
+                                  <span className="text-[9px] text-muted-foreground/35 leading-tight select-none cursor-default">inherit</span>
                                 )}
                               </div>
                             </td>
