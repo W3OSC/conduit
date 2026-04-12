@@ -1587,34 +1587,27 @@ const SVC_COLOR: Record<string, string> = {
 function UiPermissionsTable({ perms, onUpdate }: { perms: Permission[]; onUpdate: (service: string, field: keyof Permission, value: boolean) => void }) {
   return (
     <div className="rounded-xl border border-border overflow-hidden">
-      <table className="w-full table-fixed">
-        <colgroup>
-          <col className="w-auto" />
-          <col className="w-24" />
-          <col className="w-24" />
-          <col className="w-24" />
-          <col className="w-24" />
-        </colgroup>
+      <table className="w-full">
         <thead>
           <tr className="border-b border-border bg-secondary/10">
             <th className="px-4 py-2 text-left text-2xs font-semibold uppercase tracking-wider text-muted-foreground" rowSpan={2}>
               Service
             </th>
             <th
-              className="px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-b border-border"
+              className="w-[18%] px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-b border-border"
               rowSpan={2}
               title="View messages, contacts, and data in the UI"
             >
               Read
             </th>
             <th
-              className="px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-l border-border"
+              className="w-[36%] px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-l border-border"
               colSpan={2}
             >
               Send
             </th>
             <th
-              className="px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-b border-border border-l border-border"
+              className="w-[18%] px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-b border-border border-l border-border"
               rowSpan={2}
               title="Opening a chat marks it as read via the platform API. Off = local-only read state."
             >
