@@ -15,6 +15,7 @@ import {
   createChatChannelPlugin,
   createChannelPluginBase,
   type OpenClawConfig,
+  type ChannelPlugin,
 } from 'openclaw/plugin-sdk/channel-core';
 
 import { verifyConnection } from './client.js';
@@ -67,20 +68,42 @@ function inspectAccount(cfg: OpenClawConfig, _accountId?: string | null) {
 
 // ── Channel plugin ────────────────────────────────────────────────────────────
 
-export const conduitPlugin = createChatChannelPlugin<ResolvedAccount>({
-  base: createChannelPluginBase({
-    id: 'conduit',
+const conduitBase = createChannelPluginBase({
+  id: 'conduit',
 
-    setup: {
-      resolveAccount,
-      inspectAccount,
+  capabilities: {
+    chatTypes: ['direct'],
+  },
 
-      async verifyAccount(account) {
-        const result = await verifyConnection({ baseUrl: account.baseUrl, apiKey: account.apiKey });
-        if (!result.ok) throw new Error(result.error ?? 'Unable to reach Conduit');
-      },
+  // ── Setup wizard adapter (config write path) ──────────────────────────────
+  // Conduit only needs `applyAccountConfig` — the wizard stores the baseUrl,
+  // apiKey, allowFrom, and webhookSecret under `channels.conduit`.
+  setup: {
+    applyAccountConfig({ cfg, input }) {
+      const next = { ...(cfg as Record<string, unknown>) };
+      const channels = { ...((next['channels'] as Record<string, unknown>) ?? {}) };
+      channels['conduit'] = {
+        ...((channels['conduit'] as Record<string, unknown>) ?? {}),
+        ...input,
+      };
+      next['channels'] = channels;
+      return next as typeof cfg;
     },
-  }),
+  },
+
+  config: {
+    listAccountIds: () => ['default'],
+    resolveAccount,
+    inspectAccount,
+    isConfigured: async (account) => {
+      const result = await verifyConnection({ baseUrl: account.baseUrl, apiKey: account.apiKey });
+      return result.ok;
+    },
+  },
+});
+
+export const conduitPlugin = createChatChannelPlugin<ResolvedAccount>({
+  base: conduitBase as unknown as ChannelPlugin<ResolvedAccount>,
 
   // DM security — who can receive messages from this channel.
   security: {
@@ -103,7 +126,9 @@ export const conduitPlugin = createChatChannelPlugin<ResolvedAccount>({
   // this adapter is used when OpenClaw proactively sends a message (rare for
   // Conduit, but required by the channel contract).
   outbound: {
+    base: { deliveryMode: 'direct' },
     attachedResults: {
+      channel: 'conduit',
       sendText: async (params) => {
         // `params.to` holds the streamUrl injected by the inbound handler via
         // the session conversation id.  We re-use the streaming helper with

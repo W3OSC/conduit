@@ -66,10 +66,10 @@ export default defineChannelPluginEntry({
       auth: 'plugin',
       handler: async (req, res) => {
         // Resolve the current account config to get the webhook secret and apiKey.
-        let account: Awaited<ReturnType<typeof conduitPlugin['setup']['resolveAccount']>>;
+        let account: Awaited<ReturnType<typeof conduitPlugin['config']['resolveAccount']>>;
         try {
-          const cfg = await api.runtime.config.read();
-          account = conduitPlugin.setup!.resolveAccount(cfg, null);
+          const cfg = api.runtime.config.loadConfig();
+          account = conduitPlugin.config.resolveAccount(cfg, null);
         } catch (err) {
           res.statusCode = 503;
           res.setHeader('Content-Type', 'application/json');
@@ -89,7 +89,7 @@ export default defineChannelPluginEntry({
         // Parse the payload.
         let payload: ConduitInboundPayload;
         try {
-          payload = parseInboundPayload(req.body);
+          payload = parseInboundPayload((req as unknown as { body: unknown }).body);
         } catch (err) {
           res.statusCode = 400;
           res.setHeader('Content-Type', 'application/json');
@@ -107,23 +107,30 @@ export default defineChannelPluginEntry({
           payload,
           account.apiKey,
           async (p: ConduitInboundPayload) => {
-            // Build the conversation context passed to the agent.
-            const messages: Array<{ role: string; content: string }> = [];
+            // Build the prompt, prepending an optional system prompt on first message.
+            const prompt = p.systemPrompt
+              ? `${p.systemPrompt}\n\n${p.content}`
+              : p.content;
 
-            // Inject the system prompt on first message of each session.
-            if (p.systemPrompt) {
-              messages.push({ role: 'system', content: p.systemPrompt });
-            }
+            const sessionKey = `conduit:${p.sessionId}`;
 
-            messages.push({ role: p.role, content: p.content });
-
-            // Use OpenClaw's agent runtime to produce a reply.
-            const response = await api.runtime.agent.complete({
-              sessionKey: `conduit:${p.sessionId}`,
-              messages,
+            // Run the agent subagent and wait for completion.
+            const { runId } = await api.runtime.subagent.run({
+              sessionKey,
+              message: prompt,
             });
 
-            return response.text ?? '';
+            const result = await api.runtime.subagent.waitForRun({ runId, timeoutMs: 120_000 });
+            if (result.status === 'error') {
+              throw new Error(`Agent run failed: ${result.error ?? 'unknown error'}`);
+            }
+
+            // Retrieve the last assistant message from the session.
+            const { messages } = await api.runtime.subagent.getSessionMessages({ sessionKey, limit: 1 });
+            const last = (messages as Array<{ role?: string; content?: string }>).find(
+              (m) => m.role === 'assistant',
+            );
+            return last?.content ?? '';
           },
         ).catch((err) => {
           console.error('[conduit-plugin] Failed to handle inbound message:', err);
