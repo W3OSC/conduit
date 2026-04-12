@@ -1587,7 +1587,14 @@ const SVC_COLOR: Record<string, string> = {
 function UiPermissionsTable({ perms, onUpdate }: { perms: Permission[]; onUpdate: (service: string, field: keyof Permission, value: boolean) => void }) {
   return (
     <div className="rounded-xl border border-border overflow-hidden">
-      <table className="w-full">
+      <table className="w-full table-fixed">
+        <colgroup>
+          <col className="w-1/5" />
+          <col className="w-1/5" />
+          <col className="w-1/5" />
+          <col className="w-1/5" />
+          <col className="w-1/5" />
+        </colgroup>
         <thead>
           <tr className="border-b border-border bg-secondary/10">
             <th className="px-4 py-2 text-left text-2xs font-semibold uppercase tracking-wider text-muted-foreground" rowSpan={2}>
@@ -1616,13 +1623,13 @@ function UiPermissionsTable({ perms, onUpdate }: { perms: Permission[]; onUpdate
           </tr>
           <tr className="border-b border-border bg-secondary/10">
             <th
-              className="w-1/2 px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-l border-border border-t border-border"
+              className="px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-l border-border border-t border-border"
               title="Create outbox items and initiate sends"
             >
               Enabled
             </th>
             <th
-              className="w-1/2 px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground/60 border-t border-border"
+              className="px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground/60 border-t border-border"
               title="All outgoing messages need manual confirmation before sending"
             >
               Req. Approval
