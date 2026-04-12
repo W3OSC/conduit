@@ -1914,7 +1914,6 @@ function ApiKeyRow({ apiKey }: { apiKey: ApiKeyItem }) {
 // ── Install tab ───────────────────────────────────────────────────────────────
 
 function InstallTab() {
-  const [copied, setCopied] = useState(false);
   const baseUrl = typeof window !== 'undefined' ? window.location.origin : 'http://your-server:3101';
 
   const snippet = `{
@@ -1929,8 +1928,6 @@ function InstallTab() {
     "header": "X-API-Key"
   }
 }`;
-
-  const copy = () => { navigator.clipboard.writeText(snippet); setCopied(true); setTimeout(() => setCopied(false), 2000); };
 
   return (
     <div className="space-y-6">
@@ -1959,16 +1956,8 @@ function InstallTab() {
       </div>
 
       <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground/60">Skill Config</p>
-          <button onClick={copy} className="btn-ghost text-xs gap-1.5">
-            {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-            {copied ? 'Copied' : 'Copy'}
-          </button>
-        </div>
-        <pre className="text-xs font-mono bg-secondary/40 border border-border rounded-xl px-4 py-3 overflow-x-auto text-foreground/75 leading-relaxed">
-          {snippet}
-        </pre>
+        <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground/60">Skill Config</p>
+        <CodeBlock className="text-xs bg-secondary/40 px-4 py-3 text-foreground/75 leading-relaxed">{snippet}</CodeBlock>
       </div>
 
       <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 flex items-start gap-3">
@@ -3671,13 +3660,37 @@ function NotionAccordion() {
 // AI Connection Tab
 // ─────────────────────────────────────────────────────────────────────────────
 
+function copyTextToClipboard(text: string): Promise<void> {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text);
+  }
+  // Fallback for non-secure contexts (e.g. accessed via IP/hostname over HTTP)
+  return new Promise((resolve, reject) => {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    try {
+      const ok = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      ok ? resolve() : reject(new Error('execCommand copy failed'));
+    } catch (err) {
+      document.body.removeChild(textarea);
+      reject(err);
+    }
+  });
+}
+
 function CopyField({ label, value, mono = true }: { label: string; value: string; mono?: boolean }) {
   const [copied, setCopied] = useState(false);
   const copy = () => {
-    navigator.clipboard.writeText(value).then(() => {
+    copyTextToClipboard(value).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    });
+    }).catch(() => {});
   };
   return (
     <div className="space-y-1.5">
@@ -3693,6 +3706,33 @@ function CopyField({ label, value, mono = true }: { label: string; value: string
           {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
         </button>
       </div>
+    </div>
+  );
+}
+
+function CodeBlock({ children, className }: { children: string; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    copyTextToClipboard(children).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {});
+  };
+  return (
+    <div className="relative group">
+      <pre className={cn(
+        'text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80',
+        className,
+      )}>
+        {children}
+      </pre>
+      <button
+        onClick={copy}
+        title="Copy"
+        className="absolute top-2 right-2 btn-ghost px-1.5 py-1 opacity-0 group-hover:opacity-100 transition-opacity"
+      >
+        {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+      </button>
     </div>
   );
 }
@@ -3890,7 +3930,7 @@ function AiConnectionTab() {
   const configured = conn?.configured ?? false;
 
   const methods: { id: AiSetupMethod; label: string; sub: string }[] = [
-    { id: 'channel', label: 'OpenClaw Channel', sub: '@w3os/openclaw-conduit plugin' },
+    { id: 'channel', label: 'OpenClaw Channel', sub: '@w3osc/openclaw-conduit plugin' },
     { id: 'gateway', label: 'OpenClaw Gateway', sub: 'via webhooks plugin' },
     { id: 'cli',     label: 'OpenClaw CLI',     sub: 'direct session injection' },
     { id: 'other',   label: 'Other tools',       sub: 'n8n, custom scripts, etc.' },
@@ -3961,7 +4001,7 @@ function AiConnectionTab() {
                   <h3 className="text-sm font-semibold">Install the Conduit channel plugin</h3>
                 </div>
                 <div className="pl-8 space-y-2">
-                  <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80">{`openclaw plugins install @w3os/openclaw-conduit`}</pre>
+                   <CodeBlock>{`openclaw plugins install @w3osc/openclaw-conduit`}</CodeBlock>
                 </div>
               </div>
 
@@ -3986,7 +4026,7 @@ function AiConnectionTab() {
                   <p className="text-xs text-muted-foreground">
                     Edit <code className="font-mono text-primary/70 text-[11px]">~/.openclaw/openclaw.json</code> and add:
                   </p>
-                  <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80 leading-relaxed">{                   `{
+                   <CodeBlock className="leading-relaxed">{`{
   "channels": {
     "conduit": {
       "baseUrl": "${typeof window !== 'undefined' ? window.location.origin : 'http://your-conduit-host:3101'}",
@@ -3995,7 +4035,7 @@ function AiConnectionTab() {
       "webhookSecret": "<optional shared secret>"
     }
   }
-}`}</pre>
+}`}</CodeBlock>
                   <p className="text-xs text-muted-foreground">
                     Restart the Gateway: <code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>
                   </p>
@@ -4045,7 +4085,7 @@ function AiConnectionTab() {
                   <p className="text-xs text-muted-foreground">
                     Edit <code className="font-mono text-primary/70 text-[11px]">~/.openclaw/openclaw.json</code> and add:
                   </p>
-                  <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80 leading-relaxed">{`{
+                   <CodeBlock className="leading-relaxed">{`{
   "plugins": {
     "entries": {
       "webhooks": {
@@ -4063,7 +4103,7 @@ function AiConnectionTab() {
       }
     }
   }
-}`}</pre>
+}`}</CodeBlock>
                   <p className="text-xs text-muted-foreground">
                     Restart the Gateway: <code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>
                   </p>
@@ -4156,16 +4196,16 @@ function AiConnectionTab() {
                   <p className="text-xs text-muted-foreground">
                     Conduit POSTs JSON to your webhook URL on each message:
                   </p>
-                  <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80 leading-relaxed">{`{
+                   <CodeBlock className="leading-relaxed">{`{
   "sessionId": "<uuid>",
   "streamUrl": "<baseUrl>/api/ai/sessions/<id>/stream",
   "messages": [{ "role": "user", "content": "..." }],
   "systemPrompt": "..."
-}`}</pre>
+}`}</CodeBlock>
                   <p className="text-xs text-muted-foreground">
                     Stream your response back by POSTing chunks to <code className="font-mono text-primary/70 text-[11px]">streamUrl</code>:
                   </p>
-                  <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80 leading-relaxed">{`# First chunk — omit messageId, save the returned one
+                   <CodeBlock className="leading-relaxed">{`# First chunk — omit messageId, save the returned one
 POST <streamUrl>
 X-API-Key: <your-key>
 { "delta": "text chunk", "done": false }
@@ -4174,7 +4214,7 @@ X-API-Key: <your-key>
 { "delta": "next chunk", "done": false, "messageId": "<returned-id>" }
 
 # Final chunk
-{ "delta": "", "done": true, "messageId": "<returned-id>" }`}</pre>
+{ "delta": "", "done": true, "messageId": "<returned-id>" }`}</CodeBlock>
                 </div>
               </div>
             </div>
@@ -4204,7 +4244,7 @@ X-API-Key: <your-key>
                   <p className="text-xs text-muted-foreground">
                     The full REST API is described at:
                   </p>
-                  <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80">{`GET ${typeof window !== 'undefined' ? window.location.origin : '<baseUrl>'}/api/openapi.json`}</pre>
+                   <CodeBlock>{`GET ${typeof window !== 'undefined' ? window.location.origin : '<baseUrl>'}/api/openapi.json`}</CodeBlock>
                   <p className="text-xs text-muted-foreground">
                     Configure your tool (n8n, Zapier, custom script, etc.) to use that spec URL and set <code className="font-mono text-primary/70 text-[11px]">X-API-Key</code> as an auth header.
                   </p>
@@ -4247,18 +4287,18 @@ X-API-Key: <your-key>
                   <p className="text-xs text-muted-foreground">
                     Conduit POSTs this payload to your webhook on each message:
                   </p>
-                  <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80 leading-relaxed">{`{
+                   <CodeBlock className="leading-relaxed">{`{
   "sessionId": "<uuid>",
   "streamUrl": "<baseUrl>/api/ai/sessions/<id>/stream",
   "messages": [{ "role": "user", "content": "..." }],
   "systemPrompt": "..."
-}`}</pre>
+}`}</CodeBlock>
                   <p className="text-xs text-muted-foreground">
                     POST token chunks to <code className="font-mono text-primary/70 text-[11px]">streamUrl</code> with <code className="font-mono text-primary/70 text-[11px]">X-API-Key</code>:
                   </p>
-                  <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80 leading-relaxed">{`{ "delta": "text chunk", "done": false }              // first — save returned messageId
+                   <CodeBlock className="leading-relaxed">{`{ "delta": "text chunk", "done": false }              // first — save returned messageId
 { "delta": "next chunk", "done": false, "messageId": "<id>" }
-{ "delta": "", "done": true,  "messageId": "<id>" }    // final`}</pre>
+{ "delta": "", "done": true,  "messageId": "<id>" }    // final`}</CodeBlock>
                 </div>
               </div>
             </div>
@@ -4308,7 +4348,7 @@ X-API-Key: <your-key>
                   <p className="text-xs text-muted-foreground">
                     Create <code className="font-mono text-primary/70 text-[11px]">~/.openclaw/workspace/skills/conduit/SKILL.md</code>:
                   </p>
-                  <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80 leading-relaxed whitespace-pre-wrap break-all">{`---
+                   <CodeBlock className="leading-relaxed whitespace-pre-wrap break-all">{`---
 name: conduit
 description: Read the user's messages, emails, and calendar via Conduit, and stream responses back to the Conduit AI chat interface.
 ---
@@ -4335,7 +4375,7 @@ POST chunks to: ${conn.streamUrlTemplate.replace('{sessionId}', '<sessionId from
 Body: { "delta": "text chunk", "done": false, "messageId": "<id>" }
 - Omit messageId on the first chunk; use the returned ID on all subsequent chunks.
 - Send { "done": true } on the final chunk.
-- Always include X-API-Key: <key>.`}</pre>
+- Always include X-API-Key: <key>.`}</CodeBlock>
                   <p className="text-xs text-muted-foreground">
                     Restart the Gateway: <code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>
                   </p>
