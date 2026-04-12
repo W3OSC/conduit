@@ -1555,6 +1555,26 @@ const PERM_COLS: Array<{ key: 'readEnabled' | 'sendEnabled' | 'requireApproval';
 
 // ── Shared primitives ─────────────────────────────────────────────────────────
 
+function MiniCheckbox({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={() => !disabled && onChange(!checked)}
+      className={cn(
+        'relative w-5 h-5 rounded-md transition-all duration-200 flex-shrink-0 flex items-center justify-center',
+        checked ? 'bg-primary shadow-amber' : 'bg-warm-700',
+        disabled && 'opacity-40 cursor-not-allowed',
+      )}
+    >
+      {checked && (
+        <svg viewBox="0 0 10 8" fill="none" className="w-2.5 h-2.5">
+          <path d="M1 4l2.5 2.5L9 1" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
 function MiniToggle({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
   return (
     <button
@@ -1647,13 +1667,9 @@ function UiPermissionsTable({ perms, onUpdate }: { perms: Permission[]; onUpdate
                   <MiniToggle checked={!!perm.sendEnabled} onChange={(v) => onUpdate(perm.service, 'sendEnabled', v)} />
                 </td>
                 <td className={cn('px-3 py-2.5 text-center transition-opacity', sendOff && 'opacity-30')}>
-                  <input
-                    type="checkbox"
-                    checked={!!perm.requireApproval}
-                    onChange={(e) => !sendOff && onUpdate(perm.service, 'requireApproval', e.target.checked)}
-                    disabled={sendOff}
-                    className="w-3.5 h-3.5 rounded accent-primary cursor-pointer disabled:cursor-not-allowed"
-                  />
+                  <div className="flex justify-center">
+                    <MiniCheckbox checked={!!perm.requireApproval} onChange={(v) => onUpdate(perm.service, 'requireApproval', v)} disabled={sendOff} />
+                  </div>
                 </td>
                 <td className="px-3 py-2.5 text-center border-l border-border">
                   <MiniToggle checked={!!perm.markReadEnabled} onChange={(v) => onUpdate(perm.service, 'markReadEnabled', v)} />
@@ -4408,6 +4424,10 @@ const SOUND_OPTIONS: Array<{ value: SoundStyle; label: string }> = [
   { value: 'default', label: 'Default ding' },
   { value: 'chime',   label: 'Chime' },
   { value: 'pop',     label: 'Pop' },
+  { value: 'ping',    label: 'Ping' },
+  { value: 'buzz',    label: 'Buzz' },
+  { value: 'chord',   label: 'Chord' },
+  { value: 'whoosh',  label: 'Whoosh' },
   { value: 'none',    label: 'None (silent)' },
 ];
 
