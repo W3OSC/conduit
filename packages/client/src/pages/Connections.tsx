@@ -1583,38 +1583,86 @@ const SVC_COLOR: Record<string, string> = {
 
 // ── Permissions tab ───────────────────────────────────────────────────────────
 
-// A single service permission row for the UI user
-function UiServiceRow({ perm, onUpdate }: { perm: Permission; onUpdate: (field: keyof Permission, value: boolean) => void }) {
+// Compact table of all service permissions for the UI user
+function UiPermissionsTable({ perms, onUpdate }: { perms: Permission[]; onUpdate: (service: string, field: keyof Permission, value: boolean) => void }) {
   return (
-    <div className="rounded-xl border border-border bg-secondary/20 p-4 space-y-3">
-      {/* Service header */}
-      <div className="flex items-center gap-2">
-        <span className={cn('text-sm font-semibold', SVC_COLOR[perm.service] || 'text-foreground')}>
-          {SVC_LABEL[perm.service] || perm.service}
-        </span>
-      </div>
-
-      {/* Permission rows */}
-      <div className="space-y-2.5">
-        {[
-          { key: 'readEnabled' as const,      label: 'Read access',               desc: 'View messages, contacts, and data in the UI' },
-          { key: 'sendEnabled' as const,       label: 'Send messages',             desc: 'Create outbox items and initiate sends' },
-          { key: 'requireApproval' as const,   label: 'Require approval',          desc: 'All outgoing messages need manual confirmation before sending', indent: true },
-          { key: 'directSendFromUi' as const,  label: 'Direct send (bypass outbox)', desc: 'Send immediately without creating an outbox item', indent: true },
-          { key: 'markReadEnabled' as const,   label: 'Mark as read on platform',  desc: 'Opening a chat marks it as read via the platform API. Off = local-only read state.' },
-        ].map(({ key, label, desc, indent }) => {
-          const isDisabled = (key === 'requireApproval' || key === 'directSendFromUi') && !perm.sendEnabled;
-          return (
-            <div key={key} className={cn('flex items-start justify-between gap-4', indent && 'pl-4 border-l-2 border-border/50')}>
-              <div className="min-w-0">
-                <p className={cn('text-xs font-medium', isDisabled ? 'text-muted-foreground/40' : 'text-foreground/90')}>{label}</p>
-                <p className="text-[11px] text-muted-foreground/50 leading-snug">{desc}</p>
-              </div>
-              <MiniToggle checked={!!perm[key]} onChange={(v) => onUpdate(key, v)} disabled={isDisabled} />
-            </div>
-          );
-        })}
-      </div>
+    <div className="rounded-xl border border-border overflow-hidden">
+      <table className="w-full">
+        <thead>
+          <tr className="border-b border-border bg-secondary/10">
+            <th className="px-4 py-2 text-left text-2xs font-semibold uppercase tracking-wider text-muted-foreground" rowSpan={2}>
+              Service
+            </th>
+            <th
+              className="px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-b border-border"
+              rowSpan={2}
+              title="View messages, contacts, and data in the UI"
+            >
+              Read
+            </th>
+            <th
+              className="px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-l border-border"
+              colSpan={3}
+            >
+              Send
+            </th>
+            <th
+              className="px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-b border-border border-l border-border"
+              rowSpan={2}
+              title="Opening a chat marks it as read via the platform API. Off = local-only read state."
+            >
+              Mark Read
+            </th>
+          </tr>
+          <tr className="border-b border-border bg-secondary/10">
+            <th
+              className="px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-l border-border border-t border-border"
+              title="Create outbox items and initiate sends"
+            >
+              Send
+            </th>
+            <th
+              className="px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground/60 border-t border-border"
+              title="All outgoing messages need manual confirmation before sending"
+            >
+              Approval
+            </th>
+            <th
+              className="px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground/60 border-t border-border"
+              title="Send immediately without creating an outbox item (bypass outbox)"
+            >
+              Direct
+            </th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border">
+          {perms.map((perm) => {
+            const sendOff = !perm.sendEnabled;
+            return (
+              <tr key={perm.service} className="hover:bg-secondary/10 transition-colors">
+                <td className={cn('px-4 py-2.5 text-xs font-medium', SVC_COLOR[perm.service] || 'text-foreground')}>
+                  {SVC_LABEL[perm.service] || perm.service}
+                </td>
+                <td className="px-3 py-2.5 text-center">
+                  <MiniToggle checked={!!perm.readEnabled} onChange={(v) => onUpdate(perm.service, 'readEnabled', v)} />
+                </td>
+                <td className="px-3 py-2.5 text-center border-l border-border">
+                  <MiniToggle checked={!!perm.sendEnabled} onChange={(v) => onUpdate(perm.service, 'sendEnabled', v)} />
+                </td>
+                <td className={cn('px-3 py-2.5 text-center transition-opacity', sendOff && 'opacity-30')}>
+                  <MiniToggle checked={!!perm.requireApproval} onChange={(v) => onUpdate(perm.service, 'requireApproval', v)} disabled={sendOff} />
+                </td>
+                <td className={cn('px-3 py-2.5 text-center transition-opacity', sendOff && 'opacity-30')}>
+                  <MiniToggle checked={!!perm.directSendFromUi} onChange={(v) => onUpdate(perm.service, 'directSendFromUi', v)} disabled={sendOff} />
+                </td>
+                <td className="px-3 py-2.5 text-center border-l border-border">
+                  <MiniToggle checked={!!perm.markReadEnabled} onChange={(v) => onUpdate(perm.service, 'markReadEnabled', v)} />
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -1666,11 +1714,7 @@ function PermissionsTab() {
             Controls what you can do in the browser. These are also the defaults inherited by API keys.
           </p>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          {orderedPerms.map((perm) => (
-            <UiServiceRow key={perm.service} perm={perm} onUpdate={(field, value) => handleUiPerm(perm.service, field, value)} />
-          ))}
-        </div>
+        <UiPermissionsTable perms={orderedPerms} onUpdate={handleUiPerm} />
       </div>
 
       {/* ── API Keys ── */}
