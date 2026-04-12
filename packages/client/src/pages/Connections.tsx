@@ -1644,7 +1644,13 @@ function UiPermissionsTable({ perms, onUpdate }: { perms: Permission[]; onUpdate
                   <MiniToggle checked={!!perm.sendEnabled} onChange={(v) => onUpdate(perm.service, 'sendEnabled', v)} />
                 </td>
                 <td className={cn('px-3 py-2.5 text-center transition-opacity', sendOff && 'opacity-30')}>
-                  <MiniToggle checked={!!perm.requireApproval} onChange={(v) => onUpdate(perm.service, 'requireApproval', v)} disabled={sendOff} />
+                  <input
+                    type="checkbox"
+                    checked={!!perm.requireApproval}
+                    onChange={(e) => !sendOff && onUpdate(perm.service, 'requireApproval', e.target.checked)}
+                    disabled={sendOff}
+                    className="w-3.5 h-3.5 rounded accent-primary cursor-pointer disabled:cursor-not-allowed"
+                  />
                 </td>
                 <td className="px-3 py-2.5 text-center border-l border-border">
                   <MiniToggle checked={!!perm.markReadEnabled} onChange={(v) => onUpdate(perm.service, 'markReadEnabled', v)} />
