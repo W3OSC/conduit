@@ -100,9 +100,9 @@ router.put('/keys/:keyId/:service', optionalAuth, (req, res) => {
     .run();
 
   const updates: Partial<typeof apiKeyPermissions.$inferInsert> = {};
-  if ('readEnabled'     in body) updates.readEnabled     = body.readEnabled     ?? undefined;
-  if ('sendEnabled'     in body) updates.sendEnabled     = body.sendEnabled     ?? undefined;
-  if ('requireApproval' in body) updates.requireApproval = body.requireApproval ?? undefined;
+  if ('readEnabled'     in body) updates.readEnabled     = body.readEnabled     ?? null;
+  if ('sendEnabled'     in body) updates.sendEnabled     = body.sendEnabled     ?? null;
+  if ('requireApproval' in body) updates.requireApproval = body.requireApproval ?? null;
 
   db.update(apiKeyPermissions)
     .set(updates)
