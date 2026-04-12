@@ -900,8 +900,9 @@ function PermissionsSection({ service }: { service: Service }) {
 
   const handleToggle = (field: keyof Permission, value: boolean) => {
     if (!local) return;
-    setLocal({ ...local, [field]: value });
-    update.mutate({ [field]: value });
+    const extra = field === 'requireApproval' ? { directSendFromUi: !value } : {};
+    setLocal({ ...local, [field]: value, ...extra });
+    update.mutate({ [field]: value, ...extra });
   };
 
   if (!local) return null;
@@ -913,8 +914,7 @@ function PermissionsSection({ service }: { service: Service }) {
         {([
           { key: 'readEnabled',      label: 'Read Access',         desc: 'Allow Conduit to read messages from this service' },
           { key: 'sendEnabled',      label: 'Send Messages',       desc: 'Allow sending messages through this service' },
-          { key: 'requireApproval',  label: 'Require Approval',    desc: 'All outgoing messages must be manually approved first' },
-          { key: 'directSendFromUi', label: 'Direct Send from UI', desc: 'Messages composed in the Chat UI send immediately without outbox approval' },
+          { key: 'requireApproval',  label: 'Require Approval',    desc: 'All outgoing messages must be manually approved first. When off, messages sent from the UI go immediately without outbox review.' },
           { key: 'markReadEnabled',  label: 'Mark as Read',        desc: 'Opening a conversation in Chat marks it as read on the platform. When off, read state is only tracked locally.' },
         ] as { key: keyof Permission; label: string; desc: string }[]).map(({ key, label, desc }) => (
           <div key={key} className="px-4 bg-secondary/20">
@@ -1602,7 +1602,7 @@ function UiPermissionsTable({ perms, onUpdate }: { perms: Permission[]; onUpdate
             </th>
             <th
               className="px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-l border-border"
-              colSpan={3}
+              colSpan={2}
             >
               Send
             </th>
@@ -1627,12 +1627,6 @@ function UiPermissionsTable({ perms, onUpdate }: { perms: Permission[]; onUpdate
             >
               Req. Approval
             </th>
-            <th
-              className="px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground/60 border-t border-border"
-              title="Send immediately without creating an outbox item (bypass outbox)"
-            >
-              Bypass Outbox
-            </th>
           </tr>
         </thead>
         <tbody className="divide-y divide-border">
@@ -1651,9 +1645,6 @@ function UiPermissionsTable({ perms, onUpdate }: { perms: Permission[]; onUpdate
                 </td>
                 <td className={cn('px-3 py-2.5 text-center transition-opacity', sendOff && 'opacity-30')}>
                   <MiniToggle checked={!!perm.requireApproval} onChange={(v) => onUpdate(perm.service, 'requireApproval', v)} disabled={sendOff} />
-                </td>
-                <td className={cn('px-3 py-2.5 text-center transition-opacity', sendOff && 'opacity-30')}>
-                  <MiniToggle checked={!!perm.directSendFromUi} onChange={(v) => onUpdate(perm.service, 'directSendFromUi', v)} disabled={sendOff} />
                 </td>
                 <td className="px-3 py-2.5 text-center border-l border-border">
                   <MiniToggle checked={!!perm.markReadEnabled} onChange={(v) => onUpdate(perm.service, 'markReadEnabled', v)} />
@@ -1686,8 +1677,10 @@ function PermissionsTab() {
   });
 
   const handleUiPerm = (service: string, field: keyof Permission, value: boolean) => {
-    setLocal((p) => p.map((r) => r.service === service ? { ...r, [field]: value } : r));
+    const extra = field === 'requireApproval' ? { directSendFromUi: !value } : {};
+    setLocal((p) => p.map((r) => r.service === service ? { ...r, [field]: value, ...extra } : r));
     updatePerm.mutate({ service, field, value });
+    if (field === 'requireApproval') updatePerm.mutate({ service, field: 'directSendFromUi', value: !value });
   };
 
   const createKey = useMutation({
@@ -3619,15 +3612,15 @@ function NotionAccordion() {
                           {([
                             { key: 'readEnabled' as const,      label: 'Read Access',         desc: 'Allow reading pages, databases, and blocks directly (bypasses outbox)' },
                             { key: 'sendEnabled' as const,       label: 'Write Access',        desc: 'Allow queuing create/update/append/archive operations to the outbox' },
-                            { key: 'requireApproval' as const,   label: 'Require Approval',    desc: 'All write operations must be manually approved before executing' },
-                            { key: 'directSendFromUi' as const,  label: 'Direct Send from UI', desc: 'Write operations from the Chat UI execute immediately without outbox approval' },
+                            { key: 'requireApproval' as const,   label: 'Require Approval',    desc: 'All write operations must be manually approved before executing. When off, operations from the Chat UI execute immediately.' },
                           ]).map(({ key, label, desc }) => (
                             <div key={key} className="px-4 bg-secondary/20">
                               <Toggle
                                 checked={!!localPerm[key]}
                                 onChange={(v) => {
-                                  setLocalPerm({ ...localPerm, [key]: v });
-                                  updatePerm.mutate({ [key]: v });
+                                  const extra = key === 'requireApproval' ? { directSendFromUi: !v } : {};
+                                  setLocalPerm({ ...localPerm, [key]: v, ...extra });
+                                  updatePerm.mutate({ [key]: v, ...extra });
                                 }}
                                 label={label}
                                 description={desc}
