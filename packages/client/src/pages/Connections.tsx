@@ -1594,20 +1594,20 @@ function UiPermissionsTable({ perms, onUpdate }: { perms: Permission[]; onUpdate
               Service
             </th>
             <th
-              className="w-[18%] px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-b border-border"
+              className="w-[22%] px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-b border-border"
               rowSpan={2}
               title="View messages, contacts, and data in the UI"
             >
               Read
             </th>
             <th
-              className="w-[36%] px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-l border-border"
+              className="w-[44%] px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-l border-border"
               colSpan={2}
             >
               Send
             </th>
             <th
-              className="w-[18%] px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-b border-border border-l border-border"
+              className="w-[22%] px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-b border-border border-l border-border"
               rowSpan={2}
               title="Opening a chat marks it as read via the platform API. Off = local-only read state."
             >
