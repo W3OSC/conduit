@@ -19,7 +19,7 @@ import {
   Send, Server, Shield, Settings, PlugZap, UserCircle2, Clock, Users, ExternalLink,
   MessageSquare as MessageSquareIcon, Mail as MailIcon, Lock, ShieldCheck, QrCode,
   LogOut, Zap, FileText, Bot, Unplug, ArrowRight, CircleCheck, CircleX, Bell, Volume2, VolumeX,
-  BookOpen, GitBranch, Palette, Play,
+  BookOpen, GitBranch, Palette, Play, RotateCcw,
 } from 'lucide-react';
 import { AppearanceTab } from '@/components/settings/AppearanceTab';
 import {
@@ -4421,13 +4421,15 @@ Body: { "delta": "text chunk", "done": false, "messageId": "<id>" }
 // ─────────────────────────────────────────────────────────────────────────────
 
 const SOUND_OPTIONS: Array<{ value: SoundStyle; label: string }> = [
-  { value: 'default', label: 'Default ding' },
+  { value: 'default', label: 'Ding' },
   { value: 'chime',   label: 'Chime' },
   { value: 'pop',     label: 'Pop' },
   { value: 'ping',    label: 'Ping' },
   { value: 'buzz',    label: 'Buzz' },
   { value: 'chord',   label: 'Chord' },
   { value: 'whoosh',  label: 'Whoosh' },
+  { value: 'swoosh',  label: 'Swoosh' },
+  { value: 'thud',    label: 'Thud' },
   { value: 'none',    label: 'None (silent)' },
 ];
 
@@ -4519,6 +4521,17 @@ function NotificationsTab() {
           ))}
         </div>
       )}
+
+      {/* Reset to defaults */}
+      <div className="flex justify-end">
+        <button
+          onClick={() => save(DEFAULT_SOUND_SETTINGS)}
+          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <RotateCcw className="w-3 h-3" />
+          Reset to defaults
+        </button>
+      </div>
     </div>
   );
 }

@@ -14,6 +14,7 @@
  */
 
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ScheduleXCalendar, useNextCalendarApp } from '@schedule-x/react';
 import { createViewMonthGrid, createViewWeek, createViewDay, createViewMonthAgenda } from '@schedule-x/calendar';
@@ -724,7 +725,7 @@ export default function Calendar() {
   // Measured grid height — starts at 624 (12h × 52px) and updates on resize
   const [gridHeight, setGridHeight] = useState(624);
 
-  const { data: statusData } = useQuery({ queryKey: ['calendar-status'], queryFn: api.calendarStatus, refetchInterval: 30000 });
+  const { data: statusData, isLoading: statusLoading } = useQuery({ queryKey: ['calendar-status'], queryFn: api.calendarStatus, staleTime: 30000, refetchInterval: 30000 });
   const { data: calendarsData } = useQuery({ queryKey: ['calendar-list'], queryFn: api.calendarList, staleTime: 60000 });
   const { data: eventsData, isLoading } = useQuery({
     queryKey: ['calendar-events'],
@@ -856,22 +857,30 @@ export default function Calendar() {
     return () => ro.disconnect();
   }, [calendar]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  if (statusLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
+        <Loader2 className="w-6 h-6 animate-spin opacity-40" />
+      </div>
+    );
+  }
+
   if (!statusData?.connected) {
     return (
-      <div className="flex flex-col items-center justify-center h-[calc(100vh-3.5rem)] gap-4 text-muted-foreground">
+      <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
         <div className="w-20 h-20 rounded-2xl bg-secondary/50 border border-border flex items-center justify-center">
           <CalendarDays className="w-10 h-10 opacity-20" />
         </div>
         <div className="text-center">
           <p className="text-sm font-medium">Calendar not connected</p>
-          <p className="text-xs opacity-60 mt-1">Add your Google credentials in Services → Email & Calendar</p>
+          <p className="text-xs opacity-60 mt-1">Add your Google credentials in <Link to="/settings/email-calendar" className="underline underline-offset-2 hover:text-foreground transition-colors">Settings → Connections → Google</Link></p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="flex h-[calc(100vh-3rem)] overflow-hidden">
+    <div className="flex h-full overflow-hidden">
       {/* Main calendar area */}
       <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
         {/* Toolbar */}

@@ -116,6 +116,10 @@ function AppInner() {
               <Route path="/chat/:service/:chatId" element={<Chat />} />
               <Route path="/ai" element={<AiChat />} />
               <Route path="/outbox" element={<Outbox />} />
+              <Route path="/contacts" element={<Contacts />} />
+              <Route path="/email" element={<Email />} />
+              <Route path="/calendar" element={<Calendar />} />
+              <Route path="/twitter" element={<TwitterPage />} />
               <Route path="/connections" element={<Navigate to="/settings/connections" replace />} />
               <Route path="/settings" element={<Navigate to="/settings/connections" replace />} />
               <Route path="/settings/:tab" element={<Connections />} />

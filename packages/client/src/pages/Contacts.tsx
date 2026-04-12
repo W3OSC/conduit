@@ -5,7 +5,7 @@ import {
   Search, X, MessageSquare, ChevronRight, Users,
   Loader2, Hash, AtSign, Phone, Trash2, ExternalLink, Mail,
 } from 'lucide-react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { api, type Contact, type ContactMessage, type ChatTreeMap } from '@/lib/api';
 import { ServiceIcon } from '@/components/shared/ServiceBadge';
 import { Skeleton } from '@/components/shared/Skeleton';
@@ -441,6 +441,13 @@ export default function Contacts() {
   const [pendingSelect, setPendingSelect] = useState<{ source: string; platformId: string } | null>(null);
   const LIMIT = 60;
 
+  const { data: connections, isLoading: connectionsLoading } = useQuery({
+    queryKey: ['connections'],
+    queryFn: api.connections,
+    staleTime: 30000,
+  });
+  const anyConnected = connections ? Object.values(connections).some((s) => s.status === 'connected') : true;
+
   // Read navigation state from Chat page: { source, platformId }
   useEffect(() => {
     const state = location.state as { source?: string; platformId?: string } | null;
@@ -516,8 +523,30 @@ export default function Contacts() {
     }
   }, [contactList, pendingSelect]);
 
+  if (connectionsLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
+        <Loader2 className="w-6 h-6 animate-spin opacity-40" />
+      </div>
+    );
+  }
+
+  if (!anyConnected && total === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
+        <div className="w-20 h-20 rounded-2xl bg-secondary/50 border border-border flex items-center justify-center">
+          <Users className="w-10 h-10 opacity-20" />
+        </div>
+        <div className="text-center">
+          <p className="text-sm font-medium">No services connected</p>
+          <p className="text-xs opacity-60 mt-1">Connect a service in <Link to="/settings/connections" className="underline underline-offset-2 hover:text-foreground transition-colors">Settings → Connections</Link> to start syncing contacts</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex h-[calc(100vh-3rem)] overflow-hidden">
+    <div className="flex h-full overflow-hidden">
 
       {/* ── Left panel: list ── */}
       <div className="w-80 flex-shrink-0 flex flex-col border-r border-border bg-card/50">

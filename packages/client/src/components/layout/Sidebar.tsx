@@ -36,7 +36,7 @@ const NAV_ITEMS = [
   { to: '/email',       icon: Mail,            label: 'Email'      },
   { to: '/calendar',    icon: CalendarDays,    label: 'Calendar'   },
   { divider: true },
-  { to: '/connections', icon: Sliders,         label: 'Settings'   },
+  { to: '/settings',    icon: Sliders,         label: 'Settings'   },
   { to: '/audit-log',   icon: ScrollText,      label: 'Audit Log'  },
 ] as const;
 

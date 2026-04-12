@@ -16,7 +16,7 @@ import { api, type GmailMessage, type GmailLabel, type GmailActionParams } from 
 import { Skeleton } from '@/components/shared/Skeleton';
 import { cn, timeAgo, formatDate } from '@/lib/utils';
 import { toast } from '@/store';
-import { useLocation } from 'react-router-dom';
+import { useLocation, Link } from 'react-router-dom';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -463,7 +463,7 @@ export default function Email() {
   // Track whether we've already auto-selected the requested message
   const pendingGmailId = useRef<string | null>(navState?.gmailId ?? null);
 
-  const { data: statusData } = useQuery({ queryKey: ['gmail-status'], queryFn: api.gmailStatus, refetchInterval: 30000 });
+  const { data: statusData, isLoading: statusLoading } = useQuery({ queryKey: ['gmail-status'], queryFn: api.gmailStatus, staleTime: 30000, refetchInterval: 30000 });
 
   const { data, isLoading } = useQuery({
     queryKey: ['gmail-messages', activeLabel, search],
@@ -492,22 +492,30 @@ export default function Email() {
     onSuccess: () => { toast({ title: 'Sync started', variant: 'default' }); qc.invalidateQueries({ queryKey: ['gmail-messages'] }); },
   });
 
+  if (statusLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
+        <Loader2 className="w-6 h-6 animate-spin opacity-40" />
+      </div>
+    );
+  }
+
   if (!statusData?.connected) {
     return (
-      <div className="flex flex-col items-center justify-center h-[calc(100vh-3.5rem)] gap-4 text-muted-foreground">
+      <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
         <div className="w-20 h-20 rounded-2xl bg-secondary/50 border border-border flex items-center justify-center">
           <Mail className="w-10 h-10 opacity-20" />
         </div>
         <div className="text-center">
           <p className="text-sm font-medium">Gmail not connected</p>
-          <p className="text-xs opacity-60 mt-1">Add your Google credentials in Services → Email & Calendar</p>
+          <p className="text-xs opacity-60 mt-1">Add your Google credentials in <Link to="/settings/email-calendar" className="underline underline-offset-2 hover:text-foreground transition-colors">Settings → Connections → Google</Link></p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="flex h-[calc(100vh-3.5rem)] overflow-hidden">
+    <div className="flex h-full overflow-hidden">
       {/* Label sidebar */}
       <LabelSidebar activeLabel={activeLabel} onSelect={(l) => { setActiveLabel(l); setSelected(null); }} />
 

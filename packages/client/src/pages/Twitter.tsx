@@ -7,6 +7,7 @@
  */
 
 import { useState, useCallback, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Virtuoso } from 'react-virtuoso';
@@ -884,24 +885,32 @@ function AnalyticsTab({ handle }: { handle: string }) {
 
 export default function TwitterPage() {
   const [tab, setTab] = useState<'dms' | 'feed' | 'analytics'>('dms');
-  const { data: status } = useQuery({ queryKey: ['twitter-status'], queryFn: api.twitterStatus, refetchInterval: 30000 });
+  const { data: status, isLoading: statusLoading } = useQuery({ queryKey: ['twitter-status'], queryFn: api.twitterStatus, refetchInterval: 30000 });
+
+  if (statusLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
+        <Loader2 className="w-6 h-6 animate-spin opacity-40" />
+      </div>
+    );
+  }
 
   if (!status?.connected) {
     return (
-      <div className="flex flex-col items-center justify-center h-[calc(100vh-3.5rem)] gap-4 text-muted-foreground">
+      <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
         <div className="w-20 h-20 rounded-2xl bg-secondary/50 border border-border flex items-center justify-center">
           <Twitter className="w-10 h-10 opacity-20" />
         </div>
         <div className="text-center">
           <p className="text-sm font-medium">Twitter / X not connected</p>
-          <p className="text-xs opacity-60 mt-1">Add your credentials in Services → Messaging → Twitter</p>
+          <p className="text-xs opacity-60 mt-1">Add your credentials in <Link to="/settings/messaging" className="underline underline-offset-2 hover:text-foreground transition-colors">Settings → Connections → Messaging</Link></p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col h-[calc(100vh-3.5rem)]">
+    <div className="flex flex-col h-full">
       {/* Tab bar */}
       <div className="flex items-center border-b border-border flex-shrink-0 px-6 gap-6">
         {([
@@ -925,7 +934,9 @@ export default function TwitterPage() {
           {status.handle && (
             <span className="chip chip-sky text-xs">@{status.handle}</span>
           )}
-          <span className="text-xs text-muted-foreground">{status.dmCount} DMs synced</span>
+          {status.dmCount != null && (
+            <span className="text-xs text-muted-foreground">{status.dmCount} DMs synced</span>
+          )}
         </div>
       </div>
 
