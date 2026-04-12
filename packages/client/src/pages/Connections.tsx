@@ -1589,11 +1589,11 @@ function UiPermissionsTable({ perms, onUpdate }: { perms: Permission[]; onUpdate
     <div className="rounded-xl border border-border overflow-hidden">
       <table className="w-full table-fixed">
         <colgroup>
-          <col className="w-1/5" />
-          <col className="w-1/5" />
-          <col className="w-1/5" />
-          <col className="w-1/5" />
-          <col className="w-1/5" />
+          <col />
+          <col className="w-1/4" />
+          <col className="w-1/4" />
+          <col className="w-1/4" />
+          <col className="w-1/4" />
         </colgroup>
         <thead>
           <tr className="border-b border-border bg-secondary/10">
