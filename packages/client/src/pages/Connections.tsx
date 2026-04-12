@@ -19,7 +19,7 @@ import {
   Send, Server, Shield, Settings, PlugZap, UserCircle2, Clock, Users, ExternalLink,
   MessageSquare as MessageSquareIcon, Mail as MailIcon, Lock, ShieldCheck, QrCode,
   LogOut, Zap, FileText, Bot, Unplug, ArrowRight, CircleCheck, CircleX, Bell, Volume2, VolumeX,
-  BookOpen, GitBranch, Palette,
+  BookOpen, GitBranch, Palette, Play,
 } from 'lucide-react';
 import { AppearanceTab } from '@/components/settings/AppearanceTab';
 import {
@@ -33,7 +33,7 @@ import { StatusBadge, StatusDot } from '@/components/shared/StatusDot';
 import { cn, timeAgo, formatDate } from '@/lib/utils';
 import { toast } from '@/store';
 import type { NotificationSoundSettings, SoundStyle } from '@/hooks/useNotificationSound';
-import { DEFAULT_SOUND_SETTINGS } from '@/hooks/useNotificationSound';
+import { DEFAULT_SOUND_SETTINGS, playSound } from '@/hooks/useNotificationSound';
 
 type Service = 'slack' | 'discord' | 'telegram';
 const SERVICES: Service[] = ['slack', 'discord', 'telegram'];
@@ -1874,7 +1874,7 @@ function ApiKeyRow({ apiKey }: { apiKey: ApiKeyItem }) {
                                 />
                                 {isOverridden ? (
                                   <button onClick={() => update.mutate({ service: perm.service, field: c.key, value: null })}
-                                    className="text-[9px] text-primary hover:underline leading-tight">reset</button>
+                                    className="text-[9px] text-primary hover:underline leading-tight cursor-pointer">reset</button>
                                 ) : (
                                   <span className="text-[9px] text-muted-foreground/35 leading-tight select-none cursor-default">inherit</span>
                                 )}
@@ -4413,15 +4413,25 @@ const SOUND_OPTIONS: Array<{ value: SoundStyle; label: string }> = [
 
 function SoundSelect({ value, onChange }: { value: SoundStyle; onChange: (v: SoundStyle) => void }) {
   return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value as SoundStyle)}
-      className="text-xs bg-secondary border border-border rounded-lg px-2 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
-    >
-      {SOUND_OPTIONS.map((o) => (
-        <option key={o.value} value={o.value}>{o.label}</option>
-      ))}
-    </select>
+    <div className="flex items-center gap-1.5">
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as SoundStyle)}
+        className="text-xs bg-secondary border border-border rounded-lg px-2 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
+      >
+        {SOUND_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
+      <button
+        onClick={() => playSound(value)}
+        disabled={value === 'none'}
+        title={value === 'none' ? 'No sound to preview' : 'Preview sound'}
+        className="flex items-center justify-center w-6 h-6 rounded-md text-muted-foreground hover:text-foreground hover:bg-white/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+      >
+        <Play className="w-3 h-3" />
+      </button>
+    </div>
   );
 }
 
