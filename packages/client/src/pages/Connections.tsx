@@ -28,7 +28,7 @@ import {
   type ObsidianVaultConfigRow,
 } from '@/lib/api';
 import { useConnectionStore, useSyncStore, type SyncProgress } from '@/store';
-import { ServiceIcon, SERVICE_CONFIG } from '@/components/shared/ServiceBadge';
+import { ServiceIcon, ServiceLogo, SERVICE_CONFIG } from '@/components/shared/ServiceBadge';
 import { StatusBadge, StatusDot } from '@/components/shared/StatusDot';
 import { cn, timeAgo, formatDate } from '@/lib/utils';
 import { toast } from '@/store';
@@ -1635,7 +1635,10 @@ function UiPermissionsTable({ perms, onUpdate }: { perms: Permission[]; onUpdate
             return (
               <tr key={perm.service} className="hover:bg-secondary/10 transition-colors">
                 <td className={cn('px-4 py-2.5 text-xs font-medium', SVC_COLOR[perm.service] || 'text-foreground')}>
-                  {SVC_LABEL[perm.service] || perm.service}
+                  <div className="flex items-center gap-2">
+                    <ServiceLogo service={perm.service} className="w-3.5 h-3.5 flex-shrink-0" />
+                    {SVC_LABEL[perm.service] || perm.service}
+                  </div>
                 </td>
                 <td className="px-3 py-2.5 text-center">
                   <MiniToggle checked={!!perm.readEnabled} onChange={(v) => onUpdate(perm.service, 'readEnabled', v)} />
