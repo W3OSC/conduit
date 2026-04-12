@@ -1616,13 +1616,13 @@ function UiPermissionsTable({ perms, onUpdate }: { perms: Permission[]; onUpdate
           </tr>
           <tr className="border-b border-border bg-secondary/10">
             <th
-              className="px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-l border-border border-t border-border"
+              className="w-1/2 px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-l border-border border-t border-border"
               title="Create outbox items and initiate sends"
             >
               Enabled
             </th>
             <th
-              className="px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground/60 border-t border-border"
+              className="w-1/2 px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground/60 border-t border-border"
               title="All outgoing messages need manual confirmation before sending"
             >
               Req. Approval
