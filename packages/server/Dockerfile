@@ -29,7 +29,10 @@ ENV NODE_ENV=production
 RUN apk add --no-cache git
 COPY --from=builder /app/packages/server/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/packages/server/node_modules ./packages/server/node_modules
+# Copy workspace-level packages into root node_modules so ESM resolution finds them.
+# dist/ lives at /app/dist (not under packages/server/), so Node's upward walk
+# never reaches /app/packages/server/node_modules at runtime.
+COPY --from=builder /app/packages/server/node_modules ./node_modules
 COPY packages/server/package.json ./package.json
 COPY packages/server/drizzle ./drizzle
 # Place the built client where the server expects it: /app/packages/client/dist
