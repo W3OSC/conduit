@@ -703,6 +703,44 @@ router.get('/openapi.json', (req, res) => {
         },
       },
 
+      '/contacts/{source}/{platformId}/dm-channel': {
+        get: {
+          operationId: 'getContactDmChannel',
+          summary: 'Look up the DM channel ID for a contact',
+          description: 'Returns the platform-native DM channel ID for a contact on Slack, Discord, or Telegram. Use this to get the channelId needed for POST /outbox when you want to send a DM and only have the contact\'s platformId.',
+          parameters: [
+            {
+              name: 'source', in: 'path', required: true,
+              schema: { type: 'string', enum: ['slack', 'discord', 'telegram'] },
+              description: 'Platform (only slack, discord, and telegram support DM channel lookup)',
+            },
+            {
+              name: 'platformId', in: 'path', required: true,
+              schema: { type: 'string' },
+              description: 'The contact\'s platform-native user ID',
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'DM channel ID for this contact',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      channelId:   { type: 'string', description: 'Use this as recipient_id in POST /outbox' },
+                      channelName: { type: 'string' },
+                    },
+                  },
+                },
+              },
+            },
+            '404': { description: 'No DM channel found for this contact' },
+            '503': { description: 'The platform is not connected' },
+          },
+        },
+      },
+
       // ── Outbox ────────────────────────────────────────────────────────────────
 
       '/outbox': {
@@ -763,6 +801,161 @@ router.get('/openapi.json', (req, res) => {
               description: 'Outbox item created',
               content: { 'application/json': { schema: { $ref: '#/components/schemas/OutboxItem' } } },
             },
+          },
+        },
+      },
+
+      '/outbox/{id}': {
+        get: {
+          operationId: 'getOutboxItem',
+          summary: 'Get a single outbox item by ID',
+          description: 'Returns the current state of a single outbox item. Use this to poll for status changes after creating an item (e.g. check whether a pending message has been approved and sent).',
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'integer' }, description: 'Outbox item ID' },
+          ],
+          responses: {
+            '200': { description: 'Outbox item', content: { 'application/json': { schema: { $ref: '#/components/schemas/OutboxItem' } } } },
+            '404': { description: 'Outbox item not found' },
+          },
+        },
+        patch: {
+          operationId: 'updateOutboxItem',
+          summary: 'Approve, reject, or edit a pending outbox item',
+          description: 'Acts on a pending outbox item. Use action=approve to send the message immediately, action=reject to discard it, or action=edit to change the content before approval (pass the updated text as content).',
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'integer' }, description: 'Outbox item ID' },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['action'],
+                  properties: {
+                    action:  { type: 'string', enum: ['approve', 'reject', 'edit'], description: 'approve → send now; reject → discard; edit → update content (supply new content field)' },
+                    content: { type: 'string', description: 'Updated message text (only used with action=edit)' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': { description: 'Updated outbox item or action result', content: { 'application/json': { schema: { type: 'object' } } } },
+            '400': { description: 'Item is not in a state that allows this action' },
+            '404': { description: 'Outbox item not found' },
+          },
+        },
+        delete: {
+          operationId: 'deleteOutboxItem',
+          summary: 'Delete an outbox item',
+          description: 'Permanently removes an outbox item from the queue. This does not send the message — use PATCH with action=approve to send.',
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'integer' }, description: 'Outbox item ID' },
+          ],
+          responses: {
+            '200': { description: 'Item deleted', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' } } } } } },
+          },
+        },
+      },
+
+      '/outbox/batch': {
+        post: {
+          operationId: 'createOutboxBatch',
+          summary: 'Queue the same message to multiple recipients on the same platform',
+          description: 'Creates one outbox item per recipient, all sharing the same batchId. Useful for sending the same announcement or update to several people at once. All items are pending until approved.',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['source', 'recipient_ids', 'content'],
+                  properties: {
+                    source:        { type: 'string', enum: ['slack', 'discord', 'telegram', 'twitter'], description: 'Platform to send on' },
+                    recipient_ids: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        required: ['id'],
+                        properties: {
+                          id:   { type: 'string', description: 'Platform-native channel or user ID' },
+                          name: { type: 'string', description: 'Human-readable label for the outbox UI' },
+                        },
+                      },
+                    },
+                    content: { type: 'string', description: 'Message text to send to all recipients' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Batch created',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      batchId: { type: 'string', format: 'uuid' },
+                      items:   { type: 'array', items: { $ref: '#/components/schemas/OutboxItem' } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      '/outbox/batch/multi': {
+        post: {
+          operationId: 'createOutboxBatchMulti',
+          summary: 'Queue a heterogeneous batch of messages across multiple platforms',
+          description: 'Creates multiple outbox items across different services and recipients in a single request. All items share a batchId for coordinated review and approval. Each operation is permission-checked independently. Use this to queue related messages that should be reviewed and sent together (e.g. notifying the same person on Slack and sending them an email).',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['operations'],
+                  properties: {
+                    operations: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        required: ['source', 'recipient_id', 'content'],
+                        properties: {
+                          source:         { type: 'string', enum: ['slack', 'discord', 'telegram', 'twitter', 'gmail', 'calendar', 'notion'] },
+                          recipient_id:   { type: 'string', description: 'Platform-native channel, user, or resource ID' },
+                          recipient_name: { type: 'string', description: 'Human-readable label for the outbox UI' },
+                          content:        { type: 'string', description: 'Message text for messaging services; JSON payload string for structured services (gmail, calendar, notion)' },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Batch created — all items pending approval',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      batchId: { type: 'string', format: 'uuid' },
+                      items:   { type: 'array', items: { $ref: '#/components/schemas/OutboxItem' } },
+                    },
+                  },
+                },
+              },
+            },
+            '403': { description: 'Sending is not enabled for one of the specified services' },
           },
         },
       },
@@ -830,6 +1023,22 @@ router.get('/openapi.json', (req, res) => {
                 },
               },
             },
+          },
+        },
+      },
+
+      '/gmail/messages/{id}': {
+        get: {
+          operationId: 'getGmailMessage',
+          summary: 'Get a single Gmail message by ID',
+          description: 'Returns the full metadata for a single Gmail message — sender, recipients, subject, labels, read/starred state, and snippet. Use GET /gmail/messages/{id}/body to fetch the full email body.',
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Gmail message ID (gmailId from list response)' },
+          ],
+          responses: {
+            '200': { description: 'Gmail message metadata', content: { 'application/json': { schema: { type: 'object' } } } },
+            '404': { description: 'Message not found in local database' },
+            '503': { description: 'Gmail not connected' },
           },
         },
       },
@@ -952,7 +1161,78 @@ router.get('/openapi.json', (req, res) => {
         },
       },
 
+      '/gmail/labels': {
+        get: {
+          operationId: 'listGmailLabels',
+          summary: 'List all Gmail labels',
+          description: 'Returns all Gmail labels available on the account, including system labels (INBOX, SENT, TRASH, etc.) and any custom labels. Use label names/IDs with GET /gmail/messages?label= to filter messages.',
+          responses: {
+            '200': {
+              description: 'Gmail labels',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      labels: {
+                        type: 'array',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            id:   { type: 'string', description: 'Label ID (use this with the label query param)' },
+                            name: { type: 'string', description: 'Human-readable label name' },
+                            type: { type: 'string', enum: ['system', 'user'], description: 'System labels are built-in; user labels are custom' },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            '503': { description: 'Gmail not connected' },
+          },
+        },
+      },
+
       // ── Calendar ──────────────────────────────────────────────────────────────
+
+      '/calendar/calendars': {
+        get: {
+          operationId: 'listCalendars',
+          summary: 'List all Google Calendars on the account',
+          description: 'Returns all calendars the user has access to, including their primary calendar and any shared or subscribed calendars. Use the returned calendar IDs with GET /calendar/events?calendarId= to filter events to a specific calendar.',
+          responses: {
+            '200': {
+              description: 'List of calendars',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      calendars: {
+                        type: 'array',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            id:          { type: 'string', description: 'Calendar ID — use "primary" for the user\'s main calendar' },
+                            summary:     { type: 'string', description: 'Calendar display name' },
+                            description: { type: 'string', nullable: true },
+                            primary:     { type: 'boolean', description: 'True for the user\'s main calendar' },
+                            accessRole:  { type: 'string', description: 'Access level: owner, writer, reader, freeBusyReader' },
+                            color:       { type: 'string', nullable: true, description: 'Hex color code used in the UI' },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            '503': { description: 'Calendar not connected' },
+          },
+        },
+      },
 
       '/calendar/events': {
         get: {
@@ -1022,6 +1302,21 @@ router.get('/openapi.json', (req, res) => {
                 },
               },
             },
+          },
+        },
+      },
+
+      '/calendar/events/{id}': {
+        get: {
+          operationId: 'getCalendarEvent',
+          summary: 'Get a single calendar event by ID',
+          description: 'Returns the full details of a specific calendar event including all attendees, RSVP statuses, Google Meet link, description, and recurrence info. Use this when you have an eventId from GET /calendar/events and need the complete event data.',
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Google Calendar event ID (eventId from list response)' },
+          ],
+          responses: {
+            '200': { description: 'Calendar event', content: { 'application/json': { schema: { type: 'object' } } } },
+            '404': { description: 'Event not found in local database' },
           },
         },
       },
@@ -1545,6 +1840,42 @@ router.get('/openapi.json', (req, res) => {
 
       // ── Notion ────────────────────────────────────────────────────────────────
 
+      '/notion/pages': {
+        post: {
+          operationId: 'createNotionPage',
+          summary: 'Create a new Notion page',
+          description: 'Creates a new Notion page by proxying the request body directly to the Notion POST /v1/pages API. The body is passed through as-is — supply a Notion-compatible parent, properties, and optional children blocks. Requires sendEnabled permission for the notion service.',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['parent', 'properties'],
+                  properties: {
+                    parent: {
+                      type: 'object',
+                      description: 'Parent container — either a database or a page',
+                      properties: {
+                        database_id: { type: 'string', description: 'ID of the parent database (use this to create a database row)' },
+                        page_id:     { type: 'string', description: 'ID of the parent page (use this to create a sub-page)' },
+                      },
+                    },
+                    properties: { type: 'object', description: 'Page properties matching the parent database schema (or { title } for a plain page)' },
+                    children:   { type: 'array', items: { type: 'object' }, description: 'Optional array of block objects to add as page content' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '201': { description: 'Created Notion page object (raw Notion API response)', content: { 'application/json': { schema: { type: 'object' } } } },
+            '403': { description: 'Notion write access is not enabled' },
+            '503': { description: 'Notion not connected' },
+          },
+        },
+      },
+
       '/notion/pages/{pageId}': {
         get: {
           operationId: 'getNotionPage',
@@ -1556,6 +1887,33 @@ router.get('/openapi.json', (req, res) => {
           responses: {
             '200': { description: 'Notion page object (raw Notion API response)', content: { 'application/json': { schema: { type: 'object' } } } },
             '403': { description: 'Notion read access is not enabled' },
+            '503': { description: 'Notion not connected' },
+          },
+        },
+        patch: {
+          operationId: 'updateNotionPage',
+          summary: 'Update an existing Notion page',
+          description: 'Updates a Notion page by proxying the request body directly to the Notion PATCH /v1/pages/:id API. The body is passed through as-is — supply properties to update and optionally in_trash to archive the page. Requires sendEnabled permission for the notion service.',
+          parameters: [
+            { name: 'pageId', in: 'path', required: true, schema: { type: 'string' }, description: 'Notion page ID (UUID format, dashes optional)' },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    properties: { type: 'object', description: 'Page properties to update (only include fields you want to change)' },
+                    in_trash:   { type: 'boolean', description: 'Set to true to move the page to trash (archive it)' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': { description: 'Updated Notion page object (raw Notion API response)', content: { 'application/json': { schema: { type: 'object' } } } },
+            '403': { description: 'Notion write access is not enabled' },
             '503': { description: 'Notion not connected' },
           },
         },

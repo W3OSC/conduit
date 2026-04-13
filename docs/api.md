@@ -425,6 +425,27 @@ Returns `403` if sending is not enabled for this service.
 
 ---
 
+#### `GET /contacts/{source}/{platformId}/dm-channel`
+
+Returns the platform-native DM channel ID for a contact. Use this to get the `channelId` / `recipient_id` needed for `POST /outbox` when you only have a contact's `platformId`.
+
+Supported sources: `slack`, `discord`, `telegram`.
+
+**Path parameters**: same as above.
+
+**Response**
+
+```json
+{
+  "channelId": "D04XYZ123",
+  "channelName": "alice"
+}
+```
+
+Pass the returned `channelId` as `recipient_id` in `POST /outbox`.
+
+---
+
 ### Outbox
 
 ---
@@ -470,6 +491,106 @@ Queues a message to any platform. The `recipient_id` is the platform-native chan
 
 ---
 
+#### `GET /outbox/{id}`
+
+Returns a single outbox item by its numeric ID. Use this to poll for status changes after queuing a message.
+
+**Path parameters**
+
+| Parameter | Description |
+|---|---|
+| `id` | Outbox item ID (integer) |
+
+**Response**: `OutboxItem` object. Returns `404` if not found.
+
+---
+
+#### `PATCH /outbox/{id}`
+
+Approve, reject, or edit a pending outbox item.
+
+**Path parameters**
+
+| Parameter | Description |
+|---|---|
+| `id` | Outbox item ID (integer) |
+
+**Request body**
+
+```json
+{
+  "action": "approve"
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `action` | string | `approve` — send immediately; `reject` — discard; `edit` — update content |
+| `content` | string | New message text (only used with `action=edit`) |
+
+**Response**: Updated `OutboxItem` for `edit`; `{ success: true, status: "sent" }` for `approve`; `{ success: true, status: "rejected" }` for `reject`.
+
+---
+
+#### `DELETE /outbox/{id}`
+
+Permanently removes an outbox item. This does **not** send the message.
+
+**Response**: `{ "success": true }`
+
+---
+
+#### `POST /outbox/batch`
+
+Queues the same message to multiple recipients on the same platform. All items share a `batchId`.
+
+**Request body**
+
+```json
+{
+  "source": "slack",
+  "recipient_ids": [
+    { "id": "D04XYZ", "name": "Alice" },
+    { "id": "D04ABC", "name": "Bob" }
+  ],
+  "content": "Quick update: the deadline is moved to Friday."
+}
+```
+
+**Response**
+
+```json
+{
+  "batchId": "uuid-...",
+  "items": [ OutboxItem, OutboxItem ]
+}
+```
+
+---
+
+#### `POST /outbox/batch/multi`
+
+Queues a heterogeneous batch of messages across different platforms in a single request. All items share a `batchId` for coordinated review. Each operation is permission-checked independently.
+
+**Request body**
+
+```json
+{
+  "operations": [
+    { "source": "slack",    "recipient_id": "D04XYZ", "recipient_name": "Alice", "content": "Hey!" },
+    { "source": "telegram", "recipient_id": "123456",  "recipient_name": "Bob",   "content": "Hey!" }
+  ]
+}
+```
+
+For structured services (`gmail`, `calendar`, `notion`), `content` should be a JSON-stringified action payload.
+
+**Response**: `{ batchId: string, items: OutboxItem[] }`
+
+Returns `403` if `sendEnabled` is not set for any of the specified services.
+
+---
+
 ### Gmail
 
 ---
@@ -509,6 +630,20 @@ Lists Gmail message metadata (sender, subject, snippet, labels, read state). Ful
   "total": 12
 }
 ```
+
+---
+
+#### `GET /gmail/messages/{id}`
+
+Returns the full metadata for a single Gmail message — sender, recipients, subject, snippet, labels, and read/starred state.
+
+**Path parameters**
+
+| Parameter | Description |
+|---|---|
+| `id` | Gmail message ID (`gmailId` from list response) |
+
+**Response**: Gmail message object. Returns `404` if not found in local database.
 
 ---
 
@@ -577,7 +712,56 @@ Performs an action on a Gmail message. All actions go through the outbox for hum
 
 ---
 
+#### `GET /gmail/labels`
+
+Lists all Gmail labels on the account, including system labels (`INBOX`, `SENT`, `TRASH`, etc.) and any custom labels.
+
+**Response**
+
+```json
+{
+  "labels": [
+    { "id": "INBOX", "name": "INBOX", "type": "system" },
+    { "id": "Label_123", "name": "Project Alpha", "type": "user" }
+  ]
+}
+```
+
+Use label `id` values with `GET /gmail/messages?label=` to filter messages.
+
+---
+
 ### Calendar
+
+---
+
+#### `GET /calendar/calendars`
+
+Lists all Google Calendars the user has access to, including their primary calendar and any shared or subscribed calendars.
+
+**Response**
+
+```json
+{
+  "calendars": [
+    {
+      "id": "primary",
+      "summary": "My Calendar",
+      "primary": true,
+      "accessRole": "owner",
+      "color": "#039BE5"
+    },
+    {
+      "id": "team@example.com",
+      "summary": "Team Calendar",
+      "primary": false,
+      "accessRole": "reader"
+    }
+  ]
+}
+```
+
+Use the returned `id` values with `GET /calendar/events?calendarId=` and `POST /calendar/actions`.
 
 ---
 
@@ -620,6 +804,20 @@ Lists calendar events for a time range. Defaults to today through the next 7 day
   "total": 3
 }
 ```
+
+---
+
+#### `GET /calendar/events/{id}`
+
+Returns the full details of a single calendar event by its Google Calendar event ID.
+
+**Path parameters**
+
+| Parameter | Description |
+|---|---|
+| `id` | Google Calendar event ID (`eventId` from list response) |
+
+**Response**: Full calendar event object (same shape as items in `GET /calendar/events`). Returns `404` if not found in local database.
 
 ---
 
@@ -1043,9 +1241,9 @@ Returns engagement metrics for the authenticated user's recent tweets, aggregate
 
 ### Notion
 
-Notion endpoints are read-only passthroughs to the Notion API. Write operations (`create_page`, `update_page`, `append_blocks`, `archive_page`) go through `POST /outbox` and require human approval.
+Notion endpoints are direct passthroughs to the Notion API. Read endpoints are gated by the `readEnabled` permission; direct write endpoints (`PATCH /notion/pages/:id`, `POST /notion/pages`) are gated by the `sendEnabled` permission and execute immediately with no outbox or approval step.
 
-All Notion endpoints require the `readEnabled` permission to be set for the `notion` service.
+Outbox-based write operations (`append_blocks`, `archive_page`, and batch workflows) still go through `POST /outbox`.
 
 ---
 
@@ -1071,6 +1269,72 @@ Retrieves a Notion page by its ID. Returns raw Notion API page object including 
 ```
 
 Use `GET /notion/blocks/{pageId}/children` to read the page body.
+
+---
+
+#### `PATCH /notion/pages/{pageId}`
+
+Updates an existing Notion page. The request body is passed through as-is to the Notion `PATCH /v1/pages/:id` API. Requires the `sendEnabled` permission for the `notion` service.
+
+**Path parameters**
+
+| Parameter | Description |
+|---|---|
+| `pageId` | Notion page UUID (dashes optional) |
+
+**Request body**
+
+```json
+{
+  "properties": {
+    "Status": { "select": { "name": "Done" } }
+  }
+}
+```
+
+Only include properties you want to change. Set `in_trash: true` to move the page to trash.
+
+**Response**: Raw Notion API updated page object.
+
+```json
+{
+  "id": "page-uuid",
+  "object": "page",
+  "properties": { ... },
+  "in_trash": false
+}
+```
+
+---
+
+#### `POST /notion/pages`
+
+Creates a new Notion page. The request body is passed through as-is to the Notion `POST /v1/pages` API. Requires the `sendEnabled` permission for the `notion` service.
+
+**Request body**
+
+```json
+{
+  "parent": { "database_id": "db-uuid" },
+  "properties": {
+    "Name": { "title": [ { "text": { "content": "New row" } } ] },
+    "Status": { "select": { "name": "To Do" } }
+  }
+}
+```
+
+Use `database_id` to create a database row, or `page_id` to create a sub-page. `children` (array of block objects) is optional.
+
+**Response**: `201 Created` with the raw Notion API page object.
+
+```json
+{
+  "id": "new-page-uuid",
+  "object": "page",
+  "url": "https://www.notion.so/new-page-uuid",
+  "properties": { ... }
+}
+```
 
 ---
 
