@@ -29,6 +29,7 @@ ENV NODE_ENV=production
 RUN apk add --no-cache git
 COPY --from=builder /app/packages/server/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/packages/server/node_modules ./packages/server/node_modules
 COPY packages/server/package.json ./package.json
 COPY packages/server/drizzle ./drizzle
 # Place the built client where the server expects it: /app/packages/client/dist
