@@ -17,7 +17,7 @@ import { getDb } from '../db/client.js';
 import { settings, obsidianVaultConfig } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 
-export type ServiceName = 'slack' | 'discord' | 'telegram' | 'gmail' | 'calendar' | 'twitter' | 'notion' | 'obsidian';
+export type ServiceName = 'slack' | 'discord' | 'telegram' | 'gmail' | 'calendar' | 'twitter' | 'notion' | 'obsidian' | 'ai';
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
 export interface ServiceStatus {
@@ -50,6 +50,7 @@ export class ConnectionManager {
     twitter:  { status: 'disconnected' },
     notion:   { status: 'disconnected' },
     obsidian: { status: 'disconnected' },
+    ai:       { status: 'disconnected' },
   };
 
   // Per-account Gmail/Calendar statuses
@@ -170,8 +171,27 @@ export class ConnectionManager {
       tasks.push(this.connectObsidian().catch((e) => console.error('[obsidian] Auto-connect failed:', e)));
     }
 
+    // AI — reflect configured status from stored settings
+    this.checkAiStatus();
+
     await Promise.allSettled(tasks);
     console.log('[conduit] Auto-connect complete.');
+  }
+
+  /** Reads AI webhook settings and updates the ai connection status accordingly. */
+  checkAiStatus(): void {
+    const db = getDb();
+    const webhookRow = db.select().from(settings).where(eq(settings.key, 'ai.webhookUrl')).get();
+    const keyIdRow   = db.select().from(settings).where(eq(settings.key, 'ai.apiKeyId')).get();
+    const configured = !!(webhookRow?.value && keyIdRow?.value);
+    this.setStatus('ai', configured
+      ? { status: 'connected', mode: 'webhook', displayName: webhookRow!.value }
+      : { status: 'disconnected' },
+    );
+  }
+
+  disconnectAi(): void {
+    this.setStatus('ai', { status: 'disconnected', mode: undefined, displayName: undefined });
   }
 
   async connectSlack(): Promise<void> {
@@ -362,18 +382,23 @@ export class ConnectionManager {
     try {
       if (this.twitter) this.twitter.disconnect();
       this.twitter = new TwitterSync();
-      const ok = await this.twitter.connect(creds);
-      if (!ok) { this.setStatus('twitter', { status: 'error', error: 'Twitter login failed — check credentials' }); return; }
+      await this.twitter.connect(creds);
       const info = this.twitter.accountInfo;
       this.setStatus('twitter', { status: 'connected', accountId: info?.userId, displayName: info?.handle ? `@${info.handle}` : info?.displayName, mode: 'cookie' });
-
-      // First connect → full DM sync; reconnect → incremental (polling handles it)
-      if (!this.twitter.hasBeenSynced()) {
-        this.twitter.syncDMs().catch(console.error);
-      }
-      // DM polling is already started inside twitter.connect() via setInterval
+      // DM polling and initial sync are started inside twitter.connect() via setInterval + syncDMs()
     } catch (e) {
-      this.setStatus('twitter', { status: 'error', error: e instanceof Error ? e.message : String(e) });
+      const raw = e instanceof Error ? e.message : String(e);
+      // agent-twitter-client sometimes throws with a JSON string from Twitter's API — extract the human-readable message
+      const friendly = (() => {
+        try {
+          const parsed = JSON.parse(raw) as { errors?: Array<{ message?: string }> };
+          const msg = parsed?.errors?.[0]?.message;
+          if (msg) return `Twitter: ${msg}`;
+        } catch { /* not JSON */ }
+        return raw;
+      })();
+      this.setStatus('twitter', { status: 'error', error: friendly });
+      throw new Error(friendly);
     }
   }
 

@@ -156,6 +156,30 @@ router.delete('/config', optionalAuth, async (req, res) => {
   res.json({ success: true });
 });
 
+// ── POST /obsidian/config/test ──────────────────────────────────────────────
+// Runs git ls-remote to verify repo access without cloning.
+
+router.post('/config/test', optionalAuth, async (_req, res) => {
+  const row = getVaultConfig();
+  if (!row) {
+    res.status(400).json({ success: false, error: 'No vault configured. Save configuration first.' });
+    return;
+  }
+
+  try {
+    const result = await ObsidianVaultSync.testConnection({
+      remoteUrl: row.remoteUrl,
+      authType: (row.authType as 'https' | 'ssh') ?? 'https',
+      httpsToken: row.httpsToken,
+      sshPrivateKey: row.sshPrivateKey,
+    });
+    res.json(result);
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ success: false, error: err });
+  }
+});
+
 // ── POST /obsidian/config/generate-ssh-key ──────────────────────────────────
 
 router.post('/config/generate-ssh-key', optionalAuth, async (_req, res) => {
@@ -173,7 +197,8 @@ router.post('/config/generate-ssh-key', optionalAuth, async (_req, res) => {
       }).where(eq(obsidianVaultConfig.id, row.id)).run();
     }
 
-    res.json({ publicKey });
+    const fingerprint = await ObsidianVaultSync.getPublicKeyFingerprint(publicKey);
+    res.json({ publicKey, fingerprint });
   } catch (e) {
     const err = e instanceof Error ? e.message : String(e);
     res.status(500).json({ error: `Failed to generate SSH key: ${err}` });
@@ -189,6 +214,18 @@ router.get('/config/ssh-key', optionalAuth, (_req, res) => {
     return;
   }
   res.json({ publicKey: row.sshPublicKey });
+});
+
+// ── GET /obsidian/config/ssh-fingerprint ────────────────────────────────────
+
+router.get('/config/ssh-fingerprint', optionalAuth, async (_req, res) => {
+  const row = getVaultConfig();
+  if (!row?.sshPublicKey) {
+    res.status(404).json({ error: 'No SSH key generated.' });
+    return;
+  }
+  const fingerprint = await ObsidianVaultSync.getPublicKeyFingerprint(row.sshPublicKey);
+  res.json({ fingerprint });
 });
 
 // ── POST /obsidian/config/clone ─────────────────────────────────────────────

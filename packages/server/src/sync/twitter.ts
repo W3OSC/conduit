@@ -101,57 +101,52 @@ export class TwitterSync {
     this._cancelRequested = false;
     const scraper = new Scraper();
 
-    try {
-      // Restore session from stored cookies if available
-      if (creds.cookies) {
-        try {
-          const cookies = JSON.parse(creds.cookies) as object[];
-          await scraper.setCookies(cookies as Parameters<typeof scraper.setCookies>[0]);
-          const loggedIn = await scraper.isLoggedIn();
-          if (!loggedIn) throw new Error('Cookies stale');
-        } catch {
-          // Cookies invalid — fall through to password login
-          await this._login(scraper, creds);
-        }
-      } else {
+    // Restore session from stored cookies if available
+    if (creds.cookies) {
+      try {
+        const cookies = JSON.parse(creds.cookies) as object[];
+        await scraper.setCookies(cookies as Parameters<typeof scraper.setCookies>[0]);
+        const loggedIn = await scraper.isLoggedIn();
+        if (!loggedIn) throw new Error('Cookies stale');
+      } catch {
+        // Cookies invalid — fall through to password login
         await this._login(scraper, creds);
       }
-
-      // Verify we're logged in
-      if (!(await scraper.isLoggedIn())) {
-        throw new Error('Login failed — check credentials');
-      }
-
-      // Persist updated cookies
-      const cookies = await scraper.getCookies();
-      this.creds.cookies = JSON.stringify(cookies);
-
-      // Get our own profile
-      const meRaw = await scraper.me() as unknown as Record<string, unknown> | null;
-      const userId = String(meRaw?.id || meRaw?.userId || meRaw?.rest_id || '');
-      const handle = String(meRaw?.username || meRaw?.screen_name || creds.username);
-      const displayName = String(meRaw?.name || handle);
-
-      this.creds.userId = userId;
-      this.creds.handle = handle;
-      this.creds.displayName = displayName;
-      saveCreds(this.creds);
-
-      this.scraper = scraper;
-      this.accountInfo = { userId, displayName, handle };
-      this.connected = true;
-
-      // Start DM polling
-      await this.syncDMs();
-      this.pollInterval = setInterval(() => this.syncDMs().catch(console.error), 2 * 60 * 1000);
-
-      broadcast({ type: 'connection:status', data: { service: 'twitter', status: 'connected', displayName, accountId: userId, mode: 'cookie' } });
-      console.log(`[twitter] Connected as @${handle}`);
-      return true;
-    } catch (e) {
-      console.error('[twitter] Connection failed:', e);
-      return false;
+    } else {
+      await this._login(scraper, creds);
     }
+
+    // Verify we're logged in
+    if (!(await scraper.isLoggedIn())) {
+      throw new Error('Login failed — check credentials');
+    }
+
+    // Persist updated cookies
+    const cookies = await scraper.getCookies();
+    this.creds.cookies = JSON.stringify(cookies);
+
+    // Get our own profile
+    const meRaw = await scraper.me() as unknown as Record<string, unknown> | null;
+    const userId = String(meRaw?.id || meRaw?.userId || meRaw?.rest_id || '');
+    const handle = String(meRaw?.username || meRaw?.screen_name || creds.username);
+    const displayName = String(meRaw?.name || handle);
+
+    this.creds.userId = userId;
+    this.creds.handle = handle;
+    this.creds.displayName = displayName;
+    saveCreds(this.creds);
+
+    this.scraper = scraper;
+    this.accountInfo = { userId, displayName, handle };
+    this.connected = true;
+
+    // Start DM polling (syncDMs also runs immediately on first connect)
+    this.syncDMs().catch(console.error);
+    this.pollInterval = setInterval(() => this.syncDMs().catch(console.error), 2 * 60 * 1000);
+
+    broadcast({ type: 'connection:status', data: { service: 'twitter', status: 'connected', displayName, accountId: userId, mode: 'cookie' } });
+    console.log(`[twitter] Connected as @${handle}`);
+    return true;
   }
 
   private async _login(scraper: Scraper, creds: TwitterCreds): Promise<void> {

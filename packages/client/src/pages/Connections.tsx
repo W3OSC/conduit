@@ -1450,7 +1450,7 @@ function ApiKeysPanel() {
     onSuccess: () => { toast({ title: 'API key revoked' }); qc.invalidateQueries({ queryKey: ['api-keys'] }); },
   });
 
-  const copy = (v: string) => { navigator.clipboard.writeText(v); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+  const copy = (v: string) => { copyTextToClipboard(v).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }).catch(() => {}); };
 
   return (
     <div className="space-y-4">
@@ -1717,7 +1717,7 @@ function PermissionsTab() {
   const { data: keys = [] } = useQuery({ queryKey: ['api-keys'], queryFn: api.apiKeys });
   const activeKeys = keys.filter((k) => !k.revokedAt);
 
-  const copyKey = (v: string) => { navigator.clipboard.writeText(v); setCopiedKey(true); setTimeout(() => setCopiedKey(false), 2000); };
+  const copyKey = (v: string) => { copyTextToClipboard(v).then(() => { setCopiedKey(true); setTimeout(() => setCopiedKey(false), 2000); }).catch(() => {}); };
 
   const orderedPerms = ALL_SERVICES.map((svc) => local.find((p) => p.service === svc)).filter(Boolean) as Permission[];
 
@@ -2947,20 +2947,34 @@ function TwitterAccordion() {
     setTestRunning(false);
   }, []);
 
+  // React to async connection result arriving via WebSocket
+  const prevConnStatus = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const prev = prevConnStatus.current;
+    const cur = connStatus?.status;
+    if (prev === cur) return;
+    prevConnStatus.current = cur;
+    if (prev === 'connecting' && cur === 'connected') {
+      const handle = connStatus?.displayName || '';
+      toast({ title: `Connected${handle ? ` as ${handle}` : ''}`, variant: 'success' });
+      qc.invalidateQueries({ queryKey: ['twitter-auth-status'] });
+      qc.invalidateQueries({ queryKey: ['connections'] });
+      setTimeout(runTest, 800);
+    } else if (prev === 'connecting' && cur === 'error') {
+      toast({ title: 'Twitter connection failed', description: connStatus?.error || 'Check your credentials', variant: 'destructive' });
+    }
+  }, [connStatus, qc, runTest]);
+
   const connect = useMutation({
     mutationFn: () => api.twitterConnect(username, password, twitterEmail),
-    onSuccess: (d) => {
-      if (d.success) {
-        toast({ title: `Connected as @${d.handle}`, variant: 'success' });
-        qc.invalidateQueries({ queryKey: ['twitter-auth-status'] });
-        qc.invalidateQueries({ queryKey: ['connections'] });
-        setUsername(''); setPassword(''); setTwitterEmail('');
-        setTimeout(runTest, 800);
-      } else {
-        toast({ title: 'Connection failed', description: d.error, variant: 'destructive' });
-      }
+    onSuccess: () => {
+      // Connection is async — status arrives via WebSocket / polling.
+      toast({ title: 'Connecting to Twitter…', description: 'This may take a few seconds' });
+      setUsername(''); setPassword(''); setTwitterEmail('');
+      qc.invalidateQueries({ queryKey: ['twitter-auth-status'] });
+      qc.invalidateQueries({ queryKey: ['connections'] });
     },
-    onError: (e: Error) => toast({ title: 'Failed', description: e.message, variant: 'destructive' }),
+    onError: (e: Error) => toast({ title: 'Failed to start connection', description: e.message, variant: 'destructive' }),
   });
 
   const disconnect = useMutation({
@@ -3201,9 +3215,22 @@ function TwitterAccordion() {
                       <div className="space-y-5">
                         <SectionHeader icon={Key} title="Credentials" subtitle="Your twitter.com login — no developer account or API key needed" />
                         <div className="space-y-3">
-                          <TextField label="Twitter / X Username" value={username} onChange={(v) => setUsername(v)} placeholder="handle (without @)" />
-                          <TextField label="Email Address" value={twitterEmail} onChange={(v) => setTwitterEmail(v)} placeholder="your@email.com" type="email" />
+                          <TextField label="Username" value={username} onChange={(v) => setUsername(v)} placeholder="handle (without @)" />
                           <SecretField label="Password" value={password} onChange={(v) => setPassword(v)} placeholder="••••••••" />
+                          <div className="space-y-1.5">
+                            <div className="flex items-center gap-2">
+                              <label className="block text-xs font-medium text-muted-foreground">Email Address</label>
+                              <span className="text-[10px] text-muted-foreground/50 border border-border/50 rounded px-1 py-0.5 leading-none">optional</span>
+                            </div>
+                            <input
+                              type="email"
+                              value={twitterEmail}
+                              onChange={(e) => setTwitterEmail(e.target.value)}
+                              placeholder="your@email.com"
+                              className="input-warm"
+                            />
+                            <p className="text-[11px] text-muted-foreground/50">Only needed if Twitter asks for email verification during login</p>
+                          </div>
                         </div>
                         {authStatus?.handle && (
                           <p className="text-xs text-emerald-400 flex items-center gap-1.5">
@@ -3212,7 +3239,7 @@ function TwitterAccordion() {
                         )}
                         <button
                           onClick={() => connect.mutate()}
-                          disabled={!username || !password || !twitterEmail || connect.isPending}
+                          disabled={!username || !password || connect.isPending}
                           className="btn-primary text-xs"
                         >
                           {connect.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlugZap className="w-3.5 h-3.5" />}
@@ -3324,18 +3351,19 @@ function NotionAccordion() {
   });
   const [token, setToken] = useState('');
   const [workspaceName, setWorkspaceName] = useState('');
-  const [credsDirty, setCredsDirty] = useState(false);
+  const [savedWorkspaceName, setSavedWorkspaceName] = useState('');
 
   useEffect(() => {
     if (raw) {
       setToken('');  // keep token field empty; we never echo secrets back
-      setWorkspaceName((raw as Record<string, string>).workspaceName || '');
+      const wn = (raw as Record<string, string>).workspaceName || '';
+      setWorkspaceName(wn);
+      setSavedWorkspaceName(wn);
     }
   }, [raw]);
 
-  useEffect(() => {
-    setCredsDirty(!!(token));
-  }, [token]);
+  const tokenConfigured = !!(raw && (raw as Record<string, string>).configured);
+  const credsDirty = !!(token) || workspaceName !== savedWorkspaceName;
 
   // Test state
   const [testSteps, setTestSteps] = useState<TestStep[]>([]);
@@ -3389,7 +3417,7 @@ function NotionAccordion() {
       qc.invalidateQueries({ queryKey: ['credentials'] });
       qc.invalidateQueries({ queryKey: ['connections'] });
       setToken('');
-      setCredsDirty(false);
+      setSavedWorkspaceName(workspaceName);
       setTimeout(runTest, 800);
     },
     onError: (e: Error) => toast({ title: 'Connection failed', description: e.message, variant: 'destructive' }),
@@ -3595,8 +3623,8 @@ function NotionAccordion() {
                             label="Integration Secret (secret_…)"
                             value={token}
                             onChange={setToken}
-                            placeholder="secret_..."
-                            hint={raw && (raw as Record<string, string>).configured ? 'A token is already stored — paste a new one to replace it' : undefined}
+                            placeholder={tokenConfigured ? '••••••••••••••••••••••••' : 'secret_...'}
+                            hint={tokenConfigured ? 'An integration secret is already stored — paste a new one to replace it' : undefined}
                           />
                           <TextField
                             label="Workspace Name (optional)"
@@ -3607,7 +3635,7 @@ function NotionAccordion() {
                           <div className="flex gap-2">
                             <button
                               onClick={() => saveAndConnect.mutate()}
-                              disabled={saveAndConnect.isPending || (!credsDirty && !workspaceName)}
+                              disabled={saveAndConnect.isPending || !credsDirty}
                               className="btn-primary text-xs"
                             >
                               {saveAndConnect.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
@@ -4011,9 +4039,9 @@ function AiConnectionTab() {
                   <h3 className="text-sm font-semibold">Generate a Conduit API key</h3>
                 </div>
                 <div className="pl-8 space-y-2">
-                  <p className="text-xs text-muted-foreground">
-                    Go to <strong>Settings → Permissions</strong> and generate an API key. You will add it to your OpenClaw config in the next step.
-                  </p>
+                  <span className="text-xs text-muted-foreground">
+                    Go to <button onClick={() => navigate('/settings/permissions')} className="text-primary hover:underline font-semibold cursor-pointer">Settings → Permissions</button> and generate an API key. You will add it to your OpenClaw config in the next step.
+                  </span>
                 </div>
               </div>
 
@@ -4024,18 +4052,35 @@ function AiConnectionTab() {
                 </div>
                 <div className="pl-8 space-y-2">
                   <p className="text-xs text-muted-foreground">
-                    Edit <code className="font-mono text-primary/70 text-[11px]">~/.openclaw/openclaw.json</code> and add:
+                    Run this snippet to automatically inject the channel config into <code className="font-mono text-primary/70 text-[11px]">~/.openclaw/openclaw.json</code>:
                   </p>
-                   <CodeBlock className="leading-relaxed">{`{
-  "channels": {
-    "conduit": {
-      "baseUrl": "${typeof window !== 'undefined' ? window.location.origin : 'http://your-conduit-host:3101'}",
-      "apiKey": "<your sk-arb-... key from Step 2>",
-      "allowFrom": [],
-      "webhookSecret": "<optional shared secret>"
-    }
-  }
-}`}</CodeBlock>
+                  <CodeBlock className="leading-relaxed">{`python3 - <<'EOF'
+import json, pathlib, sys
+
+def prompt(msg):
+    with open("/dev/tty") as tty:
+        sys.stdout.write(msg)
+        sys.stdout.flush()
+        return tty.readline().rstrip("\\n")
+
+config_path = pathlib.Path.home() / ".openclaw" / "openclaw.json"
+config_path.parent.mkdir(parents=True, exist_ok=True)
+
+default_url = "${window.location.origin}"
+base_url = prompt(f"Conduit base URL [{default_url}]: ").strip() or default_url
+api_key = prompt("API key (from Step 2): ").strip()
+
+cfg = json.loads(config_path.read_text()) if config_path.exists() else {}
+cfg.setdefault("channels", {})["conduit"] = {
+    "baseUrl": base_url,
+    "apiKey": api_key,
+    "allowFrom": [],
+    "webhookSecret": ""
+}
+
+config_path.write_text(json.dumps(cfg, indent=2))
+print("openclaw.json updated.")
+EOF`}</CodeBlock>
                   <p className="text-xs text-muted-foreground">
                     Restart the Gateway: <code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>
                   </p>
@@ -4155,7 +4200,7 @@ function AiConnectionTab() {
                 </div>
                 <div className="pl-8 space-y-2">
                   <p className="text-xs text-muted-foreground">
-                    Go to <strong>Settings → Permissions</strong> and generate an API key. All CLI requests must include <code className="font-mono text-primary/70 text-[11px]">X-API-Key: &lt;your-key&gt;</code>.
+                    Go to <button onClick={() => navigate('/settings/permissions')} className="text-primary hover:underline font-semibold">Settings → Permissions</button> and generate an API key. All CLI requests must include <code className="font-mono text-primary/70 text-[11px]">X-API-Key: &lt;your-key&gt;</code>.
                   </p>
                 </div>
               </div>
@@ -4230,7 +4275,7 @@ X-API-Key: <your-key>
                 </div>
                 <div className="pl-8 space-y-2">
                   <p className="text-xs text-muted-foreground">
-                    Go to <strong>Settings → Permissions</strong> and generate an API key. Include it as <code className="font-mono text-primary/70 text-[11px]">X-API-Key: &lt;your-key&gt;</code> on every request.
+                    Go to <button onClick={() => navigate('/settings/permissions')} className="text-primary hover:underline font-semibold">Settings → Permissions</button> and generate an API key. Include it as <code className="font-mono text-primary/70 text-[11px]">X-API-Key: &lt;your-key&gt;</code> on every request.
                   </p>
                 </div>
               </div>
@@ -4580,10 +4625,43 @@ function NotificationsTab() {
 // Obsidian Vault Tab
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── Helpers for SSH deploy key deep links ─────────────────────────────────────
+
+function inferDeployKeyUrl(remoteUrl: string): { platform: 'github' | 'gitlab' | null; url: string | null } {
+  try {
+    // SSH: git@github.com:org/repo.git
+    const sshMatch = remoteUrl.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
+    if (sshMatch) {
+      const host = sshMatch[1];
+      const repoPath = sshMatch[2];
+      if (host.includes('github')) return { platform: 'github', url: `https://github.com/${repoPath}/settings/keys` };
+      if (host.includes('gitlab')) return { platform: 'gitlab', url: `https://gitlab.com/${repoPath}/-/settings/repository#js-deploy-keys-settings` };
+      return { platform: null, url: null };
+    }
+    // HTTPS: https://github.com/org/repo.git
+    const url = new URL(remoteUrl);
+    const repoPath = url.pathname.replace(/^\//, '').replace(/\.git$/, '');
+    if (url.hostname.includes('github')) return { platform: 'github', url: `https://github.com/${repoPath}/settings/keys` };
+    if (url.hostname.includes('gitlab')) return { platform: 'gitlab', url: `https://gitlab.com/${repoPath}/-/settings/repository#js-deploy-keys-settings` };
+    return { platform: null, url: null };
+  } catch {
+    return { platform: null, url: null };
+  }
+}
+
+// Clone phase ordering for the progress indicator
+const CLONE_PHASES = [
+  { key: 'connecting', label: 'Connecting' },
+  { key: 'cloning', label: 'Cloning' },
+  { key: 'resolving', label: 'Resolving objects' },
+  { key: 'finalizing', label: 'Finalizing' },
+];
+
 function ObsidianVaultTab() {
   const qc = useQueryClient();
   const connStatus = useConnectionStore((s) => s.statuses['obsidian']);
   const status = connStatus?.status ?? 'disconnected';
+  const clonePhase = connStatus?.phase ?? null;
 
   const { data: configData, isLoading: configLoading, refetch: refetchConfig } = useQuery({
     queryKey: ['obsidian-config'],
@@ -4594,18 +4672,38 @@ function ObsidianVaultTab() {
   const vault = configData?.vault as ObsidianVaultConfigRow | undefined;
   const configured = configData?.configured ?? false;
 
-  // Form state
-  const [name, setName] = useState(vault?.name ?? '');
-  const [remoteUrl, setRemoteUrl] = useState(vault?.remoteUrl ?? '');
-  const [authType, setAuthType] = useState<'https' | 'ssh'>(vault?.authType ?? 'https');
+  // Track whether a clone was started in this session (to prevent button flickering
+  // while waiting for WS status update after the instant API response)
+  const [cloneInitiated, setCloneInitiated] = useState(false);
+
+  // Reset cloneInitiated if connection status transitions away from connecting
+  useEffect(() => {
+    if (status === 'connected' || status === 'error') {
+      setCloneInitiated(false);
+    }
+  }, [status]);
+
+  // Form state — initialised from vault on first load only (not on every refetch).
+  // We track the vault id we last seeded from so that switching to a different vault
+  // config triggers a re-seed, but background refetches of the same vault don't
+  // clobber in-flight user edits.
+  const seededVaultIdRef = React.useRef<number | null>(null);
+  const [name, setName] = useState('');
+  const [remoteUrl, setRemoteUrl] = useState('');
+  const [authType, setAuthType] = useState<'https' | 'ssh'>('https');
   const [httpsToken, setHttpsToken] = useState('');
-  const [branch, setBranch] = useState(vault?.branch ?? 'main');
+  const [branch, setBranch] = useState('main');
   const [showToken, setShowToken] = useState(false);
-  const [sshPublicKey, setSshPublicKey] = useState(vault?.sshPublicKey ?? '');
+  const [sshPublicKey, setSshPublicKey] = useState('');
+  const [sshFingerprint, setSshFingerprint] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
+  // Seed form fields when vault data first arrives or the vault id changes.
+  // Deliberately NOT listing individual field setters as deps — we only want
+  // this to run when the backing vault record itself changes.
   useEffect(() => {
-    if (vault) {
+    if (vault && vault.id !== seededVaultIdRef.current) {
+      seededVaultIdRef.current = vault.id;
       setName(vault.name);
       setRemoteUrl(vault.remoteUrl);
       setAuthType(vault.authType);
@@ -4613,6 +4711,30 @@ function ObsidianVaultTab() {
       setSshPublicKey(vault.sshPublicKey ?? '');
     }
   }, [vault]);
+
+  // Keep sshPublicKey in sync when the server updates it (e.g. after generate).
+  // We only apply the server value when local state is empty to avoid clobbering
+  // a just-generated key that's already been set into local state.
+  useEffect(() => {
+    if (vault?.sshPublicKey && !sshPublicKey) {
+      setSshPublicKey(vault.sshPublicKey);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vault?.sshPublicKey]);
+
+  // Fetch the fingerprint for the stored key on load (when a key exists).
+  useEffect(() => {
+    if (vault?.hasSshPrivateKey && !sshFingerprint) {
+      api.getObsidianSshFingerprint()
+        .then((r) => setSshFingerprint(r.fingerprint))
+        .catch(() => {});
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vault?.hasSshPrivateKey]);
+
+  // Test connection state — only cleared by explicit user action (field edits or save),
+  // not by background refetches.
+  const [testResult, setTestResult] = useState<{ success: boolean; error?: string } | null>(null);
 
   const saveConfig = useMutation({
     mutationFn: () => api.saveObsidianConfig({
@@ -4623,17 +4745,25 @@ function ObsidianVaultTab() {
       branch,
     }),
     onSuccess: () => {
-      toast({ title: 'Vault configuration saved' });
+      toast({ title: 'Configuration saved' });
+      setTestResult(null);
+      setHttpsToken(''); // clear token field — it's now saved server-side
       refetchConfig();
       qc.invalidateQueries({ queryKey: ['obsidian-config'] });
     },
     onError: (e: Error) => toast({ title: e.message }),
   });
 
+  const testConnection = useMutation({
+    mutationFn: () => api.testObsidianConnection(),
+    onSuccess: (data) => setTestResult(data),
+    onError: (e: Error) => setTestResult({ success: false, error: e.message }),
+  });
+
   const cloneVault = useMutation({
     mutationFn: () => api.cloneObsidianVault(),
     onSuccess: () => {
-      toast({ title: 'Clone started — this may take a moment' });
+      setCloneInitiated(true);
       setTimeout(() => {
         refetchConfig();
         qc.invalidateQueries({ queryKey: ['connections'] });
@@ -4655,7 +4785,9 @@ function ObsidianVaultTab() {
     mutationFn: () => api.generateObsidianSshKey(),
     onSuccess: (data) => {
       setSshPublicKey(data.publicKey);
-      toast({ title: 'SSH key generated. Add the public key to your git host.' });
+      setSshFingerprint(data.fingerprint ?? null);
+      setTestResult(null); // new key means prior test result is stale
+      toast({ title: 'SSH key generated' });
       refetchConfig();
     },
     onError: (e: Error) => toast({ title: e.message }),
@@ -4665,6 +4797,17 @@ function ObsidianVaultTab() {
     mutationFn: () => api.deleteObsidianConfig(false),
     onSuccess: () => {
       toast({ title: 'Vault configuration removed' });
+      setCloneInitiated(false);
+      setTestResult(null);
+      // Reset seed guard so the form can be seeded fresh if a new vault is configured
+      seededVaultIdRef.current = null;
+      setName('');
+      setRemoteUrl('');
+      setAuthType('https');
+      setBranch('main');
+      setSshPublicKey('');
+      setSshFingerprint(null);
+      setHttpsToken('');
       refetchConfig();
       qc.invalidateQueries({ queryKey: ['connections'] });
     },
@@ -4672,10 +4815,29 @@ function ObsidianVaultTab() {
   });
 
   const copyPublicKey = () => {
-    navigator.clipboard.writeText(sshPublicKey);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    copyTextToClipboard(sshPublicKey).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {});
   };
+
+  // Derive deploy key deep link from current remote URL
+  const deployKeyInfo = inferDeployKeyUrl(remoteUrl);
+
+  // Whether the form has unsaved changes vs what's saved in the vault
+  const hasUnsavedChanges = configured && vault && (
+    name !== vault.name ||
+    remoteUrl !== vault.remoteUrl ||
+    authType !== vault.authType ||
+    branch !== vault.branch ||
+    httpsToken !== ''
+  );
+
+  // Determine whether the Connect section shows a cloning in-progress state
+  const isCloning = cloneInitiated || (status === 'connecting' && connStatus?.mode === 'cloning');
+  const currentPhaseIndex = clonePhase
+    ? CLONE_PHASES.findIndex((p) => p.key === clonePhase)
+    : (isCloning ? 0 : -1);
 
   if (configLoading) {
     return (
@@ -4686,232 +4848,446 @@ function ObsidianVaultTab() {
   }
 
   return (
-    <div className="space-y-6">
-      {/* Status overview */}
-      <div className="flex items-start gap-3">
-        <div className="w-10 h-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center flex-shrink-0">
-          <BookOpen className="w-5 h-5 text-primary" />
+    <div className="space-y-0">
+
+      {/* ── Section 1: Repository ── */}
+      <div className="space-y-4 pb-5">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/15 text-primary text-[10px] font-bold flex-shrink-0">1</span>
+          <h4 className="text-xs font-semibold text-foreground uppercase tracking-wide">Repository</h4>
         </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2.5 flex-wrap">
-            <h3 className="text-sm font-semibold">{vault?.name || 'Obsidian Vault'}</h3>
-            <StatusBadge status={status as 'connected'|'disconnected'|'connecting'|'error'} />
+
+        <div className="space-y-3 pl-7">
+          <div className="grid grid-cols-[1fr_auto] gap-3 items-end">
+            <div className="space-y-1.5">
+              <label className="block text-xs font-medium text-muted-foreground">Vault Name</label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="my-vault"
+                className="input-warm"
+              />
+              <p className="text-[11px] text-muted-foreground/60">Short identifier — used as the local folder name.</p>
+            </div>
+            <div className="space-y-1.5">
+              <label className="block text-xs font-medium text-muted-foreground">Branch</label>
+              <input
+                type="text"
+                value={branch}
+                onChange={(e) => setBranch(e.target.value)}
+                placeholder="main"
+                className="input-warm w-28"
+              />
+            </div>
           </div>
-          <div className="text-xs text-muted-foreground mt-0.5 space-y-0.5">
-            {vault?.lastSyncedAt && (
-              <div className="flex items-center gap-1.5">
-                <CheckCircle2 className="w-3 h-3 text-emerald-500" />
-                <span>Last synced {timeAgo(vault.lastSyncedAt)}</span>
-              </div>
-            )}
-            {vault?.lastCommitHash && (
-              <div className="flex items-center gap-1.5">
-                <GitBranch className="w-3 h-3" />
-                <span className="font-mono">{vault.lastCommitHash.slice(0, 8)}</span>
-              </div>
-            )}
-            {vault?.syncError && (
-              <div className="flex items-center gap-1.5 text-red-400">
-                <XCircle className="w-3 h-3" />
-                <span>{vault.syncError}</span>
-              </div>
-            )}
+
+          <div className="space-y-1.5">
+            <label className="block text-xs font-medium text-muted-foreground">Remote URL</label>
+            <input
+              type="text"
+              value={remoteUrl}
+              onChange={(e) => { setRemoteUrl(e.target.value); setTestResult(null); }}
+              placeholder="https://github.com/user/vault.git or git@github.com:user/vault.git"
+              className="input-warm font-mono text-xs"
+            />
+            <p className="text-[11px] text-muted-foreground/60">The git remote your obsidian-git plugin syncs to.</p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          {configured && (
+      </div>
+
+      <div className="border-t border-white/5 mb-5" />
+
+      {/* ── Section 2: Authentication ── */}
+      <div className="space-y-4 pb-5">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/15 text-primary text-[10px] font-bold flex-shrink-0">2</span>
+          <h4 className="text-xs font-semibold text-foreground uppercase tracking-wide">Authentication</h4>
+        </div>
+
+        <div className="space-y-3 pl-7">
+          {/* Auth type toggle */}
+          <div className="flex gap-2">
             <button
-              onClick={() => syncVault.mutate()}
-              disabled={syncVault.isPending}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+              onClick={() => {
+                setAuthType('https');
+                setTestResult(null);
+                // Convert git@host:org/repo.git → https://host/org/repo.git
+                const sshMatch = remoteUrl.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
+                if (sshMatch) setRemoteUrl(`https://${sshMatch[1]}/${sshMatch[2]}.git`);
+              }}
+              className={cn(
+                'flex-1 px-3 py-2 rounded-xl border text-sm font-medium transition-all',
+                authType === 'https'
+                  ? 'bg-primary/10 border-primary/30 text-primary'
+                  : 'border-white/10 text-muted-foreground hover:border-white/20',
+              )}
             >
-              <RefreshCw className={cn('w-3.5 h-3.5', syncVault.isPending && 'animate-spin')} />
-              Sync Now
+              HTTPS / Token
             </button>
+            <button
+              onClick={() => {
+                setAuthType('ssh');
+                setTestResult(null);
+                // Convert https://host/org/repo.git → git@host:org/repo.git
+                try {
+                  if (remoteUrl.startsWith('http')) {
+                    const u = new URL(remoteUrl);
+                    const repoPath = u.pathname.replace(/^\//, '').replace(/\.git$/, '');
+                    setRemoteUrl(`git@${u.hostname}:${repoPath}.git`);
+                  }
+                } catch { /* unparseable URL — leave as-is */ }
+              }}
+              className={cn(
+                'flex-1 px-3 py-2 rounded-xl border text-sm font-medium transition-all',
+                authType === 'ssh'
+                  ? 'bg-primary/10 border-primary/30 text-primary'
+                  : 'border-white/10 text-muted-foreground hover:border-white/20',
+              )}
+            >
+              SSH Key
+            </button>
+          </div>
+
+          {authType === 'https' && (
+            <div className="space-y-1.5">
+              <label className="block text-xs font-medium text-muted-foreground">Personal Access Token</label>
+              <div className="relative">
+                <input
+                  type={showToken ? 'text' : 'password'}
+                  value={httpsToken}
+                  onChange={(e) => { setHttpsToken(e.target.value); setTestResult(null); }}
+                  placeholder={vault?.hasHttpsToken ? '••••••••••••••••' : 'ghp_...'}
+                  className="input-warm pr-10 font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowToken(!showToken)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                >
+                  {showToken ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+              <p className="text-[11px] text-muted-foreground/60">
+                {vault?.hasHttpsToken
+                  ? 'A token is already saved. Enter a new one to replace it.'
+                  : 'Create a GitHub/GitLab PAT with repo read/write scope.'}
+              </p>
+            </div>
+          )}
+
+          {authType === 'ssh' && (
+            <div className="space-y-3">
+              {/* SSH key display */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-medium text-muted-foreground">SSH Public Key</label>
+                  <button
+                    onClick={() => generateSshKey.mutate()}
+                    disabled={generateSshKey.isPending}
+                    className="flex items-center gap-1 text-[11px] text-primary hover:text-primary/80 transition-colors"
+                  >
+                    {generateSshKey.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                    {sshPublicKey ? 'Regenerate key' : 'Generate key'}
+                  </button>
+                </div>
+
+                {sshPublicKey ? (
+                  <div className="space-y-1.5">
+                    <div className="relative group">
+                      <textarea
+                        readOnly
+                        value={sshPublicKey}
+                        rows={2}
+                        className="w-full bg-black/20 border border-white/10 rounded-xl p-3 pr-10 text-[11px] font-mono text-foreground/60 resize-none focus:outline-none"
+                      />
+                      <button
+                        onClick={copyPublicKey}
+                        className="absolute right-2.5 top-2.5 p-1 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
+                        title="Copy public key"
+                      >
+                        {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-muted-foreground" />}
+                      </button>
+                    </div>
+                    {sshFingerprint && (
+                      <p className="text-[11px] font-mono text-muted-foreground/60 px-1 select-all">
+                        Fingerprint: {sshFingerprint}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="bg-black/20 border border-dashed border-white/10 rounded-xl p-4 text-xs text-muted-foreground text-center">
+                    No SSH key generated yet.
+                  </div>
+                )}
+              </div>
+
+              {/* Deploy key instructions */}
+              {sshPublicKey && (
+                <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 space-y-2">
+                  <p className="text-xs font-medium text-amber-400/90">Add this key to your git host</p>
+                  <ol className="text-[11px] text-muted-foreground space-y-1 list-decimal list-inside">
+                    <li>Copy the public key above</li>
+                    <li>
+                      {deployKeyInfo.url ? (
+                        <a
+                          href={deployKeyInfo.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-amber-400 hover:text-amber-300 underline underline-offset-2 transition-colors"
+                        >
+                          Open {deployKeyInfo.platform === 'github' ? 'GitHub' : 'GitLab'} deploy keys
+                          <ExternalLink className="w-2.5 h-2.5" />
+                        </a>
+                      ) : (
+                        <a
+                          href="https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
+                        >
+                          Open your repository's deploy keys settings
+                          <ExternalLink className="w-2.5 h-2.5" />
+                        </a>
+                      )}
+                    </li>
+                    <li>Add the key with <span className="font-medium text-foreground/80">read &amp; write</span> access</li>
+                    <li>Come back and test the connection below</li>
+                  </ol>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Save + Test row */}
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              onClick={() => saveConfig.mutate()}
+              disabled={saveConfig.isPending || !name || !remoteUrl || (configured && !hasUnsavedChanges)}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+            >
+              {saveConfig.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+              {hasUnsavedChanges ? 'Save Changes' : configured ? 'Saved' : 'Save Configuration'}
+            </button>
+
+            {configured && !hasUnsavedChanges && (
+              <button
+                onClick={() => testConnection.mutate()}
+                disabled={testConnection.isPending}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl border border-white/10 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors disabled:opacity-50"
+              >
+                {testConnection.isPending
+                  ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  : testResult?.success
+                    ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                    : testResult?.success === false
+                      ? <XCircle className="w-3.5 h-3.5 text-red-400" />
+                      : <Play className="w-3.5 h-3.5" />
+                }
+                Test Connection
+              </button>
+            )}
+          </div>
+
+          {/* Test result inline feedback */}
+          {testResult && (
+            <div className={cn(
+              'flex items-start gap-2 p-3 rounded-xl text-xs',
+              testResult.success
+                ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400'
+                : 'bg-red-500/10 border border-red-500/20 text-red-400',
+            )}>
+              {testResult.success
+                ? <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                : <XCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+              }
+              <span>
+                {testResult.success
+                  ? 'Repository is accessible. Ready to clone.'
+                  : testResult.error ?? 'Connection failed.'}
+              </span>
+            </div>
           )}
         </div>
       </div>
 
-      <div className="space-y-1.5">
-        <label className="block text-xs font-medium text-muted-foreground">Vault Name</label>
-        <input
-          type="text"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="my-vault"
-          className="input-warm"
-        />
-        <p className="text-[11px] text-muted-foreground/60">A short identifier. Used as the local folder name.</p>
-      </div>
+      <div className="border-t border-white/5 mb-5" />
 
-      <div className="space-y-1.5">
-        <label className="block text-xs font-medium text-muted-foreground">Remote URL</label>
-        <input
-          type="text"
-          value={remoteUrl}
-          onChange={(e) => setRemoteUrl(e.target.value)}
-          placeholder="https://github.com/user/vault.git or git@github.com:user/vault.git"
-          className="input-warm font-mono text-xs"
-        />
-        <p className="text-[11px] text-muted-foreground/60">The git remote where your obsidian-git plugin pushes to.</p>
-      </div>
-
-      <div className="space-y-1.5">
-        <label className="block text-xs font-medium text-muted-foreground">Branch</label>
-        <input
-          type="text"
-          value={branch}
-          onChange={(e) => setBranch(e.target.value)}
-          placeholder="main"
-          className="input-warm"
-        />
-      </div>
-
-      {/* Auth type selector */}
-      <div className="space-y-3">
-        <label className="block text-xs font-medium text-muted-foreground">Authentication</label>
-        <div className="flex gap-2">
-          <button
-            onClick={() => setAuthType('https')}
-            className={cn(
-              'flex-1 px-3 py-2 rounded-xl border text-sm font-medium transition-all',
-              authType === 'https'
-                ? 'bg-primary/10 border-primary/30 text-primary'
-                : 'border-white/10 text-muted-foreground hover:border-white/20',
-            )}
-          >
-            HTTPS / Token
-          </button>
-          <button
-            onClick={() => setAuthType('ssh')}
-            className={cn(
-              'flex-1 px-3 py-2 rounded-xl border text-sm font-medium transition-all',
-              authType === 'ssh'
-                ? 'bg-primary/10 border-primary/30 text-primary'
-                : 'border-white/10 text-muted-foreground hover:border-white/20',
-            )}
-          >
-            SSH Key
-          </button>
+      {/* ── Section 3: Connect ── */}
+      <div className="space-y-4 pb-5">
+        <div className="flex items-center gap-2 mb-1">
+          <span className={cn(
+            'flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold flex-shrink-0',
+            status === 'connected' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-primary/15 text-primary',
+          )}>3</span>
+          <h4 className="text-xs font-semibold text-foreground uppercase tracking-wide">Connect</h4>
+          {status === 'connected' && (
+            <span className="text-[10px] font-medium text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full ml-1">
+              Connected
+            </span>
+          )}
         </div>
 
-        {authType === 'https' && (
-          <div className="space-y-1.5">
-            <label className="block text-xs font-medium text-muted-foreground">Personal Access Token</label>
-            <div className="relative">
-              <input
-                type={showToken ? 'text' : 'password'}
-                value={httpsToken}
-                onChange={(e) => setHttpsToken(e.target.value)}
-                placeholder={vault?.hasHttpsToken ? '••••••••••••••••' : 'ghp_...'}
-                className="input-warm pr-10 font-mono"
-              />
-              <button
-                type="button"
-                onClick={() => setShowToken(!showToken)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              >
-                {showToken ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-              </button>
+        <div className="pl-7">
+          {!configured ? (
+            // Not yet configured — prompt to complete steps above
+            <div className="rounded-xl border border-white/8 bg-white/3 p-4 text-center">
+              <p className="text-xs text-muted-foreground">Complete steps 1 and 2 above, then save your configuration to continue.</p>
             </div>
-            <p className="text-[11px] text-muted-foreground/60">
-              {vault?.hasHttpsToken ? 'A token is already saved. Enter a new one to replace it.' : 'Create a GitHub/GitLab PAT with repo read/write scope.'}
-            </p>
-          </div>
-        )}
-
-        {authType === 'ssh' && (
-          <div className="space-y-3">
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <label className="block text-xs font-medium text-muted-foreground">SSH Public Key</label>
-                <div className="flex gap-2">
+          ) : isCloning ? (
+            // Cloning in progress — show phase indicator
+            <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 space-y-4">
+              <div className="flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin text-primary flex-shrink-0" />
+                <span className="text-sm font-medium text-foreground">Cloning vault...</span>
+              </div>
+              <div className="space-y-2">
+                {CLONE_PHASES.map((phase, index) => {
+                  const isDone = currentPhaseIndex > index;
+                  const isCurrent = currentPhaseIndex === index;
+                  return (
+                    <div key={phase.key} className={cn(
+                      'flex items-center gap-2.5 text-xs transition-colors',
+                      isDone ? 'text-emerald-400' : isCurrent ? 'text-foreground' : 'text-muted-foreground/40',
+                    )}>
+                      {isDone
+                        ? <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+                        : isCurrent
+                          ? <Loader2 className="w-3.5 h-3.5 flex-shrink-0 animate-spin text-primary" />
+                          : <div className="w-3.5 h-3.5 flex-shrink-0 rounded-full border border-white/15" />
+                      }
+                      <span className={isCurrent ? 'font-medium' : ''}>{phase.label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-muted-foreground/60">This may take a minute for large vaults.</p>
+            </div>
+          ) : status === 'connected' ? (
+            // Connected — show status + actions
+            <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 space-y-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                    <span className="text-sm font-medium text-foreground">{vault?.name}</span>
+                  </div>
+                  <div className="flex items-center gap-3 text-[11px] text-muted-foreground pl-6">
+                    {vault?.lastSyncedAt && (
+                      <span className="flex items-center gap-1">
+                        <CheckCircle2 className="w-2.5 h-2.5 text-emerald-500" />
+                        Synced {timeAgo(vault.lastSyncedAt)}
+                      </span>
+                    )}
+                    {vault?.lastCommitHash && (
+                      <span className="flex items-center gap-1 font-mono">
+                        <GitBranch className="w-2.5 h-2.5" />
+                        {vault.lastCommitHash.slice(0, 8)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
                   <button
-                    onClick={() => generateSshKey.mutate()}
-                    disabled={generateSshKey.isPending}
-                    className="flex items-center gap-1 text-[11px] text-primary hover:text-primary/80"
+                    onClick={() => syncVault.mutate()}
+                    disabled={syncVault.isPending}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors disabled:opacity-50"
                   >
-                    {generateSshKey.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-                    Generate new key
+                    <RefreshCw className={cn('w-3 h-3', syncVault.isPending && 'animate-spin')} />
+                    Sync Now
                   </button>
-                  {sshPublicKey && (
-                    <button
-                      onClick={copyPublicKey}
-                      className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
-                    >
-                      {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                      {copied ? 'Copied' : 'Copy'}
-                    </button>
+                  <a
+                    href="/vault"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/10 border border-primary/20 text-xs font-medium text-primary hover:bg-primary/15 transition-colors"
+                  >
+                    <BookOpen className="w-3 h-3" />
+                    Open Vault
+                  </a>
+                </div>
+              </div>
+              {vault?.syncError && (
+                <div className="flex items-start gap-1.5 text-[11px] text-red-400 pt-1 border-t border-white/5">
+                  <XCircle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                  <span>Last sync error: {vault.syncError}</span>
+                </div>
+              )}
+            </div>
+          ) : status === 'error' ? (
+            // Error state
+            <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-4 space-y-3">
+              <div className="flex items-start gap-2">
+                <XCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+                <div className="space-y-1 flex-1">
+                  <p className="text-sm font-medium text-foreground">Connection failed</p>
+                  {connStatus?.error && (
+                    <p className="text-[11px] text-red-400/80 font-mono">{connStatus.error}</p>
                   )}
                 </div>
               </div>
-              {sshPublicKey ? (
-                <textarea
-                  readOnly
-                  value={sshPublicKey}
-                  rows={3}
-                  className="w-full bg-black/20 border border-white/10 rounded-xl p-3 text-[11px] font-mono text-foreground/60 resize-none focus:outline-none"
-                />
-              ) : (
-                <div className="bg-black/20 border border-white/10 rounded-xl p-3 text-xs text-muted-foreground text-center">
-                  No SSH key generated yet. Click "Generate new key" above.
-                </div>
-              )}
-              <p className="text-[11px] text-muted-foreground/60">
-                Add this public key to your GitHub/GitLab deploy keys (read + write access).
-              </p>
+              <div className="flex gap-2 pt-1">
+                <button
+                  onClick={() => { setCloneInitiated(true); cloneVault.mutate(); }}
+                  disabled={cloneVault.isPending}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  Retry Clone
+                </button>
+              </div>
             </div>
-          </div>
-        )}
-      </div>
-
-      {/* Save */}
-      <div className="flex gap-2">
-        <button
-          onClick={() => saveConfig.mutate()}
-          disabled={saveConfig.isPending || !name || !remoteUrl}
-          className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
-        >
-          {saveConfig.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-          Save Configuration
-        </button>
-        {configured && !cloneVault.isPending && status !== 'connected' && (
-          <button
-            onClick={() => cloneVault.mutate()}
-            disabled={cloneVault.isPending}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl border border-white/10 text-sm font-medium hover:bg-white/5 transition-colors"
-          >
-            {cloneVault.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <GitBranch className="w-4 h-4" />}
-            Clone Vault
-          </button>
-        )}
-        {configured && status === 'connected' && (
-          <a href="/vault" className="flex items-center gap-2 px-4 py-2 rounded-xl border border-white/10 text-sm font-medium hover:bg-white/5 transition-colors">
-            <BookOpen className="w-4 h-4" />
-            Open Vault
-          </a>
-        )}
+          ) : (
+            // Not yet cloned
+            <div className="rounded-xl border border-white/8 bg-white/3 p-4 space-y-3">
+              <div className="flex items-start gap-3">
+                <div className="w-8 h-8 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <GitBranch className="w-4 h-4 text-primary" />
+                </div>
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-foreground">Ready to clone</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    Conduit will clone your repository locally and keep it in sync automatically every 5 minutes.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => { setCloneInitiated(true); cloneVault.mutate(); }}
+                disabled={cloneVault.isPending || hasUnsavedChanges === true}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+                title={hasUnsavedChanges ? 'Save your configuration changes first' : undefined}
+              >
+                <GitBranch className="w-4 h-4" />
+                Clone Vault
+              </button>
+              {hasUnsavedChanges && (
+                <p className="text-[11px] text-amber-400/80">Save your configuration changes before cloning.</p>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Danger zone */}
       {configured && (
-        <div className="border border-red-500/20 rounded-xl p-4 space-y-3">
-          <h4 className="text-xs font-semibold text-red-400">Danger Zone</h4>
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs font-medium text-foreground">Remove vault configuration</p>
-              <p className="text-[11px] text-muted-foreground mt-0.5">Removes the config from Conduit. The local clone is kept on disk.</p>
+        <>
+          <div className="border-t border-white/5 mb-5" />
+          <div className="border border-red-500/20 rounded-xl p-4 space-y-3">
+            <h4 className="text-xs font-semibold text-red-400">Danger Zone</h4>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-medium text-foreground">Remove vault configuration</p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">Removes the config from Conduit. The local clone is kept on disk.</p>
+              </div>
+              <button
+                onClick={() => deleteVault.mutate()}
+                disabled={deleteVault.isPending}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/30 text-xs text-red-400 hover:bg-red-500/10 transition-colors"
+              >
+                {deleteVault.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                Remove
+              </button>
             </div>
-            <button
-              onClick={() => deleteVault.mutate()}
-              disabled={deleteVault.isPending}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/30 text-xs text-red-400 hover:bg-red-500/10 transition-colors"
-            >
-              {deleteVault.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-              Remove
-            </button>
           </div>
-        </div>
+        </>
       )}
     </div>
   );
@@ -4979,6 +5355,7 @@ export default function Connections() {
   })();
 
   const [activeTab, setActiveTabState] = React.useState<TopTabId>(resolvedTopTab);
+  React.useEffect(() => { setActiveTabState(resolvedTopTab); }, [resolvedTopTab]);
   const setActiveTab = (id: TopTabId) => {
     setActiveTabState(id);
     navigate(`/settings/${id}`, { replace: true });

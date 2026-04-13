@@ -21,7 +21,9 @@ const SERVICES = [
   { id: 'twitter',  label: 'Twitter'  },
   { id: 'gmail',    label: 'Gmail'    },
   { id: 'calendar', label: 'Calendar' },
+  { id: 'notion',   label: 'Notion'   },
   { id: 'obsidian', label: 'Vault'    },
+  { id: 'ai',       label: 'AI'       },
 ] as const;
 
 const NAV_ITEMS = [

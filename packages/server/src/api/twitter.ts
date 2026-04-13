@@ -58,21 +58,20 @@ router.get('/auth/status', optionalAuth, (req, res) => {
   });
 });
 
-router.post('/auth/connect', optionalAuth, async (req, res) => {
+router.post('/auth/connect', optionalAuth, (req, res) => {
   const { username, password, email } = req.body as Partial<TwitterCreds>;
-  if (!username || !password || !email) {
-    return res.status(400).json({ error: 'username, password, and email are required' });
+  if (!username || !password) {
+    return res.status(400).json({ error: 'username and password are required' });
   }
 
   const manager = getConnectionManager();
-  try {
-    await manager.connectTwitter({ username, password, email });
-    const status = manager.getStatus('twitter');
-    const creds = getTwitterCreds();
-    res.json({ success: status.status === 'connected', handle: creds?.handle, status: status.status, error: status.error });
-  } catch (e) {
-    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
-  }
+  // Fire-and-forget — Twitter login can take 10-30s; status is pushed via WebSocket.
+  // The client polls /auth/status and listens for connection:status WS events.
+  manager.connectTwitter({ username, password, email: email || '' }).catch((e) => {
+    console.error('[twitter] connect error:', e instanceof Error ? e.message : e);
+  });
+
+  res.json({ success: true, status: 'connecting' });
 });
 
 router.delete('/auth/disconnect', optionalAuth, (req, res) => {

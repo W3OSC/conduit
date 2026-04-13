@@ -18,6 +18,7 @@ const SERVICE_CONFIG: Record<string, {
   calendar: { label: 'Calendar', letter: 'C', bg: 'bg-amber-500/10',  text: 'text-amber-400',  border: 'border-amber-500/25', dot: 'bg-amber-400'  },
   notion:   { label: 'Notion',   letter: 'N', bg: 'bg-zinc-500/10',   text: 'text-zinc-300',   border: 'border-zinc-500/25',  dot: 'bg-zinc-300'   },
   obsidian: { label: 'Vault',    letter: 'V', bg: 'bg-purple-500/10', text: 'text-purple-300', border: 'border-purple-500/25',dot: 'bg-purple-300'  },
+  ai:       { label: 'AI',       letter: 'A', bg: 'bg-emerald-500/10',text: 'text-emerald-300',border: 'border-emerald-500/25',dot: 'bg-emerald-300' },
 };
 
 const DEFAULT_CONFIG = {
@@ -79,6 +80,14 @@ export function ServiceLogo({ service, className }: { service: string; className
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={cls} aria-hidden>
           <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>
           <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
+        </svg>
+      );
+    case 'ai':
+      return (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={cls} aria-hidden>
+          <path d="M12 2a4 4 0 0 1 4 4v1h1a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V10a3 3 0 0 1 3-3h1V6a4 4 0 0 1 4-4z"/>
+          <circle cx="9" cy="13" r="1" fill="currentColor" stroke="none"/>
+          <circle cx="15" cy="13" r="1" fill="currentColor" stroke="none"/>
         </svg>
       );
     default:
