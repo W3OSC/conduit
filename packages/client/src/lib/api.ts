@@ -322,8 +322,8 @@ export const api = {
   // Twitter
   twitterStatus: () => request<TwitterStatus>('/twitter/status'),
   twitterAuthStatus: () => request<{ configured: boolean; connected: boolean; handle: string | null; cookiesValid: boolean }>('/twitter/auth/status'),
-  twitterConnect: (username: string, password: string, email: string) =>
-    request<{ success: boolean; handle?: string; status: string; error?: string }>('/twitter/auth/connect', { method: 'POST', body: JSON.stringify({ username, password, email }) }),
+  twitterConnect: (cookieString: string) =>
+    request<{ success: boolean; handle?: string; status: string; error?: string }>('/twitter/auth/connect', { method: 'POST', body: JSON.stringify({ cookieString }) }),
   twitterDisconnect: () => request<{ success: boolean }>('/twitter/auth/disconnect', { method: 'DELETE' }),
   twitterRefresh: () => request<{ success: boolean }>('/twitter/auth/refresh', { method: 'POST' }),
   twitterFeed: (count = 20, reset = false) => request<{ tweets: Tweet[] }>(`/twitter/feed?count=${count}&reset=${reset}`),

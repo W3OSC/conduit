@@ -146,14 +146,15 @@ export class ConnectionManager {
       tasks.push(this.connectGmail().catch((e) => console.error('[gmail] Auto-connect failed:', e)));
     }
 
-    // Twitter — restore session from stored cookies (no re-login needed when cookies are valid)
+    // Twitter — restore session from stored cookie string / persisted cookie jar
     const twitterRaw = getCreds('twitter') as TwitterCredsLite | null;
-    if (twitterRaw?.username && twitterRaw?.password) {
+    if (twitterRaw?.cookieString) {
       const twitterCreds: TwitterCreds = {
-        username: twitterRaw.username,
-        password: twitterRaw.password,
-        email: twitterRaw.email || '',
+        cookieString: twitterRaw.cookieString,
         cookies: twitterRaw.cookies,
+        userId: twitterRaw.userId,
+        handle: twitterRaw.handle,
+        displayName: twitterRaw.displayName,
       };
       tasks.push(this.connectTwitter(twitterCreds).catch((e) => console.error('[twitter] Auto-connect failed:', e)));
     }
@@ -377,7 +378,7 @@ export class ConnectionManager {
   }
 
   async connectTwitter(creds: TwitterCreds): Promise<void> {
-    if (!creds.username || !creds.password) { this.setStatus('twitter', { status: 'error', error: 'Twitter credentials not configured' }); return; }
+    if (!creds.cookieString?.trim()) { this.setStatus('twitter', { status: 'error', error: 'Twitter cookie string not configured' }); return; }
     this.setStatus('twitter', { status: 'connecting' });
     try {
       if (this.twitter) this.twitter.disconnect();
@@ -784,10 +785,17 @@ export class ConnectionManager {
             name: 'Feed access',
             run: async () => {
               if (!this.twitter) throw new Error('Not connected');
-              const feed = await this.twitter.getHomeFeed(1);
-              if (!feed.length) return 'No tweets in feed (authenticated but feed may be empty)';
-              const t = feed[0];
-              return `@${t.username}: ${(t.text || '').slice(0, 80)}`;
+              try {
+                const feed = await this.twitter.getHomeFeed(1);
+                if (!feed.length) return 'No tweets in feed (authenticated but feed may be empty)';
+                const t = feed[0];
+                return `@${t.username}: ${(t.text || '').slice(0, 80)}`;
+              } catch (e) {
+                // Surface ApiError.data if available for better diagnostics
+                const apiData = (e as Record<string, unknown>)?.data;
+                const detail = apiData ? ` — ${JSON.stringify(apiData).slice(0, 120)}` : '';
+                throw new Error(`${e instanceof Error ? e.message : String(e)}${detail}`);
+              }
             },
           },
         ];

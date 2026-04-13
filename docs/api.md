@@ -700,27 +700,186 @@ Searches Twitter for tweets or user profiles.
 | `mode` | string | no | `Latest`, `Top`, or `People`. Default `Latest`. |
 | `count` | integer | no | Default 20. |
 
+**Response** (mode=Latest or mode=Top)
+
+```json
+{
+  "tweets": [ Tweet ]
+}
+```
+
+**Response** (mode=People) — response key is `profiles`, not `tweets`:
+
+```json
+{
+  "profiles": [
+    {
+      "userId": "123456",
+      "displayName": "Alice",
+      "handle": "alice",
+      "bio": "...",
+      "followersCount": 1200,
+      "followingCount": 400,
+      "avatarUrl": "...",
+      "verified": false
+    }
+  ]
+}
+```
+
+---
+
+#### `GET /twitter/trends`
+
+Returns the current list of trending topics on Twitter/X. Cached for 15 minutes.
+
 **Response**
 
 ```json
 {
-  "results": [ Tweet ],
-  "mode": "Latest"
+  "trends": [
+    {
+      "name": "#OpenAI",
+      "tweetCount": "12.4K",
+      "url": "https://twitter.com/search?q=%23OpenAI"
+    }
+  ]
 }
 ```
 
-When `mode=People`, results are user profile objects instead of tweets:
+---
+
+#### `GET /twitter/me`
+
+Returns the authenticated user's own profile.
+
+**Response**: `TwitterProfile` object (see below).
+
+---
+
+#### `GET /twitter/tweet/{id}`
+
+Fetches a single tweet by its ID.
+
+**Path parameters**
+
+| Parameter | Description |
+|---|---|
+| `id` | Tweet ID |
+
+**Response**: `Tweet` object. Returns `404` if not found.
+
+---
+
+#### `GET /twitter/tweet/{id}/thread`
+
+Returns the full thread for a given tweet — the tweet itself plus all replies in conversation order.
+
+**Path parameters**
+
+| Parameter | Description |
+|---|---|
+| `id` | Tweet ID to fetch the thread for |
+
+**Response**
 
 ```json
 {
-  "userId": "123456",
-  "displayName": "Alice",
-  "handle": "alice",
-  "bio": "...",
-  "followersCount": 1200,
-  "followingCount": 400,
-  "avatarUrl": "...",
-  "verified": false
+  "tweets": [ Tweet ]
+}
+```
+
+---
+
+#### `GET /twitter/user/{handle}`
+
+Returns the full public profile for any Twitter/X user by their @handle. Cached 15 minutes.
+
+**Path parameters**
+
+| Parameter | Description |
+|---|---|
+| `handle` | Twitter @handle without the @ (e.g. `alice`) |
+
+**Response**: `TwitterProfile` object. Returns `404` if the user does not exist.
+
+### TwitterProfile
+
+| Field | Type | Description |
+|---|---|---|
+| `userId` | string | Numeric Twitter user ID |
+| `displayName` | string | Display name |
+| `handle` | string | @handle (without the @) |
+| `bio` | string \| null | Biography/description |
+| `followersCount` | integer | Follower count |
+| `followingCount` | integer | Following count |
+| `avatarUrl` | string \| null | Profile image URL |
+| `verified` | boolean | Has a verified badge |
+| `tweetCount` | integer \| null | Total tweets posted |
+
+---
+
+#### `GET /twitter/user/{handle}/tweets`
+
+Returns the most recent tweets from the given @handle. Cached 15 minutes.
+
+**Path parameters**: `handle` — @handle without the @.
+
+**Query parameters**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `count` | integer | Default 20. |
+
+**Response**
+
+```json
+{
+  "tweets": [ Tweet ]
+}
+```
+
+---
+
+#### `GET /twitter/user/{handle}/followers`
+
+Returns a list of profiles that follow the given @handle. Cached 15 minutes.
+
+**Path parameters**: `handle` — @handle without the @.
+
+**Query parameters**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `count` | integer | Default 50. |
+
+**Response**
+
+```json
+{
+  "profiles": [ TwitterProfile ]
+}
+```
+
+---
+
+#### `GET /twitter/user/{handle}/following`
+
+Returns a list of profiles that the given @handle is following. Cached 15 minutes.
+
+**Path parameters**: `handle` — @handle without the @.
+
+**Query parameters**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `count` | integer | Default 50. |
+
+**Response**
+
+```json
+{
+  "profiles": [ TwitterProfile ]
 }
 ```
 
@@ -882,6 +1041,381 @@ Returns engagement metrics for the authenticated user's recent tweets, aggregate
 
 ---
 
+### Notion
+
+Notion endpoints are read-only passthroughs to the Notion API. Write operations (`create_page`, `update_page`, `append_blocks`, `archive_page`) go through `POST /outbox` and require human approval.
+
+All Notion endpoints require the `readEnabled` permission to be set for the `notion` service.
+
+---
+
+#### `GET /notion/pages/{pageId}`
+
+Retrieves a Notion page by its ID. Returns raw Notion API page object including all properties.
+
+**Path parameters**
+
+| Parameter | Description |
+|---|---|
+| `pageId` | Notion page UUID (dashes optional) |
+
+**Response**: Raw Notion API page object.
+
+```json
+{
+  "id": "page-uuid",
+  "object": "page",
+  "properties": { ... },
+  "url": "https://www.notion.so/page-uuid"
+}
+```
+
+Use `GET /notion/blocks/{pageId}/children` to read the page body.
+
+---
+
+#### `GET /notion/databases`
+
+Lists all Notion databases accessible to the configured integration token.
+
+**Response**: Raw Notion API list response.
+
+```json
+{
+  "results": [
+    {
+      "id": "db-uuid",
+      "object": "database",
+      "title": [ { "plain_text": "Tasks" } ],
+      "properties": { ... }
+    }
+  ],
+  "has_more": false
+}
+```
+
+---
+
+#### `POST /notion/databases/{databaseId}/query`
+
+Queries a Notion database. Supports Notion filter and sort syntax.
+
+**Path parameters**
+
+| Parameter | Description |
+|---|---|
+| `databaseId` | Notion database UUID |
+
+**Request body**
+
+```json
+{
+  "filter": {
+    "property": "Status",
+    "select": { "equals": "In Progress" }
+  },
+  "sorts": [
+    { "property": "Due Date", "direction": "ascending" }
+  ],
+  "page_size": 50
+}
+```
+
+All fields are optional. Use `start_cursor` from a previous response for pagination.
+
+**Response**: Raw Notion API paginated results.
+
+```json
+{
+  "results": [ NotionPage ],
+  "has_more": true,
+  "next_cursor": "..."
+}
+```
+
+---
+
+#### `POST /notion/search`
+
+Searches across all pages and databases in the Notion workspace accessible to the integration.
+
+**Request body**
+
+```json
+{
+  "query": "project roadmap",
+  "filter": { "value": "page", "property": "object" },
+  "sort": { "direction": "descending", "timestamp": "last_edited_time" },
+  "page_size": 20
+}
+```
+
+All fields optional. Omit `query` to list all accessible objects.
+
+**Response**: Raw Notion API search results.
+
+---
+
+#### `GET /notion/blocks/{blockId}`
+
+Retrieves a single Notion block by its ID.
+
+**Path parameters**
+
+| Parameter | Description |
+|---|---|
+| `blockId` | Notion block UUID |
+
+**Response**: Raw Notion block object.
+
+---
+
+#### `GET /notion/blocks/{blockId}/children`
+
+Retrieves all child blocks of a given block. For pages, pass the page ID as `blockId` — this returns the full page body.
+
+**Path parameters**
+
+| Parameter | Description |
+|---|---|
+| `blockId` | Block ID (use page ID to get page content) |
+
+**Query parameters**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `page_size` | integer | Max children per page. Default/max 100. |
+| `start_cursor` | string | Pagination cursor from a previous response. |
+
+**Response**: Raw Notion block list with pagination.
+
+```json
+{
+  "results": [
+    { "id": "block-uuid", "type": "paragraph", "paragraph": { "rich_text": [ ... ] } }
+  ],
+  "has_more": false
+}
+```
+
+---
+
+### Obsidian Vault
+
+The Obsidian vault integration syncs a git-hosted vault to the server and exposes file read operations. Write operations (`create_file`, `write_file`, `rename_file`, `delete_file`) go through the outbox.
+
+File reads bypass the outbox and execute immediately. The vault auto-syncs every 5 minutes via `git pull`.
+
+**Setup sequence**: save config → test connection → generate SSH key (if using SSH) → clone → read files.
+
+---
+
+#### `GET /obsidian/config`
+
+Returns the current vault configuration. Secrets (tokens, private keys) are excluded.
+
+**Response**
+
+```json
+{
+  "configured": true,
+  "vault": {
+    "id": 1,
+    "name": "my-vault",
+    "remoteUrl": "git@github.com:user/vault.git",
+    "authType": "ssh",
+    "branch": "main",
+    "localPath": "/data/vault/my-vault",
+    "syncStatus": "idle",
+    "lastSyncedAt": "2026-04-13T10:00:00Z",
+    "lastCommitHash": "abc1234",
+    "syncError": null,
+    "hasHttpsToken": false,
+    "hasSshPrivateKey": true
+  }
+}
+```
+
+When no vault is configured: `{ "configured": false }`.
+
+---
+
+#### `POST /obsidian/config`
+
+Creates or updates the vault configuration. Does not clone — call `POST /obsidian/config/clone` after saving.
+
+**Request body**
+
+```json
+{
+  "name": "my-vault",
+  "remote_url": "git@github.com:user/vault.git",
+  "auth_type": "ssh",
+  "branch": "main"
+}
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `name` | yes | Vault name (alphanumeric and hyphens, used as directory name) |
+| `remote_url` | yes | Git remote URL (HTTPS or SSH) |
+| `auth_type` | no | `https` or `ssh`. Default `https`. |
+| `https_token` | no | Personal access token (for HTTPS auth) |
+| `ssh_private_key` | no | SSH private key (omit to use a generated key) |
+| `branch` | no | Branch to track. Default `main`. |
+
+---
+
+#### `DELETE /obsidian/config`
+
+Removes the vault configuration and disconnects the sync. Optionally deletes the local clone.
+
+**Request body**
+
+```json
+{ "delete_local": true }
+```
+
+---
+
+#### `POST /obsidian/config/test`
+
+Verifies git remote access by running `git ls-remote` without cloning. Call this after saving config to confirm credentials work before cloning.
+
+**Response**
+
+```json
+{ "success": true, "error": null }
+```
+
+---
+
+#### `POST /obsidian/config/generate-ssh-key`
+
+Generates a new ed25519 SSH key pair and stores it in the vault config. Add the returned public key as a **read-only deploy key** in your git hosting provider (GitHub → Settings → Deploy keys).
+
+**Response**
+
+```json
+{
+  "publicKey": "ssh-ed25519 AAAA... conduit-obsidian",
+  "fingerprint": "SHA256:abc..."
+}
+```
+
+---
+
+#### `GET /obsidian/config/ssh-key`
+
+Returns the SSH public key that was previously generated.
+
+**Response**
+
+```json
+{ "publicKey": "ssh-ed25519 AAAA... conduit-obsidian" }
+```
+
+Returns `404` if no key has been generated.
+
+---
+
+#### `POST /obsidian/config/clone`
+
+Triggers an initial `git clone` of the configured remote. This is a one-time setup step. The clone runs **asynchronously** — monitor progress with `GET /obsidian/sync/status`.
+
+**Response**
+
+```json
+{ "success": true, "message": "Clone started" }
+```
+
+---
+
+#### `GET /obsidian/sync/status`
+
+Returns the current sync state.
+
+**Response**
+
+```json
+{
+  "configured": true,
+  "syncStatus": "idle",
+  "lastSyncedAt": "2026-04-13T10:00:00Z",
+  "lastCommitHash": "abc1234",
+  "error": null
+}
+```
+
+`syncStatus` values: `idle`, `syncing`, `error`.
+
+---
+
+#### `POST /obsidian/sync`
+
+Triggers a manual `git fetch` + `git pull --ff-only`. Runs asynchronously.
+
+**Response**
+
+```json
+{ "success": true, "message": "Sync started" }
+```
+
+---
+
+#### `GET /obsidian/files`
+
+Returns the full file tree of the vault. Hidden directories (`.git`, `.obsidian`, `.trash`) are excluded.
+
+**Response**
+
+```json
+{
+  "files": [
+    {
+      "name": "Daily Notes",
+      "path": "Daily Notes",
+      "type": "directory",
+      "children": [
+        { "name": "2026-04-13.md", "path": "Daily Notes/2026-04-13.md", "type": "file" }
+      ]
+    },
+    { "name": "README.md", "path": "README.md", "type": "file" }
+  ]
+}
+```
+
+---
+
+#### `GET /obsidian/files/{path}`
+
+Reads the raw content of a file in the vault. The vault is auto-synced before reading if the last sync was more than 4 minutes ago.
+
+**Path parameters**
+
+| Parameter | Description |
+|---|---|
+| `path` | Relative path from the vault root (URL-encode special characters and spaces) |
+
+**Example**
+
+```
+GET /api/obsidian/files/Daily%20Notes%2F2026-04-13.md
+```
+
+**Response**
+
+```json
+{
+  "path": "Daily Notes/2026-04-13.md",
+  "content": "# April 13\n\n- Reviewed PR #42\n- Called Alice\n"
+}
+```
+
+Returns `404` if the file does not exist.
+
+---
+
 ## Common Patterns
 
 ### Get context before acting
@@ -914,4 +1448,34 @@ Returns engagement metrics for the authenticated user's recent tweets, aggregate
 ```
 1. GET /calendar/events?from=2026-04-07T00:00:00Z&to=2026-04-13T23:59:59Z
 2. POST /calendar/actions { action: "rsvp", rsvpStatus: "accepted", ... }
+```
+
+### Read a Notion page
+
+```
+1. POST /notion/search { "query": "Project Roadmap" }  — find the page by title
+2. GET  /notion/blocks/{pageId}/children               — read the page body
+```
+
+### Query a Notion database
+
+```
+1. GET  /notion/databases                                — list accessible databases
+2. POST /notion/databases/{databaseId}/query            — query with optional filter/sort
+```
+
+### Read today's Obsidian daily note
+
+```
+1. GET  /obsidian/sync/status                           — confirm vault is connected
+2. GET  /obsidian/files                                 — find the file path in the tree
+3. GET  /obsidian/files/Daily%20Notes%2F2026-04-13.md  — read the note
+```
+
+### Look up a Twitter user's recent activity
+
+```
+1. GET /twitter/user/{handle}            — get their profile
+2. GET /twitter/user/{handle}/tweets     — read their recent tweets
+3. GET /twitter/search?q=from:{handle}   — search their tweets by keyword
 ```

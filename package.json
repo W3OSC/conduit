@@ -13,7 +13,7 @@
     "migrate": "npm run migrate --workspace=packages/server",
     "test": "npm run test --workspace=packages/server && npm run test --workspace=packages/client",
     "lint": "npm run lint --workspace=packages/server && npm run lint --workspace=packages/client",
-    "postinstall": "node scripts/patch-react-swc.mjs"
+    "postinstall": "node scripts/patch-react-swc.mjs && node scripts/patch-twitter-client.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

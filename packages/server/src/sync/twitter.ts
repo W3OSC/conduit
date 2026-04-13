@@ -2,8 +2,11 @@
  * TwitterSync — agent-twitter-client integration.
  *
  * Uses cookie/session-based auth — no Twitter developer account required.
- * Credentials (username + password + email) stored in settings under `credentials.twitter`.
- * Cookies are serialised and persisted so login is only needed once.
+ * The user pastes the raw "Cookie:" header string from their browser's DevTools
+ * (Network tab → any twitter.com/x.com request → Request Headers → Cookie).
+ * This bypasses 2FA completely since the browser session is already authenticated.
+ *
+ * Credentials stored in settings under `credentials.twitter`.
  *
  * DMs: synced to SQLite (twitter_dms table) via 2-minute polling.
  * Tweets/posts: NOT stored. Served live from API with 15-minute in-memory LRU cache.
@@ -16,13 +19,40 @@ import { eq, and, desc } from 'drizzle-orm';
 import { broadcast } from '../websocket/hub.js';
 
 export interface TwitterCreds {
-  username: string;
-  password: string;
-  email: string;
-  cookies?: string;   // JSON array from scraper.getCookies()
+  /** Raw "Cookie:" header string copied from browser DevTools */
+  cookieString: string;
+  /** Serialised cookie jar (JSON array) — persisted after first successful connect */
+  cookies?: string;
   userId?: string;
   handle?: string;
   displayName?: string;
+}
+
+/**
+ * Parse a raw browser "Cookie:" header string into an array of Set-Cookie
+ * formatted strings that tough-cookie's CookieJar.setCookie() accepts.
+ *
+ * We emit each cookie twice — once for .twitter.com and once for .x.com —
+ * because Twitter has been migrating domains and the scraper may hit either.
+ */
+export function parseCookieString(raw: string): string[] {
+  const pairs = raw
+    .split(';')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((pair) => {
+      const eqIdx = pair.indexOf('=');
+      if (eqIdx === -1) return null;
+      const name  = pair.slice(0, eqIdx).trim();
+      const value = pair.slice(eqIdx + 1).trim();
+      if (!name) return null;
+      return { name, value };
+    })
+    .filter((c): c is NonNullable<typeof c> => c !== null);
+
+  // Emit each cookie scoped to .twitter.com — the scraper calls setCookie against
+  // https://twitter.com so tough-cookie's domain validation requires this exact domain.
+  return pairs.map(({ name, value }) => `${name}=${value}; Domain=.twitter.com; Path=/; Secure`);
 }
 
 export interface TwitterAction {
@@ -99,37 +129,61 @@ export class TwitterSync {
   async connect(creds: TwitterCreds): Promise<boolean> {
     this.creds = creds;
     this._cancelRequested = false;
-    const scraper = new Scraper();
 
-    // Restore session from stored cookies if available
-    if (creds.cookies) {
+    // Warn early if critical auth cookies are missing
+    if (!creds.cookieString.includes('auth_token=')) throw new Error('Missing auth_token cookie — make sure you copied the full Cookie header value');
+    if (!creds.cookieString.includes('ct0='))        throw new Error('Missing ct0 cookie — make sure you copied the full Cookie header value');
+
+    // Extract ct0 for the CSRF header
+    const ct0Match = creds.cookieString.match(/(?:^|;\s*)ct0=([^;]+)/);
+    const ct0 = ct0Match?.[1]?.trim() ?? '';
+
+    // Verify the session by calling verify_credentials directly with the raw cookie string.
+    // We try both x.com and twitter.com since browsers may have sessions on either domain.
+    const BEARER = 'AAAAAAAAAAAAAAAAAAAAAFQODgEAAAAAVHTp76lzh3rFzcHbmHVvQxYYpTw%3DckAlMINMjmCwxUcaXbAN4XqJVdgMJaHqNOFgPMK0zN1qLqLQCF';
+    const verifyHeaders = {
+      authorization: `Bearer ${BEARER}`,
+      cookie: creds.cookieString,
+      'x-csrf-token': ct0,
+      'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    };
+
+    let verifyData: Record<string, unknown> | null = null;
+    for (const host of ['https://x.com', 'https://twitter.com']) {
       try {
-        const cookies = JSON.parse(creds.cookies) as object[];
-        await scraper.setCookies(cookies as Parameters<typeof scraper.setCookies>[0]);
-        const loggedIn = await scraper.isLoggedIn();
-        if (!loggedIn) throw new Error('Cookies stale');
-      } catch {
-        // Cookies invalid — fall through to password login
-        await this._login(scraper, creds);
+        const res = await fetch(`${host}/i/api/1.1/account/verify_credentials.json`, { headers: verifyHeaders });
+        if (res.ok) {
+          verifyData = await res.json() as Record<string, unknown>;
+          console.log(`[twitter] verify_credentials OK via ${host}`);
+          break;
+        }
+        const body = await res.text();
+        console.warn(`[twitter] verify_credentials ${res.status} via ${host}:`, body.slice(0, 200));
+      } catch (e) {
+        console.warn(`[twitter] verify_credentials fetch error via ${host}:`, e instanceof Error ? e.message : e);
       }
-    } else {
-      await this._login(scraper, creds);
     }
 
-    // Verify we're logged in
-    if (!(await scraper.isLoggedIn())) {
-      throw new Error('Login failed — check credentials');
+    if (!verifyData) {
+      throw new Error('Cookie session rejected by Twitter — please copy a fresh Cookie header from x.com in your browser (DevTools → Network → any x.com request → Request Headers → cookie)');
     }
 
-    // Persist updated cookies
-    const cookies = await scraper.getCookies();
-    this.creds.cookies = JSON.stringify(cookies);
+    // Resolve account identity from verify_credentials response
+    const userId      = String(verifyData.id_str || verifyData.id || '');
+    const handle      = String(verifyData.screen_name || '');
+    const displayName = String(verifyData.name || handle);
 
-    // Get our own profile
-    const meRaw = await scraper.me() as unknown as Record<string, unknown> | null;
-    const userId = String(meRaw?.id || meRaw?.userId || meRaw?.rest_id || '');
-    const handle = String(meRaw?.username || meRaw?.screen_name || creds.username);
-    const displayName = String(meRaw?.name || handle);
+    // Now inject the cookies into the scraper's jar for all subsequent API calls.
+    // We inject against both twitter.com and x.com since the library hits both.
+    const scraper = new Scraper();
+    const jar = (scraper as unknown as { auth: { cookieJar(): import('tough-cookie').CookieJar } }).auth.cookieJar();
+    const cookieStrings = parseCookieString(creds.cookieString);
+    for (const cookieStr of cookieStrings) {
+      try { await jar.setCookie(cookieStr, 'https://twitter.com'); } catch { /* ignore domain errors */ }
+      try { await jar.setCookie(cookieStr, 'https://x.com'); } catch { /* ignore domain errors */ }
+    }
+    // Switch to TwitterUserAuth so the scraper sends the cookie header on all requests
+    await scraper.setCookies(cookieStrings as unknown as Parameters<typeof scraper.setCookies>[0]);
 
     this.creds.userId = userId;
     this.creds.handle = handle;
@@ -147,10 +201,6 @@ export class TwitterSync {
     broadcast({ type: 'connection:status', data: { service: 'twitter', status: 'connected', displayName, accountId: userId, mode: 'cookie' } });
     console.log(`[twitter] Connected as @${handle}`);
     return true;
-  }
-
-  private async _login(scraper: Scraper, creds: TwitterCreds): Promise<void> {
-    await scraper.login(creds.username, creds.password, creds.email);
   }
 
   disconnect(): void {
@@ -248,43 +298,115 @@ export class TwitterSync {
 
   // ── Read/explore endpoints (cached) ─────────────────────────────────────────
 
+  /** Make an authenticated request to x.com using the raw cookie string directly. */
+  private async xFetch(url: string): Promise<Response> {
+    if (!this.creds) throw new Error('Not connected');
+    const ct0Match = this.creds.cookieString.match(/(?:^|;\s*)ct0=([^;]+)/);
+    const ct0 = ct0Match?.[1]?.trim() ?? '';
+    return fetch(url, {
+      headers: {
+        authorization: `Bearer AAAAAAAAAAAAAAAAAAAAAFQODgEAAAAAVHTp76lzh3rFzcHbmHVvQxYYpTw%3DckAlMINMjmCwxUcaXbAN4XqJVdgMJaHqNOFgPMK0zN1qLqLQCF`,
+        cookie: this.creds.cookieString,
+        'x-csrf-token': ct0,
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'x-twitter-active-user': 'yes',
+        'x-twitter-auth-type': 'OAuth2Session',
+        'x-twitter-client-language': 'en',
+        'content-type': 'application/json',
+        'accept-language': 'en-US,en;q=0.9',
+        referer: 'https://x.com/home',
+        origin: 'https://x.com',
+      },
+    });
+  }
+
   async getHomeFeed(count = 20, reset = false): Promise<Tweet[]> {
-    if (!this.scraper) throw new Error('Not connected');
+    if (!this.creds) throw new Error('Not connected');
     if (reset) this.seenFeedIds.clear();
 
     const cacheKey = `feed:${count}:${this.seenFeedIds.size}`;
     const cached = fromCache<Tweet[]>(cacheKey);
     if (cached) return cached;
 
-    const rawFeed = await this.scraper.fetchHomeTimeline(count, [...this.seenFeedIds]);
-    const tweets: Tweet[] = [];
+    const variables = {
+      count,
+      includePromotedContent: true,
+      latestControlAvailable: true,
+      requestContext: 'launch',
+      withCommunity: true,
+      seenTweetIds: [...this.seenFeedIds],
+    };
+    const features = {
+      rweb_tipjar_consumption_enabled: true,
+      responsive_web_graphql_exclude_directive_enabled: true,
+      verified_phone_label_enabled: false,
+      creator_subscriptions_tweet_preview_api_enabled: true,
+      responsive_web_graphql_timeline_navigation_enabled: true,
+      responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
+      communities_web_enable_tweet_community_results_fetch: true,
+      c9s_tweet_anatomy_moderator_badge_enabled: true,
+      articles_preview_enabled: true,
+      responsive_web_edit_tweet_api_enabled: true,
+      graphql_is_translatable_rweb_tweet_is_translatable_enabled: true,
+      view_counts_everywhere_api_enabled: true,
+      longform_notetweets_consumption_enabled: true,
+      responsive_web_twitter_article_tweet_consumption_enabled: true,
+      tweet_awards_web_tipping_enabled: false,
+      creator_subscriptions_quote_tweet_preview_enabled: false,
+      freedom_of_speech_not_reach_fetch_enabled: true,
+      standardized_nudges_misinfo: true,
+      tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled: true,
+      rweb_video_timestamps_enabled: true,
+      longform_notetweets_rich_text_read_enabled: true,
+      longform_notetweets_inline_media_enabled: true,
+      responsive_web_enhance_cards_enabled: false,
+    };
 
-    for (const raw of rawFeed) {
-      // agent-twitter-client fetchHomeTimeline returns raw objects — normalize
-      if (!raw?.rest_id) continue;
-      const core = raw.core?.user_results?.result?.legacy;
-      const legacy = raw.legacy;
-      const tweet: Tweet = {
-        id: raw.rest_id,
-        text: legacy?.full_text || legacy?.text || '',
-        username: core?.screen_name || '',
-        name: core?.name || '',
-        userId: core?.id_str || '',
-        likes: legacy?.favorite_count || 0,
-        retweets: legacy?.retweet_count || 0,
-        replies: legacy?.reply_count || 0,
-        timestamp: legacy?.created_at ? new Date(legacy.created_at).getTime() / 1000 : 0,
-        permanentUrl: raw.rest_id ? `https://twitter.com/i/web/status/${raw.rest_id}` : '',
-        photos: [],
-        videos: [],
-        hashtags: (legacy?.entities?.hashtags || []).map((h: { text: string }) => h.text),
-        mentions: (legacy?.entities?.user_mentions || []).map((m: { screen_name: string }) => m.screen_name),
-        urls: (legacy?.entities?.urls || []).map((u: { expanded_url: string }) => u.expanded_url),
-        isReply: !!legacy?.in_reply_to_status_id_str,
-        isRetweet: !!legacy?.retweeted_status_id_str,
-      } as unknown as Tweet;
-      tweets.push(tweet);
-      this.seenFeedIds.add(raw.rest_id);
+    const url = `https://x.com/i/api/graphql/Fb7fyZ9MMCzvf_bNtwNdXA/HomeTimeline?variables=${encodeURIComponent(JSON.stringify(variables))}&features=${encodeURIComponent(JSON.stringify(features))}`;
+    const res = await this.xFetch(url);
+    if (!res.ok) {
+      const body = await res.text();
+      console.error('[twitter] HomeTimeline error:', res.status, body.slice(0, 300));
+      throw new Error(`Response status: ${res.status}`);
+    }
+
+    const data = await res.json() as Record<string, unknown>;
+    const instructions = (data as Record<string, unknown> & {
+      data?: { home?: { home_timeline_urt?: { instructions?: unknown[] } } }
+    })?.data?.home?.home_timeline_urt?.instructions ?? [];
+
+    const tweets: Tweet[] = [];
+    for (const instruction of instructions as Array<Record<string, unknown>>) {
+      if (instruction['type'] !== 'TimelineAddEntries') continue;
+      for (const entry of (instruction['entries'] as Array<Record<string, unknown>> ?? [])) {
+        const raw = (entry['content'] as Record<string, unknown>)?.['itemContent'] as Record<string, unknown>;
+        const result = (raw?.['tweet_results'] as Record<string, unknown>)?.['result'] as Record<string, unknown>;
+        if (!result?.['rest_id']) continue;
+        const core = (result['core'] as Record<string, unknown>)?.['user_results'] as Record<string, unknown>;
+        const userLegacy = ((core?.['result'] as Record<string, unknown>)?.['legacy'] as Record<string, unknown>);
+        const legacy = result['legacy'] as Record<string, unknown>;
+        const tweet: Tweet = {
+          id: String(result['rest_id']),
+          text: String(legacy?.['full_text'] || legacy?.['text'] || ''),
+          username: String(userLegacy?.['screen_name'] || ''),
+          name: String(userLegacy?.['name'] || ''),
+          userId: String(userLegacy?.['id_str'] || ''),
+          likes: Number(legacy?.['favorite_count'] || 0),
+          retweets: Number(legacy?.['retweet_count'] || 0),
+          replies: Number(legacy?.['reply_count'] || 0),
+          timestamp: legacy?.['created_at'] ? new Date(String(legacy['created_at'])).getTime() / 1000 : 0,
+          permanentUrl: `https://x.com/i/web/status/${result['rest_id']}`,
+          photos: [],
+          videos: [],
+          hashtags: ((legacy?.['entities'] as Record<string, unknown>)?.['hashtags'] as Array<{ text: string }> || []).map((h) => h.text),
+          mentions: ((legacy?.['entities'] as Record<string, unknown>)?.['user_mentions'] as Array<{ screen_name: string }> || []).map((m) => m.screen_name),
+          urls: ((legacy?.['entities'] as Record<string, unknown>)?.['urls'] as Array<{ expanded_url: string }> || []).map((u) => u.expanded_url),
+          isReply: !!(legacy?.['in_reply_to_status_id_str']),
+          isRetweet: !!(legacy?.['retweeted_status_id_str']),
+        } as unknown as Tweet;
+        tweets.push(tweet);
+        this.seenFeedIds.add(String(result['rest_id']));
+      }
     }
 
     toCache(cacheKey, tweets);

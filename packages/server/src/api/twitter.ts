@@ -40,7 +40,7 @@ router.get('/status', optionalAuth, (req, res) => {
     handle: status.displayName || creds?.handle || null,
     userId: status.accountId || creds?.userId || null,
     dmCount: count?.count || 0,
-    configured: !!creds?.username,
+    configured: !!creds?.cookieString,
   });
 });
 
@@ -51,7 +51,7 @@ router.get('/auth/status', optionalAuth, (req, res) => {
   const manager = getConnectionManager();
   const status = manager.getStatus('twitter');
   res.json({
-    configured: !!creds?.username,
+    configured: !!creds?.cookieString,
     connected: status.status === 'connected',
     handle: creds?.handle || null,
     cookiesValid: !!creds?.cookies,
@@ -59,15 +59,14 @@ router.get('/auth/status', optionalAuth, (req, res) => {
 });
 
 router.post('/auth/connect', optionalAuth, (req, res) => {
-  const { username, password, email } = req.body as Partial<TwitterCreds>;
-  if (!username || !password) {
-    return res.status(400).json({ error: 'username and password are required' });
+  const { cookieString } = req.body as Partial<TwitterCreds>;
+  if (!cookieString?.trim()) {
+    return res.status(400).json({ error: 'cookieString is required — paste the Cookie header from your browser DevTools' });
   }
 
   const manager = getConnectionManager();
-  // Fire-and-forget — Twitter login can take 10-30s; status is pushed via WebSocket.
-  // The client polls /auth/status and listens for connection:status WS events.
-  manager.connectTwitter({ username, password, email: email || '' }).catch((e) => {
+  // Fire-and-forget — connection verify can take several seconds; status is pushed via WebSocket.
+  manager.connectTwitter({ cookieString: cookieString.trim() }).catch((e) => {
     console.error('[twitter] connect error:', e instanceof Error ? e.message : e);
   });
 
@@ -82,7 +81,7 @@ router.delete('/auth/disconnect', optionalAuth, (req, res) => {
 
 router.post('/auth/refresh', optionalAuth, async (req, res) => {
   const creds = getTwitterCreds();
-  if (!creds?.username) return res.status(400).json({ error: 'No credentials configured' });
+  if (!creds?.cookieString) return res.status(400).json({ error: 'No credentials configured' });
   const manager = getConnectionManager();
   await manager.connectTwitter(creds);
   res.json({ success: manager.getStatus('twitter').status === 'connected' });

@@ -1258,7 +1258,7 @@ function ServiceAccordion({ service }: { service: Service }) {
   const connStatus   = useConnectionStore((s) => s.statuses[service]);
   const syncProgress = useSyncStore((s) => s.progress[service]);
   const status = connStatus?.status ?? 'disconnected';
-  const [open, setOpen] = useState(status === 'error' || status === 'disconnected');
+  const [open, setOpen] = useState(false);
   const [activeSection, setActiveSection] = useState<SectionId>('overview');
   const isSyncing = syncProgress?.status === 'running';
 
@@ -1545,7 +1545,7 @@ function ApiKeysPanel() {
 // Permissions tab + Install tab + Security tab
 // ─────────────────────────────────────────────────────────────────────────────
 
-const ALL_SERVICES = ['slack', 'discord', 'telegram', 'gmail', 'calendar', 'twitter', 'notion'] as const;
+const ALL_SERVICES = ['slack', 'discord', 'telegram', 'gmail', 'calendar', 'twitter', 'notion', 'obsidian'] as const;
 
 const PERM_COLS: Array<{ key: 'readEnabled' | 'sendEnabled' | 'requireApproval'; label: string; description: string }> = [
   { key: 'readEnabled',     label: 'Read',     description: 'Can read messages and data' },
@@ -1594,11 +1594,13 @@ function MiniToggle({ checked, onChange, disabled }: { checked: boolean; onChang
 const SVC_LABEL: Record<string, string> = {
   slack: 'Slack', discord: 'Discord', telegram: 'Telegram',
   gmail: 'Gmail', calendar: 'Calendar', twitter: 'Twitter', notion: 'Notion',
+  obsidian: 'Obsidian',
 };
 
 const SVC_COLOR: Record<string, string> = {
   slack: 'text-violet-400', discord: 'text-indigo-400', telegram: 'text-sky-400',
   gmail: 'text-red-400', calendar: 'text-primary', twitter: 'text-sky-300', notion: 'text-zinc-300',
+  obsidian: 'text-purple-300',
 };
 
 // ── Permissions tab ───────────────────────────────────────────────────────────
@@ -1672,7 +1674,11 @@ function UiPermissionsTable({ perms, onUpdate }: { perms: Permission[]; onUpdate
                   </div>
                 </td>
                 <td className="px-3 py-2.5 text-center border-l border-border">
-                  <MiniToggle checked={!!perm.markReadEnabled} onChange={(v) => onUpdate(perm.service, 'markReadEnabled', v)} />
+                  {(['obsidian', 'notion', 'twitter'] as string[]).includes(perm.service) ? (
+                    <span className="text-muted-foreground/30 text-xs">—</span>
+                  ) : (
+                    <MiniToggle checked={!!perm.markReadEnabled} onChange={(v) => onUpdate(perm.service, 'markReadEnabled', v)} />
+                  )}
                 </td>
               </tr>
             );
@@ -2698,7 +2704,6 @@ function GmailAccountAccordion({
 // ─── Google Services outer accordion ─────────────────────────────────────────
 
 function GoogleServicesAccordion() {
-  const [open, setOpen] = useState(true);
   const [addingAccount, setAddingAccount] = useState(false);
   const qc = useQueryClient();
 
@@ -2755,7 +2760,7 @@ function GoogleServicesAccordion() {
   return (
     <motion.div layout className="rounded-2xl border border-border overflow-hidden">
       {/* Header */}
-      <button onClick={() => setOpen(!open)} className={cn('w-full flex items-center gap-3 px-4 py-3 text-left transition-colors', open ? 'bg-card' : 'bg-card/50 hover:bg-card/80')}>
+      <div className="w-full flex items-center gap-3 px-4 py-3 text-left bg-card">
         <div className="w-10 h-10 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center flex-shrink-0 font-bold text-red-400">G</div>
         <div className="flex-1 min-w-0">
           <h2 className="text-base font-semibold">Google</h2>
@@ -2768,117 +2773,110 @@ function GoogleServicesAccordion() {
         <div className={cn('chip flex-shrink-0', connectedCount > 0 ? 'chip-emerald' : accounts.length > 0 ? 'chip-amber' : 'chip-zinc')}>
           {connectedCount > 0 ? `${connectedCount} connected` : accounts.length > 0 ? `${accounts.length} configured` : 'Not configured'}
         </div>
-        <ChevronDown className={cn('w-4 h-4 text-muted-foreground transition-transform duration-200 flex-shrink-0', open && 'rotate-180')} />
-      </button>
+      </div>
 
-      <AnimatePresence initial={false}>
-        {open && (
-          <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }} className="overflow-hidden">
-            <div className="border-t border-border bg-card p-4 space-y-3">
+      <div className="border-t border-border bg-card p-4 space-y-3">
 
-              {/* Add account button / form */}
-              {addingAccount ? (
-                <AddGoogleAccountForm onCancel={() => setAddingAccount(false)} onSuccess={() => setAddingAccount(false)} />
-              ) : (
-                <button onClick={() => setAddingAccount(true)} className="btn-primary text-xs w-full justify-center gap-1.5">
-                  <Plus className="w-3.5 h-3.5" />
-                  Add Google Account
-                </button>
-              )}
-
-              {/* Per-account accordions */}
-              {accounts.length > 0 && (
-                <div className="space-y-2">
-                  {accounts.map((acct) => {
-                    if (!acct.email) return null;
-                    const cs = statusMap.get(acct.email) ?? null;
-                    return (
-                      <GmailAccountAccordion
-                        key={acct.email}
-                        email={acct.email}
-                        tokenValid={acct.tokenValid}
-                        connStatus={cs}
-                        onRemove={(e) => removeAccount.mutate(e)}
-                      />
-                    );
-                  })}
-                </div>
-              )}
-
-              {/* ── Gemini Meeting Notes ── */}
-              <div className="rounded-xl border border-border/60 overflow-hidden">
-                {/* Sub-header */}
-                <div className="flex items-center gap-3 px-4 py-3 bg-secondary/20 border-b border-border/40">
-                  <FileText className="w-4 h-4 text-primary/60 flex-shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold">Gemini Meeting Notes</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      AI-generated smart notes from Google Meet — synced alongside Gmail &amp; Calendar
-                    </p>
-                  </div>
-                  <div className={cn('chip flex-shrink-0 text-[10px]', totalNotes > 0 ? 'chip-emerald' : 'chip-zinc')}>
-                    {totalNotes > 0 ? `${totalNotes} note${totalNotes !== 1 ? 's' : ''}` : 'No notes yet'}
-                  </div>
-                </div>
-
-                <div className="p-4 space-y-4">
-                  {/* OAuth scope notice */}
-                  <div className="rounded-xl border border-border bg-secondary/20 p-3 space-y-1.5 text-xs text-muted-foreground">
-                    <p className="font-medium text-foreground/70">Required OAuth scopes</p>
-                    <p>
-                      Your Google token must include{' '}
-                      <code className="bg-secondary/80 px-1 rounded">meetings.space.readonly</code>{' '}
-                      and{' '}
-                      <code className="bg-secondary/80 px-1 rounded">drive.readonly</code>.
-                      These are listed in the setup instructions above. If missing, remove and re-add your account — the connection test will catch it.
-                    </p>
-                  </div>
-
-                  {/* Drive search toggle */}
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <p className="text-sm font-medium">Search Drive for shared notes</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        Also finds notes from meetings others organized and shared with you. Disable to only show notes from meetings you organized.
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => updateMeetNotesSettings.mutate({ driveSearchEnabled: !driveEnabled })}
-                      disabled={updateMeetNotesSettings.isPending}
-                      className={cn(
-                        'flex-shrink-0 w-9 h-5 rounded-full border transition-all relative mt-0.5',
-                        driveEnabled ? 'bg-primary border-primary/60' : 'bg-secondary border-border',
-                      )}
-                    >
-                      <span className={cn(
-                        'absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all',
-                        driveEnabled ? 'left-4' : 'left-0.5',
-                      )} />
-                    </button>
-                  </div>
-
-                  {/* Manual sync */}
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-medium">Sync now</p>
-                      <p className="text-xs text-muted-foreground">Fetch new notes from the last 7 days</p>
-                    </div>
-                    <button
-                      onClick={() => syncMeetNotes.mutate()}
-                      disabled={syncMeetNotes.isPending || connectedCount === 0}
-                      className="btn-secondary text-xs gap-1.5"
-                    >
-                      <RefreshCw className={cn('w-3.5 h-3.5', syncMeetNotes.isPending && 'animate-spin')} />
-                      {syncMeetNotes.isPending ? 'Syncing…' : 'Sync Notes'}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-            </div>
-          </motion.div>
+        {/* Add account button / form */}
+        {addingAccount ? (
+          <AddGoogleAccountForm onCancel={() => setAddingAccount(false)} onSuccess={() => setAddingAccount(false)} />
+        ) : (
+          <button onClick={() => setAddingAccount(true)} className="btn-primary text-xs w-full justify-center gap-1.5">
+            <Plus className="w-3.5 h-3.5" />
+            Add Google Account
+          </button>
         )}
-      </AnimatePresence>
+
+        {/* Per-account accordions */}
+        {accounts.length > 0 && (
+          <div className="space-y-2">
+            {accounts.map((acct) => {
+              if (!acct.email) return null;
+              const cs = statusMap.get(acct.email) ?? null;
+              return (
+                <GmailAccountAccordion
+                  key={acct.email}
+                  email={acct.email}
+                  tokenValid={acct.tokenValid}
+                  connStatus={cs}
+                  onRemove={(e) => removeAccount.mutate(e)}
+                />
+              );
+            })}
+          </div>
+        )}
+
+        {/* ── Gemini Meeting Notes ── */}
+        <div className="rounded-xl border border-border/60 overflow-hidden">
+          {/* Sub-header */}
+          <div className="flex items-center gap-3 px-4 py-3 bg-secondary/20 border-b border-border/40">
+            <FileText className="w-4 h-4 text-primary/60 flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold">Gemini Meeting Notes</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                AI-generated smart notes from Google Meet — synced alongside Gmail &amp; Calendar
+              </p>
+            </div>
+            <div className={cn('chip flex-shrink-0 text-[10px]', totalNotes > 0 ? 'chip-emerald' : 'chip-zinc')}>
+              {totalNotes > 0 ? `${totalNotes} note${totalNotes !== 1 ? 's' : ''}` : 'No notes yet'}
+            </div>
+          </div>
+
+          <div className="p-4 space-y-4">
+            {/* OAuth scope notice */}
+            <div className="rounded-xl border border-border bg-secondary/20 p-3 space-y-1.5 text-xs text-muted-foreground">
+              <p className="font-medium text-foreground/70">Required OAuth scopes</p>
+              <p>
+                Your Google token must include{' '}
+                <code className="bg-secondary/80 px-1 rounded">meetings.space.readonly</code>{' '}
+                and{' '}
+                <code className="bg-secondary/80 px-1 rounded">drive.readonly</code>.
+                These are listed in the setup instructions above. If missing, remove and re-add your account — the connection test will catch it.
+              </p>
+            </div>
+
+            {/* Drive search toggle */}
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium">Search Drive for shared notes</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Also finds notes from meetings others organized and shared with you. Disable to only show notes from meetings you organized.
+                </p>
+              </div>
+              <button
+                onClick={() => updateMeetNotesSettings.mutate({ driveSearchEnabled: !driveEnabled })}
+                disabled={updateMeetNotesSettings.isPending}
+                className={cn(
+                  'flex-shrink-0 w-9 h-5 rounded-full border transition-all relative mt-0.5',
+                  driveEnabled ? 'bg-primary border-primary/60' : 'bg-secondary border-border',
+                )}
+              >
+                <span className={cn(
+                  'absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all',
+                  driveEnabled ? 'left-4' : 'left-0.5',
+                )} />
+              </button>
+            </div>
+
+            {/* Manual sync */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium">Sync now</p>
+                <p className="text-xs text-muted-foreground">Fetch new notes from the last 7 days</p>
+              </div>
+              <button
+                onClick={() => syncMeetNotes.mutate()}
+                disabled={syncMeetNotes.isPending || connectedCount === 0}
+                className="btn-secondary text-xs gap-1.5"
+              >
+                <RefreshCw className={cn('w-3.5 h-3.5', syncMeetNotes.isPending && 'animate-spin')} />
+                {syncMeetNotes.isPending ? 'Syncing…' : 'Sync Notes'}
+              </button>
+            </div>
+          </div>
+        </div>
+
+      </div>
     </motion.div>
   );
 }
@@ -2905,11 +2903,9 @@ function TwitterAccordion() {
   const status = connStatus?.status ?? (authStatus?.connected ? 'connected' : 'disconnected');
 
   // Credentials state
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [twitterEmail, setTwitterEmail] = useState('');
+  const [cookieString, setCookieString] = useState('');
   const [credsDirty, setCredsDirty] = useState(false);
-  useEffect(() => { setCredsDirty(!!(username || password || twitterEmail)); }, [username, password, twitterEmail]);
+  useEffect(() => { setCredsDirty(!!cookieString.trim()); }, [cookieString]);
 
   // Test state
   const [testSteps, setTestSteps] = useState<TestStep[]>([]);
@@ -2966,11 +2962,11 @@ function TwitterAccordion() {
   }, [connStatus, qc, runTest]);
 
   const connect = useMutation({
-    mutationFn: () => api.twitterConnect(username, password, twitterEmail),
+    mutationFn: () => api.twitterConnect(cookieString),
     onSuccess: () => {
       // Connection is async — status arrives via WebSocket / polling.
-      toast({ title: 'Connecting to Twitter…', description: 'This may take a few seconds' });
-      setUsername(''); setPassword(''); setTwitterEmail('');
+      toast({ title: 'Connecting to Twitter…', description: 'Verifying cookie session…' });
+      setCookieString('');
       qc.invalidateQueries({ queryKey: ['twitter-auth-status'] });
       qc.invalidateQueries({ queryKey: ['connections'] });
     },
@@ -3194,7 +3190,7 @@ function TwitterAccordion() {
                           {status !== 'connected' ? (
                             <button onClick={() => setActiveSection('credentials')} className="btn-primary text-xs">
                               <PlugZap className="w-3.5 h-3.5" />
-                              Connect (enter credentials)
+                              Connect (paste cookies)
                             </button>
                           ) : (
                             <button onClick={() => disconnect.mutate()} disabled={disconnect.isPending} className="btn-secondary text-xs">
@@ -3213,25 +3209,40 @@ function TwitterAccordion() {
                     {/* ── Credentials ───────────────────────────────────────── */}
                     {activeSection === 'credentials' && (
                       <div className="space-y-5">
-                        <SectionHeader icon={Key} title="Credentials" subtitle="Your twitter.com login — no developer account or API key needed" />
-                        <div className="space-y-3">
-                          <TextField label="Username" value={username} onChange={(v) => setUsername(v)} placeholder="handle (without @)" />
-                          <SecretField label="Password" value={password} onChange={(v) => setPassword(v)} placeholder="••••••••" />
-                          <div className="space-y-1.5">
-                            <div className="flex items-center gap-2">
-                              <label className="block text-xs font-medium text-muted-foreground">Email Address</label>
-                              <span className="text-[10px] text-muted-foreground/50 border border-border/50 rounded px-1 py-0.5 leading-none">optional</span>
-                            </div>
-                            <input
-                              type="email"
-                              value={twitterEmail}
-                              onChange={(e) => setTwitterEmail(e.target.value)}
-                              placeholder="your@email.com"
-                              className="input-warm"
-                            />
-                            <p className="text-[11px] text-muted-foreground/50">Only needed if Twitter asks for email verification during login</p>
-                          </div>
+                        <SectionHeader icon={Key} title="Cookie Authentication" subtitle="Paste your browser session cookies — works with 2FA, no password needed" />
+
+                        {/* How-to instructions */}
+                        <div className="rounded-xl border border-border bg-secondary/30 p-4 space-y-2.5 text-xs text-muted-foreground">
+                          <p className="font-semibold text-foreground text-[11px] uppercase tracking-wider">How to get your cookies</p>
+                          <ol className="space-y-1.5 list-decimal list-inside">
+                            <li>Open <span className="font-mono text-foreground/80">x.com</span> (or <span className="font-mono text-foreground/80">twitter.com</span>) and make sure you are logged in</li>
+                            <li>Open DevTools: <span className="chip chip-zinc text-[10px]">F12</span> or right-click → Inspect</li>
+                            <li>Go to the <span className="font-semibold text-foreground/80">Network</span> tab, then reload the page</li>
+                            <li>Click any request to <span className="font-mono text-foreground/80">x.com</span> or <span className="font-mono text-foreground/80">twitter.com</span></li>
+                            <li>In <span className="font-semibold text-foreground/80">Request Headers</span>, find the <span className="font-mono text-foreground/80">cookie:</span> header</li>
+                            <li>Right-click → Copy value, then paste below</li>
+                          </ol>
+                          <p className="text-[11px] text-muted-foreground/60 pt-1 border-t border-border/40">
+                            The value looks like: <span className="font-mono text-foreground/50">auth_token=abc123; ct0=xyz...; ...</span>
+                          </p>
                         </div>
+
+                        <div className="space-y-1.5">
+                          <label className="block text-xs font-medium text-muted-foreground">Cookie Header Value</label>
+                          <textarea
+                            value={cookieString}
+                            onChange={(e) => setCookieString(e.target.value)}
+                            placeholder="auth_token=…; ct0=…; twid=…"
+                            rows={4}
+                            className="input-warm font-mono text-xs resize-none w-full"
+                            spellCheck={false}
+                            autoComplete="off"
+                          />
+                          <p className="text-[11px] text-muted-foreground/50">
+                            Your cookies are stored locally and never sent anywhere except Twitter's API.
+                          </p>
+                        </div>
+
                         {authStatus?.handle && (
                           <p className="text-xs text-emerald-400 flex items-center gap-1.5">
                             <CheckCircle2 className="w-3.5 h-3.5" /> Currently connected as @{authStatus.handle}
@@ -3239,7 +3250,7 @@ function TwitterAccordion() {
                         )}
                         <button
                           onClick={() => connect.mutate()}
-                          disabled={!username || !password || connect.isPending}
+                          disabled={!cookieString.trim() || connect.isPending}
                           className="btn-primary text-xs"
                         >
                           {connect.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlugZap className="w-3.5 h-3.5" />}

@@ -6,7 +6,7 @@ import { optionalAuth } from '../auth/middleware.js';
 
 const router = Router();
 
-const ALL_SERVICES = ['slack', 'discord', 'telegram', 'gmail', 'calendar', 'twitter', 'notion'] as const;
+const ALL_SERVICES = ['slack', 'discord', 'telegram', 'gmail', 'calendar', 'twitter', 'notion', 'obsidian'] as const;
 
 // ── Global (UI) permissions ───────────────────────────────────────────────────
 
