@@ -4,6 +4,7 @@ WORKDIR /app
 # git is needed to run `git describe` for the version string
 RUN apk add --no-cache python3 make g++ git
 COPY package.json package-lock.json ./
+COPY scripts ./scripts
 COPY packages/server/package.json ./packages/server/
 COPY packages/client/package.json ./packages/client/
 RUN npm install --workspace=packages/server --workspace=packages/client
