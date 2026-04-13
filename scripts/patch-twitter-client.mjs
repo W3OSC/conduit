@@ -39,6 +39,21 @@ const PATCHES = [
   { old: 'HJFjzBgCs16TqxewQOeLNg', new: 'Fb7fyZ9MMCzvf_bNtwNdXA', name: 'HomeTimeline' },
   // HomeLatestTimeline query ID
   { old: 'K0X1xbCZUjttdK8RazKAlw', new: '2ee46L1AFXmnTa0EvUog-Q', name: 'HomeLatestTimeline' },
+  // Stub out @roamhq/wrtc (ESM) — Conduit doesn't use Twitter Spaces/WebRTC,
+  // but the static import crashes at startup when the native binary isn't present.
+  {
+    old: `import wrtc from '@roamhq/wrtc';`,
+    new: `const wrtc = { nonstandard: {}, RTCPeerConnection: class {}, MediaStream: class {} };`,
+    name: 'wrtc-esm-stub',
+    silent: true, // only present in ESM files; skip warning for CJS files
+  },
+  // Stub out @roamhq/wrtc (CJS)
+  {
+    old: `var wrtc = require('@roamhq/wrtc');`,
+    new: `var wrtc = { nonstandard: {}, RTCPeerConnection: class {}, MediaStream: class {} };`,
+    name: 'wrtc-cjs-stub',
+    silent: true, // only present in CJS files; skip warning for ESM files
+  },
 ];
 
 for (const filePath of DIST_FILES) {
@@ -50,7 +65,7 @@ for (const filePath of DIST_FILES) {
       src = src.replaceAll(patch.old, patch.new);
       console.log(`[patch-twitter-client] ${patch.name}: patched in ${filePath.replace(pkgDir, 'agent-twitter-client')}`);
       changed = true;
-    } else if (!src.includes(patch.new)) {
+    } else if (!src.includes(patch.new) && !patch.silent) {
       console.warn(`[patch-twitter-client] WARNING: ${patch.name} ID not found in ${filePath.replace(pkgDir, 'agent-twitter-client')} — may need updating`);
     }
   }
