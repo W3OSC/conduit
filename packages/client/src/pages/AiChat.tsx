@@ -85,7 +85,10 @@ function ToolCallPanel({ toolCalls }: { toolCalls: AiToolCall[] }) {
                   </div>
                   {tc.input !== undefined && (
                     <div>
-                      <p className="text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">Input</p>
+                      <div className="flex items-center justify-between mb-1">
+                        <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Input</p>
+                        <CopyButton text={JSON.stringify(tc.input, null, 2)} />
+                      </div>
                       <pre className="text-[11px] font-mono text-foreground/80 bg-background rounded-lg p-2 overflow-x-auto whitespace-pre-wrap break-all">
                         {JSON.stringify(tc.input, null, 2)}
                       </pre>
@@ -93,7 +96,10 @@ function ToolCallPanel({ toolCalls }: { toolCalls: AiToolCall[] }) {
                   )}
                   {tc.output !== undefined && (
                     <div>
-                      <p className="text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">Output</p>
+                      <div className="flex items-center justify-between mb-1">
+                        <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Output</p>
+                        <CopyButton text={typeof tc.output === 'string' ? tc.output : JSON.stringify(tc.output, null, 2)} />
+                      </div>
                       <pre className="text-[11px] font-mono text-foreground/80 bg-background rounded-lg p-2 overflow-x-auto whitespace-pre-wrap break-all max-h-40 overflow-y-auto">
                         {typeof tc.output === 'string' ? tc.output : JSON.stringify(tc.output, null, 2)}
                       </pre>

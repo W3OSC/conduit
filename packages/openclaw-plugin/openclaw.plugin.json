@@ -4,11 +4,10 @@
   "channels": ["conduit"],
   "name": "Conduit",
   "description": "Conduit personal communications hub — read messages, emails, and calendar; queue outbound sends for approval.",
-  "configSchema": {
-    "type": "object",
-    "additionalProperties": false,
-    "properties": {
-      "conduit": {
+  "configSchema": { "type": "object" },
+  "channelConfigs": {
+    "conduit": {
+      "schema": {
         "type": "object",
         "additionalProperties": false,
         "required": ["baseUrl", "apiKey"],

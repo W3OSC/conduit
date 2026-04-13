@@ -75,7 +75,7 @@ async function seedDefaults(): Promise<void> {
   const db = getDb();
 
   // Seed default permissions for each service
-  const services = ['slack', 'discord', 'telegram', 'gmail', 'calendar', 'twitter', 'notion'] as const;
+  const services = ['slack', 'discord', 'telegram', 'gmail', 'calendar', 'twitter', 'notion', 'obsidian'] as const;
   for (const service of services) {
     const existing = db
       .select()
@@ -83,11 +83,13 @@ async function seedDefaults(): Promise<void> {
       .where(eq(permissions.service, service))
       .get();
     if (!existing) {
+      // Obsidian, Notion, and Twitter write/outbox is off by default — must be explicitly enabled
+      const sendEnabled = !(['obsidian', 'notion', 'twitter'] as const).includes(service as 'obsidian' | 'notion' | 'twitter');
       db.insert(permissions)
         .values({
           service,
           readEnabled: true,
-          sendEnabled: true,
+          sendEnabled,
           requireApproval: true,
           directSendFromUi: false,
           markReadEnabled: false,

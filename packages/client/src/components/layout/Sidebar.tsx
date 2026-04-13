@@ -21,24 +21,26 @@ const SERVICES = [
   { id: 'twitter',  label: 'Twitter'  },
   { id: 'gmail',    label: 'Gmail'    },
   { id: 'calendar', label: 'Calendar' },
+  { id: 'notion',   label: 'Notion'   },
   { id: 'obsidian', label: 'Vault'    },
+  { id: 'ai',       label: 'AI'       },
 ] as const;
 
 const NAV_ITEMS = [
   { to: '/',            icon: Inbox,           label: 'Inbox'      },
   { to: '/dashboard',   icon: LayoutDashboard, label: 'Dashboard'  },
-  { to: '/ai',          icon: Bot,             label: 'AI'         },
-  { to: '/vault',       icon: BookOpen,        label: 'Vault'      },
-  { to: '/chat',        icon: MessageSquare,   label: 'Chat'       },
-  { to: '/outbox',      icon: SendHorizonal,   label: 'Outbox',    badge: true },
+  { to: '/ai',          icon: Bot,             label: 'AI',        service: 'ai'       },
+  { to: '/vault',       icon: BookOpen,        label: 'Vault',     service: 'obsidian' },
+  { to: '/chat',        icon: MessageSquare,   label: 'Chat',      service: 'slack'    },
+  { to: '/outbox',      icon: SendHorizonal,   label: 'Outbox',    badge: true         },
   { to: '/contacts',    icon: Users,           label: 'Contacts'   },
-  { to: '/twitter',     icon: Twitter,         label: 'Twitter'    },
-  { to: '/email',       icon: Mail,            label: 'Email'      },
-  { to: '/calendar',    icon: CalendarDays,    label: 'Calendar'   },
+  { to: '/twitter',     icon: Twitter,         label: 'Twitter',   service: 'twitter'  },
+  { to: '/email',       icon: Mail,            label: 'Email',     service: 'gmail'    },
+  { to: '/calendar',    icon: CalendarDays,    label: 'Calendar',  service: 'calendar' },
   { divider: true },
-  { to: '/connections', icon: Sliders,         label: 'Settings'   },
+  { to: '/settings',    icon: Sliders,         label: 'Settings'   },
   { to: '/audit-log',   icon: ScrollText,      label: 'Audit Log'  },
-] as const;
+];
 
 // ── Version / Update footer ───────────────────────────────────────────────────
 
@@ -214,6 +216,8 @@ export function Sidebar() {
           }
 
           const { to, icon: Icon, label } = item;
+          const service = 'service' in item ? (item as { service?: string }).service : undefined;
+          if (service && statuses[service]?.status !== 'connected') return null;
           const badge = 'badge' in item ? (item as { badge?: boolean }).badge : false;
           const isActive = to === '/'
             ? location.pathname === '/'

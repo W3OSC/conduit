@@ -22,7 +22,7 @@ interface SlackCreds { token: string; appToken?: string }
 interface DiscordCreds { token: string }
 interface TelegramCreds { apiId: string; apiHash: string; phone: string; sessionString?: string }
 interface GmailCredsLite { clientId: string; clientSecret: string; accessToken: string; refreshToken: string; email?: string; tokenExpiry?: string }
-interface TwitterCredsLite { username: string; password: string; email: string; cookies?: string; userId?: string; handle?: string }
+interface TwitterCredsLite { cookieString: string; cookies?: string; userId?: string; handle?: string; displayName?: string }
 interface NotionCredsLite { token: string; workspaceName?: string; botId?: string }
 
 type Creds = SlackCreds | DiscordCreds | TelegramCreds | GmailCredsLite | TwitterCredsLite | NotionCredsLite;
@@ -50,7 +50,7 @@ function redact(service: Service, creds: Creds): Record<string, unknown> {
   }
   // twitter
   const c = creds as TwitterCredsLite;
-  return { username: c.username || '', handle: c.handle || '', configured: !!(c.username && c.password), authenticated: !!c.cookies };
+  return { handle: c.handle || '', configured: !!c.cookieString, authenticated: !!c.cookies };
 }
 
 function getCreds(service: Service): Creds | null {

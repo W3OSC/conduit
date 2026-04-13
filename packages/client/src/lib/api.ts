@@ -322,8 +322,8 @@ export const api = {
   // Twitter
   twitterStatus: () => request<TwitterStatus>('/twitter/status'),
   twitterAuthStatus: () => request<{ configured: boolean; connected: boolean; handle: string | null; cookiesValid: boolean }>('/twitter/auth/status'),
-  twitterConnect: (username: string, password: string, email: string) =>
-    request<{ success: boolean; handle?: string; status: string; error?: string }>('/twitter/auth/connect', { method: 'POST', body: JSON.stringify({ username, password, email }) }),
+  twitterConnect: (cookieString: string) =>
+    request<{ success: boolean; handle?: string; status: string; error?: string }>('/twitter/auth/connect', { method: 'POST', body: JSON.stringify({ cookieString }) }),
   twitterDisconnect: () => request<{ success: boolean }>('/twitter/auth/disconnect', { method: 'DELETE' }),
   twitterRefresh: () => request<{ success: boolean }>('/twitter/auth/refresh', { method: 'POST' }),
   twitterFeed: (count = 20, reset = false) => request<{ tweets: Tweet[] }>(`/twitter/feed?count=${count}&reset=${reset}`),
@@ -399,11 +399,15 @@ export const api = {
   deleteObsidianConfig: (deleteLocal = false) =>
     request<{ success: boolean }>('/obsidian/config', { method: 'DELETE', body: JSON.stringify({ delete_local: deleteLocal }) }),
   generateObsidianSshKey: () =>
-    request<{ publicKey: string }>('/obsidian/config/generate-ssh-key', { method: 'POST' }),
+    request<{ publicKey: string; fingerprint: string | null }>('/obsidian/config/generate-ssh-key', { method: 'POST' }),
   getObsidianSshKey: () =>
     request<{ publicKey: string }>('/obsidian/config/ssh-key'),
+  getObsidianSshFingerprint: () =>
+    request<{ fingerprint: string | null }>('/obsidian/config/ssh-fingerprint'),
   cloneObsidianVault: () =>
     request<{ success: boolean; message: string }>('/obsidian/config/clone', { method: 'POST' }),
+  testObsidianConnection: () =>
+    request<{ success: boolean; error?: string }>('/obsidian/config/test', { method: 'POST' }),
   obsidianSyncStatus: () =>
     request<ObsidianSyncStatus>('/obsidian/sync/status'),
   syncObsidianVault: () =>
@@ -412,6 +416,20 @@ export const api = {
     request<{ files: VaultFileEntry[] }>('/obsidian/files'),
   obsidianReadFile: (filePath: string) =>
     request<{ path: string; content: string }>(`/obsidian/files/${encodeURIComponent(filePath)}`),
+
+  // ── Notion ───────────────────────────────────────────────────────────────────
+  /** Search the Notion workspace. Pass no query to get top-level pages. */
+  notionSearch: (params?: { query?: string; filter?: { property: 'object'; value: 'page' | 'data_source' }; page_size?: number; start_cursor?: string }) =>
+    request<NotionSearchResponse>('/notion/search', { method: 'POST', body: JSON.stringify(params ?? {}) }),
+  notionPage: (pageId: string) =>
+    request<NotionPage>(`/notion/pages/${pageId}`),
+  notionBlockChildren: (blockId: string, params?: { page_size?: number; start_cursor?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.page_size)   q.set('page_size',   String(params.page_size));
+    if (params?.start_cursor) q.set('start_cursor', params.start_cursor);
+    const qs = q.toString() ? `?${q}` : '';
+    return request<NotionBlockChildrenResponse>(`/notion/blocks/${blockId}/children${qs}`);
+  },
 
   // Update
   updateStatus: () => request<UpdateStatus>('/update/status'),
@@ -439,6 +457,8 @@ export interface StatusResponse {
 export interface ConnectionStatus {
   status: 'connected' | 'disconnected' | 'connecting' | 'error';
   mode?: string;
+  phase?: string;
+  message?: string;
   error?: string;
   accountId?: string;
   displayName?: string;
@@ -1162,4 +1182,125 @@ export interface UpdateStatus {
   commitsBehind: number;
   latestCommitSha: string;
   isDocker: boolean;
+}
+
+// ─── Notion types ─────────────────────────────────────────────────────────────
+
+export interface NotionRichText {
+  type: string;
+  plain_text: string;
+  href?: string | null;
+  annotations?: {
+    bold?: boolean;
+    italic?: boolean;
+    strikethrough?: boolean;
+    underline?: boolean;
+    code?: boolean;
+    color?: string;
+  };
+  text?: { content: string; link?: { url: string } | null };
+  mention?: unknown;
+  equation?: { expression: string };
+}
+
+export interface NotionPage {
+  id: string;
+  object: 'page';
+  url: string;
+  created_time: string;
+  last_edited_time: string;
+  archived: boolean;
+  in_trash?: boolean;
+  has_children?: boolean;
+  parent: {
+    type: string;
+    page_id?: string;
+    database_id?: string;
+    workspace?: boolean;
+  };
+  properties: Record<string, NotionProperty>;
+  icon?: { type: string; emoji?: string; external?: { url: string }; file?: { url: string } } | null;
+  cover?: { type: string; external?: { url: string }; file?: { url: string } } | null;
+}
+
+export interface NotionProperty {
+  id: string;
+  type: string;
+  title?: NotionRichText[];
+  rich_text?: NotionRichText[];
+  number?: number | null;
+  select?: { id: string; name: string; color: string } | null;
+  multi_select?: { id: string; name: string; color: string }[];
+  date?: { start: string; end?: string | null } | null;
+  checkbox?: boolean;
+  url?: string | null;
+  email?: string | null;
+  phone_number?: string | null;
+  [key: string]: unknown;
+}
+
+export interface NotionDatabase {
+  id: string;
+  object: 'database';
+  title: NotionRichText[];
+  url: string;
+  created_time: string;
+  last_edited_time: string;
+  archived: boolean;
+  in_trash?: boolean;
+  parent: {
+    type: string;
+    page_id?: string;
+    workspace?: boolean;
+  };
+  icon?: { type: string; emoji?: string; external?: { url: string } } | null;
+}
+
+export type NotionSearchResult = NotionPage | NotionDatabase;
+
+export interface NotionSearchResponse {
+  object: 'list';
+  results: NotionSearchResult[];
+  next_cursor: string | null;
+  has_more: boolean;
+}
+
+export interface NotionBlock {
+  id: string;
+  object: 'block';
+  type: string;
+  created_time: string;
+  last_edited_time: string;
+  has_children: boolean;
+  archived: boolean;
+  // Content keyed by type
+  paragraph?: { rich_text: NotionRichText[]; color?: string };
+  heading_1?: { rich_text: NotionRichText[]; color?: string; is_toggleable?: boolean };
+  heading_2?: { rich_text: NotionRichText[]; color?: string; is_toggleable?: boolean };
+  heading_3?: { rich_text: NotionRichText[]; color?: string; is_toggleable?: boolean };
+  bulleted_list_item?: { rich_text: NotionRichText[]; color?: string };
+  numbered_list_item?: { rich_text: NotionRichText[]; color?: string };
+  to_do?: { rich_text: NotionRichText[]; checked: boolean; color?: string };
+  toggle?: { rich_text: NotionRichText[]; color?: string };
+  code?: { rich_text: NotionRichText[]; language: string; caption?: NotionRichText[] };
+  quote?: { rich_text: NotionRichText[]; color?: string };
+  callout?: { rich_text: NotionRichText[]; icon?: { type: string; emoji?: string }; color?: string };
+  divider?: Record<string, never>;
+  image?: { type: string; external?: { url: string }; file?: { url: string; expiry_time?: string }; caption?: NotionRichText[] };
+  child_page?: { title: string };
+  child_database?: { title: string };
+  table?: { table_width: number; has_column_header: boolean; has_row_header: boolean };
+  table_row?: { cells: NotionRichText[][] };
+  embed?: { url: string; caption?: NotionRichText[] };
+  bookmark?: { url: string; caption?: NotionRichText[] };
+  link_preview?: { url: string };
+  equation?: { expression: string };
+  [key: string]: unknown;
+}
+
+export interface NotionBlockChildrenResponse {
+  object: 'list';
+  results: NotionBlock[];
+  next_cursor: string | null;
+  has_more: boolean;
 }

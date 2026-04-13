@@ -19,7 +19,7 @@ import {
   Send, Server, Shield, Settings, PlugZap, UserCircle2, Clock, Users, ExternalLink,
   MessageSquare as MessageSquareIcon, Mail as MailIcon, Lock, ShieldCheck, QrCode,
   LogOut, Zap, FileText, Bot, Unplug, ArrowRight, CircleCheck, CircleX, Bell, Volume2, VolumeX,
-  BookOpen, GitBranch, Palette,
+  BookOpen, GitBranch, Palette, Play, RotateCcw,
 } from 'lucide-react';
 import { AppearanceTab } from '@/components/settings/AppearanceTab';
 import {
@@ -28,12 +28,12 @@ import {
   type ObsidianVaultConfigRow,
 } from '@/lib/api';
 import { useConnectionStore, useSyncStore, type SyncProgress } from '@/store';
-import { ServiceIcon, SERVICE_CONFIG } from '@/components/shared/ServiceBadge';
+import { ServiceIcon, ServiceLogo, SERVICE_CONFIG } from '@/components/shared/ServiceBadge';
 import { StatusBadge, StatusDot } from '@/components/shared/StatusDot';
 import { cn, timeAgo, formatDate } from '@/lib/utils';
 import { toast } from '@/store';
 import type { NotificationSoundSettings, SoundStyle } from '@/hooks/useNotificationSound';
-import { DEFAULT_SOUND_SETTINGS } from '@/hooks/useNotificationSound';
+import { DEFAULT_SOUND_SETTINGS, playSound } from '@/hooks/useNotificationSound';
 
 type Service = 'slack' | 'discord' | 'telegram';
 const SERVICES: Service[] = ['slack', 'discord', 'telegram'];
@@ -900,8 +900,9 @@ function PermissionsSection({ service }: { service: Service }) {
 
   const handleToggle = (field: keyof Permission, value: boolean) => {
     if (!local) return;
-    setLocal({ ...local, [field]: value });
-    update.mutate({ [field]: value });
+    const extra = field === 'requireApproval' ? { directSendFromUi: !value } : {};
+    setLocal({ ...local, [field]: value, ...extra });
+    update.mutate({ [field]: value, ...extra });
   };
 
   if (!local) return null;
@@ -913,8 +914,7 @@ function PermissionsSection({ service }: { service: Service }) {
         {([
           { key: 'readEnabled',      label: 'Read Access',         desc: 'Allow Conduit to read messages from this service' },
           { key: 'sendEnabled',      label: 'Send Messages',       desc: 'Allow sending messages through this service' },
-          { key: 'requireApproval',  label: 'Require Approval',    desc: 'All outgoing messages must be manually approved first' },
-          { key: 'directSendFromUi', label: 'Direct Send from UI', desc: 'Messages composed in the Chat UI send immediately without outbox approval' },
+          { key: 'requireApproval',  label: 'Require Approval',    desc: 'All outgoing messages must be manually approved first. When off, messages sent from the UI go immediately without outbox review.' },
           { key: 'markReadEnabled',  label: 'Mark as Read',        desc: 'Opening a conversation in Chat marks it as read on the platform. When off, read state is only tracked locally.' },
         ] as { key: keyof Permission; label: string; desc: string }[]).map(({ key, label, desc }) => (
           <div key={key} className="px-4 bg-secondary/20">
@@ -1258,7 +1258,7 @@ function ServiceAccordion({ service }: { service: Service }) {
   const connStatus   = useConnectionStore((s) => s.statuses[service]);
   const syncProgress = useSyncStore((s) => s.progress[service]);
   const status = connStatus?.status ?? 'disconnected';
-  const [open, setOpen] = useState(status === 'error' || status === 'disconnected');
+  const [open, setOpen] = useState(false);
   const [activeSection, setActiveSection] = useState<SectionId>('overview');
   const isSyncing = syncProgress?.status === 'running';
 
@@ -1450,7 +1450,7 @@ function ApiKeysPanel() {
     onSuccess: () => { toast({ title: 'API key revoked' }); qc.invalidateQueries({ queryKey: ['api-keys'] }); },
   });
 
-  const copy = (v: string) => { navigator.clipboard.writeText(v); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+  const copy = (v: string) => { copyTextToClipboard(v).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }).catch(() => {}); };
 
   return (
     <div className="space-y-4">
@@ -1545,7 +1545,7 @@ function ApiKeysPanel() {
 // Permissions tab + Install tab + Security tab
 // ─────────────────────────────────────────────────────────────────────────────
 
-const ALL_SERVICES = ['slack', 'discord', 'telegram', 'gmail', 'calendar', 'twitter', 'notion'] as const;
+const ALL_SERVICES = ['slack', 'discord', 'telegram', 'gmail', 'calendar', 'twitter', 'notion', 'obsidian'] as const;
 
 const PERM_COLS: Array<{ key: 'readEnabled' | 'sendEnabled' | 'requireApproval'; label: string; description: string }> = [
   { key: 'readEnabled',     label: 'Read',     description: 'Can read messages and data' },
@@ -1554,6 +1554,26 @@ const PERM_COLS: Array<{ key: 'readEnabled' | 'sendEnabled' | 'requireApproval';
 ];
 
 // ── Shared primitives ─────────────────────────────────────────────────────────
+
+function MiniCheckbox({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={() => !disabled && onChange(!checked)}
+      className={cn(
+        'relative w-5 h-5 rounded-md transition-all duration-200 flex-shrink-0 flex items-center justify-center',
+        checked ? 'bg-primary shadow-amber' : 'bg-warm-700',
+        disabled && 'opacity-40 cursor-not-allowed',
+      )}
+    >
+      {checked && (
+        <svg viewBox="0 0 10 8" fill="none" className="w-2.5 h-2.5">
+          <path d="M1 4l2.5 2.5L9 1" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      )}
+    </button>
+  );
+}
 
 function MiniToggle({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
   return (
@@ -1574,47 +1594,97 @@ function MiniToggle({ checked, onChange, disabled }: { checked: boolean; onChang
 const SVC_LABEL: Record<string, string> = {
   slack: 'Slack', discord: 'Discord', telegram: 'Telegram',
   gmail: 'Gmail', calendar: 'Calendar', twitter: 'Twitter', notion: 'Notion',
+  obsidian: 'Obsidian',
 };
 
 const SVC_COLOR: Record<string, string> = {
   slack: 'text-violet-400', discord: 'text-indigo-400', telegram: 'text-sky-400',
   gmail: 'text-red-400', calendar: 'text-primary', twitter: 'text-sky-300', notion: 'text-zinc-300',
+  obsidian: 'text-purple-300',
 };
 
 // ── Permissions tab ───────────────────────────────────────────────────────────
 
-// A single service permission row for the UI user
-function UiServiceRow({ perm, onUpdate }: { perm: Permission; onUpdate: (field: keyof Permission, value: boolean) => void }) {
+// Compact table of all service permissions for the UI user
+function UiPermissionsTable({ perms, onUpdate }: { perms: Permission[]; onUpdate: (service: string, field: keyof Permission, value: boolean) => void }) {
   return (
-    <div className="rounded-xl border border-border bg-secondary/20 p-4 space-y-3">
-      {/* Service header */}
-      <div className="flex items-center gap-2">
-        <span className={cn('text-sm font-semibold', SVC_COLOR[perm.service] || 'text-foreground')}>
-          {SVC_LABEL[perm.service] || perm.service}
-        </span>
-      </div>
-
-      {/* Permission rows */}
-      <div className="space-y-2.5">
-        {[
-          { key: 'readEnabled' as const,      label: 'Read access',               desc: 'View messages, contacts, and data in the UI' },
-          { key: 'sendEnabled' as const,       label: 'Send messages',             desc: 'Create outbox items and initiate sends' },
-          { key: 'requireApproval' as const,   label: 'Require approval',          desc: 'All outgoing messages need manual confirmation before sending', indent: true },
-          { key: 'directSendFromUi' as const,  label: 'Direct send (bypass outbox)', desc: 'Send immediately without creating an outbox item', indent: true },
-          { key: 'markReadEnabled' as const,   label: 'Mark as read on platform',  desc: 'Opening a chat marks it as read via the platform API. Off = local-only read state.' },
-        ].map(({ key, label, desc, indent }) => {
-          const isDisabled = (key === 'requireApproval' || key === 'directSendFromUi') && !perm.sendEnabled;
-          return (
-            <div key={key} className={cn('flex items-start justify-between gap-4', indent && 'pl-4 border-l-2 border-border/50')}>
-              <div className="min-w-0">
-                <p className={cn('text-xs font-medium', isDisabled ? 'text-muted-foreground/40' : 'text-foreground/90')}>{label}</p>
-                <p className="text-[11px] text-muted-foreground/50 leading-snug">{desc}</p>
-              </div>
-              <MiniToggle checked={!!perm[key]} onChange={(v) => onUpdate(key, v)} disabled={isDisabled} />
-            </div>
-          );
-        })}
-      </div>
+    <div className="rounded-xl border border-border overflow-hidden">
+      <table className="w-full">
+        <thead>
+          <tr className="border-b border-border bg-secondary/10">
+            <th className="px-4 py-2 text-left text-2xs font-semibold uppercase tracking-wider text-muted-foreground" rowSpan={2}>
+              Service
+            </th>
+            <th
+              className="w-[22%] px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-b border-border"
+              rowSpan={2}
+              title="View messages, contacts, and data in the UI"
+            >
+              Read
+            </th>
+            <th
+              className="w-[44%] px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-l border-border"
+              colSpan={2}
+            >
+              Send
+            </th>
+            <th
+              className="w-[22%] px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-b border-border border-l border-border"
+              rowSpan={2}
+              title="Opening a chat marks it as read via the platform API. Off = local-only read state."
+            >
+              Mark Read
+            </th>
+          </tr>
+          <tr className="border-b border-border bg-secondary/10">
+            <th
+              className="px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-l border-border border-t border-border"
+              title="Create outbox items and initiate sends"
+            >
+              Enabled
+            </th>
+            <th
+              className="px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground/60 border-t border-border"
+              title="All outgoing messages need manual confirmation before sending"
+            >
+              Req. Approval
+            </th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border">
+          {perms.map((perm) => {
+            const sendOff = !perm.sendEnabled;
+            return (
+              <tr key={perm.service} className="hover:bg-secondary/10 transition-colors">
+                <td className={cn('px-4 py-2.5 text-xs font-medium', SVC_COLOR[perm.service] || 'text-foreground')}>
+                  <div className="flex items-center gap-2">
+                    <ServiceLogo service={perm.service} className="w-3.5 h-3.5 flex-shrink-0" />
+                    {SVC_LABEL[perm.service] || perm.service}
+                  </div>
+                </td>
+                <td className="px-3 py-2.5 text-center">
+                  <MiniToggle checked={!!perm.readEnabled} onChange={(v) => onUpdate(perm.service, 'readEnabled', v)} />
+                </td>
+                <td className="px-3 py-2.5 text-center border-l border-border">
+                  <MiniToggle checked={!!perm.sendEnabled} onChange={(v) => onUpdate(perm.service, 'sendEnabled', v)} />
+                </td>
+                <td className={cn('px-3 py-2.5 text-center transition-opacity', sendOff && 'opacity-30')}>
+                  <div className="flex justify-center">
+                    <MiniCheckbox checked={!!perm.requireApproval} onChange={(v) => onUpdate(perm.service, 'requireApproval', v)} disabled={sendOff} />
+                  </div>
+                </td>
+                <td className="px-3 py-2.5 text-center border-l border-border">
+                  {(['obsidian', 'notion', 'twitter'] as string[]).includes(perm.service) ? (
+                    <span className="text-muted-foreground/30 text-xs">—</span>
+                  ) : (
+                    <MiniToggle checked={!!perm.markReadEnabled} onChange={(v) => onUpdate(perm.service, 'markReadEnabled', v)} />
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -1638,8 +1708,10 @@ function PermissionsTab() {
   });
 
   const handleUiPerm = (service: string, field: keyof Permission, value: boolean) => {
-    setLocal((p) => p.map((r) => r.service === service ? { ...r, [field]: value } : r));
+    const extra = field === 'requireApproval' ? { directSendFromUi: !value } : {};
+    setLocal((p) => p.map((r) => r.service === service ? { ...r, [field]: value, ...extra } : r));
     updatePerm.mutate({ service, field, value });
+    if (field === 'requireApproval') updatePerm.mutate({ service, field: 'directSendFromUi', value: !value });
   };
 
   const createKey = useMutation({
@@ -1651,7 +1723,7 @@ function PermissionsTab() {
   const { data: keys = [] } = useQuery({ queryKey: ['api-keys'], queryFn: api.apiKeys });
   const activeKeys = keys.filter((k) => !k.revokedAt);
 
-  const copyKey = (v: string) => { navigator.clipboard.writeText(v); setCopiedKey(true); setTimeout(() => setCopiedKey(false), 2000); };
+  const copyKey = (v: string) => { copyTextToClipboard(v).then(() => { setCopiedKey(true); setTimeout(() => setCopiedKey(false), 2000); }).catch(() => {}); };
 
   const orderedPerms = ALL_SERVICES.map((svc) => local.find((p) => p.service === svc)).filter(Boolean) as Permission[];
 
@@ -1666,11 +1738,7 @@ function PermissionsTab() {
             Controls what you can do in the browser. These are also the defaults inherited by API keys.
           </p>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          {orderedPerms.map((perm) => (
-            <UiServiceRow key={perm.service} perm={perm} onUpdate={(field, value) => handleUiPerm(perm.service, field, value)} />
-          ))}
-        </div>
+        <UiPermissionsTable perms={orderedPerms} onUpdate={handleUiPerm} />
       </div>
 
       {/* ── API Keys ── */}
@@ -1828,9 +1896,9 @@ function ApiKeyRow({ apiKey }: { apiKey: ApiKeyItem }) {
                                 />
                                 {isOverridden ? (
                                   <button onClick={() => update.mutate({ service: perm.service, field: c.key, value: null })}
-                                    className="text-[9px] text-primary hover:underline leading-tight">reset</button>
+                                    className="text-[9px] text-primary hover:underline leading-tight cursor-pointer">reset</button>
                                 ) : (
-                                  <span className="text-[9px] text-muted-foreground/35 leading-tight">inherit</span>
+                                  <span className="text-[9px] text-muted-foreground/35 leading-tight select-none cursor-default">inherit</span>
                                 )}
                               </div>
                             </td>
@@ -1852,7 +1920,6 @@ function ApiKeyRow({ apiKey }: { apiKey: ApiKeyItem }) {
 // ── Install tab ───────────────────────────────────────────────────────────────
 
 function InstallTab() {
-  const [copied, setCopied] = useState(false);
   const baseUrl = typeof window !== 'undefined' ? window.location.origin : 'http://your-server:3101';
 
   const snippet = `{
@@ -1867,8 +1934,6 @@ function InstallTab() {
     "header": "X-API-Key"
   }
 }`;
-
-  const copy = () => { navigator.clipboard.writeText(snippet); setCopied(true); setTimeout(() => setCopied(false), 2000); };
 
   return (
     <div className="space-y-6">
@@ -1897,16 +1962,8 @@ function InstallTab() {
       </div>
 
       <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground/60">Skill Config</p>
-          <button onClick={copy} className="btn-ghost text-xs gap-1.5">
-            {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-            {copied ? 'Copied' : 'Copy'}
-          </button>
-        </div>
-        <pre className="text-xs font-mono bg-secondary/40 border border-border rounded-xl px-4 py-3 overflow-x-auto text-foreground/75 leading-relaxed">
-          {snippet}
-        </pre>
+        <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground/60">Skill Config</p>
+        <CodeBlock className="text-xs bg-secondary/40 px-4 py-3 text-foreground/75 leading-relaxed">{snippet}</CodeBlock>
       </div>
 
       <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 flex items-start gap-3">
@@ -2647,7 +2704,6 @@ function GmailAccountAccordion({
 // ─── Google Services outer accordion ─────────────────────────────────────────
 
 function GoogleServicesAccordion() {
-  const [open, setOpen] = useState(true);
   const [addingAccount, setAddingAccount] = useState(false);
   const qc = useQueryClient();
 
@@ -2704,7 +2760,7 @@ function GoogleServicesAccordion() {
   return (
     <motion.div layout className="rounded-2xl border border-border overflow-hidden">
       {/* Header */}
-      <button onClick={() => setOpen(!open)} className={cn('w-full flex items-center gap-3 px-4 py-3 text-left transition-colors', open ? 'bg-card' : 'bg-card/50 hover:bg-card/80')}>
+      <div className="w-full flex items-center gap-3 px-4 py-3 text-left bg-card">
         <div className="w-10 h-10 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center flex-shrink-0 font-bold text-red-400">G</div>
         <div className="flex-1 min-w-0">
           <h2 className="text-base font-semibold">Google</h2>
@@ -2717,117 +2773,110 @@ function GoogleServicesAccordion() {
         <div className={cn('chip flex-shrink-0', connectedCount > 0 ? 'chip-emerald' : accounts.length > 0 ? 'chip-amber' : 'chip-zinc')}>
           {connectedCount > 0 ? `${connectedCount} connected` : accounts.length > 0 ? `${accounts.length} configured` : 'Not configured'}
         </div>
-        <ChevronDown className={cn('w-4 h-4 text-muted-foreground transition-transform duration-200 flex-shrink-0', open && 'rotate-180')} />
-      </button>
+      </div>
 
-      <AnimatePresence initial={false}>
-        {open && (
-          <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }} className="overflow-hidden">
-            <div className="border-t border-border bg-card p-4 space-y-3">
+      <div className="border-t border-border bg-card p-4 space-y-3">
 
-              {/* Add account button / form */}
-              {addingAccount ? (
-                <AddGoogleAccountForm onCancel={() => setAddingAccount(false)} onSuccess={() => setAddingAccount(false)} />
-              ) : (
-                <button onClick={() => setAddingAccount(true)} className="btn-primary text-xs w-full justify-center gap-1.5">
-                  <Plus className="w-3.5 h-3.5" />
-                  Add Google Account
-                </button>
-              )}
-
-              {/* Per-account accordions */}
-              {accounts.length > 0 && (
-                <div className="space-y-2">
-                  {accounts.map((acct) => {
-                    if (!acct.email) return null;
-                    const cs = statusMap.get(acct.email) ?? null;
-                    return (
-                      <GmailAccountAccordion
-                        key={acct.email}
-                        email={acct.email}
-                        tokenValid={acct.tokenValid}
-                        connStatus={cs}
-                        onRemove={(e) => removeAccount.mutate(e)}
-                      />
-                    );
-                  })}
-                </div>
-              )}
-
-              {/* ── Gemini Meeting Notes ── */}
-              <div className="rounded-xl border border-border/60 overflow-hidden">
-                {/* Sub-header */}
-                <div className="flex items-center gap-3 px-4 py-3 bg-secondary/20 border-b border-border/40">
-                  <FileText className="w-4 h-4 text-primary/60 flex-shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold">Gemini Meeting Notes</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      AI-generated smart notes from Google Meet — synced alongside Gmail &amp; Calendar
-                    </p>
-                  </div>
-                  <div className={cn('chip flex-shrink-0 text-[10px]', totalNotes > 0 ? 'chip-emerald' : 'chip-zinc')}>
-                    {totalNotes > 0 ? `${totalNotes} note${totalNotes !== 1 ? 's' : ''}` : 'No notes yet'}
-                  </div>
-                </div>
-
-                <div className="p-4 space-y-4">
-                  {/* OAuth scope notice */}
-                  <div className="rounded-xl border border-border bg-secondary/20 p-3 space-y-1.5 text-xs text-muted-foreground">
-                    <p className="font-medium text-foreground/70">Required OAuth scopes</p>
-                    <p>
-                      Your Google token must include{' '}
-                      <code className="bg-secondary/80 px-1 rounded">meetings.space.readonly</code>{' '}
-                      and{' '}
-                      <code className="bg-secondary/80 px-1 rounded">drive.readonly</code>.
-                      These are listed in the setup instructions above. If missing, remove and re-add your account — the connection test will catch it.
-                    </p>
-                  </div>
-
-                  {/* Drive search toggle */}
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <p className="text-sm font-medium">Search Drive for shared notes</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        Also finds notes from meetings others organized and shared with you. Disable to only show notes from meetings you organized.
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => updateMeetNotesSettings.mutate({ driveSearchEnabled: !driveEnabled })}
-                      disabled={updateMeetNotesSettings.isPending}
-                      className={cn(
-                        'flex-shrink-0 w-9 h-5 rounded-full border transition-all relative mt-0.5',
-                        driveEnabled ? 'bg-primary border-primary/60' : 'bg-secondary border-border',
-                      )}
-                    >
-                      <span className={cn(
-                        'absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all',
-                        driveEnabled ? 'left-4' : 'left-0.5',
-                      )} />
-                    </button>
-                  </div>
-
-                  {/* Manual sync */}
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-medium">Sync now</p>
-                      <p className="text-xs text-muted-foreground">Fetch new notes from the last 7 days</p>
-                    </div>
-                    <button
-                      onClick={() => syncMeetNotes.mutate()}
-                      disabled={syncMeetNotes.isPending || connectedCount === 0}
-                      className="btn-secondary text-xs gap-1.5"
-                    >
-                      <RefreshCw className={cn('w-3.5 h-3.5', syncMeetNotes.isPending && 'animate-spin')} />
-                      {syncMeetNotes.isPending ? 'Syncing…' : 'Sync Notes'}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-            </div>
-          </motion.div>
+        {/* Add account button / form */}
+        {addingAccount ? (
+          <AddGoogleAccountForm onCancel={() => setAddingAccount(false)} onSuccess={() => setAddingAccount(false)} />
+        ) : (
+          <button onClick={() => setAddingAccount(true)} className="btn-primary text-xs w-full justify-center gap-1.5">
+            <Plus className="w-3.5 h-3.5" />
+            Add Google Account
+          </button>
         )}
-      </AnimatePresence>
+
+        {/* Per-account accordions */}
+        {accounts.length > 0 && (
+          <div className="space-y-2">
+            {accounts.map((acct) => {
+              if (!acct.email) return null;
+              const cs = statusMap.get(acct.email) ?? null;
+              return (
+                <GmailAccountAccordion
+                  key={acct.email}
+                  email={acct.email}
+                  tokenValid={acct.tokenValid}
+                  connStatus={cs}
+                  onRemove={(e) => removeAccount.mutate(e)}
+                />
+              );
+            })}
+          </div>
+        )}
+
+        {/* ── Gemini Meeting Notes ── */}
+        <div className="rounded-xl border border-border/60 overflow-hidden">
+          {/* Sub-header */}
+          <div className="flex items-center gap-3 px-4 py-3 bg-secondary/20 border-b border-border/40">
+            <FileText className="w-4 h-4 text-primary/60 flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold">Gemini Meeting Notes</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                AI-generated smart notes from Google Meet — synced alongside Gmail &amp; Calendar
+              </p>
+            </div>
+            <div className={cn('chip flex-shrink-0 text-[10px]', totalNotes > 0 ? 'chip-emerald' : 'chip-zinc')}>
+              {totalNotes > 0 ? `${totalNotes} note${totalNotes !== 1 ? 's' : ''}` : 'No notes yet'}
+            </div>
+          </div>
+
+          <div className="p-4 space-y-4">
+            {/* OAuth scope notice */}
+            <div className="rounded-xl border border-border bg-secondary/20 p-3 space-y-1.5 text-xs text-muted-foreground">
+              <p className="font-medium text-foreground/70">Required OAuth scopes</p>
+              <p>
+                Your Google token must include{' '}
+                <code className="bg-secondary/80 px-1 rounded">meetings.space.readonly</code>{' '}
+                and{' '}
+                <code className="bg-secondary/80 px-1 rounded">drive.readonly</code>.
+                These are listed in the setup instructions above. If missing, remove and re-add your account — the connection test will catch it.
+              </p>
+            </div>
+
+            {/* Drive search toggle */}
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium">Search Drive for shared notes</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Also finds notes from meetings others organized and shared with you. Disable to only show notes from meetings you organized.
+                </p>
+              </div>
+              <button
+                onClick={() => updateMeetNotesSettings.mutate({ driveSearchEnabled: !driveEnabled })}
+                disabled={updateMeetNotesSettings.isPending}
+                className={cn(
+                  'flex-shrink-0 w-9 h-5 rounded-full border transition-all relative mt-0.5',
+                  driveEnabled ? 'bg-primary border-primary/60' : 'bg-secondary border-border',
+                )}
+              >
+                <span className={cn(
+                  'absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all',
+                  driveEnabled ? 'left-4' : 'left-0.5',
+                )} />
+              </button>
+            </div>
+
+            {/* Manual sync */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium">Sync now</p>
+                <p className="text-xs text-muted-foreground">Fetch new notes from the last 7 days</p>
+              </div>
+              <button
+                onClick={() => syncMeetNotes.mutate()}
+                disabled={syncMeetNotes.isPending || connectedCount === 0}
+                className="btn-secondary text-xs gap-1.5"
+              >
+                <RefreshCw className={cn('w-3.5 h-3.5', syncMeetNotes.isPending && 'animate-spin')} />
+                {syncMeetNotes.isPending ? 'Syncing…' : 'Sync Notes'}
+              </button>
+            </div>
+          </div>
+        </div>
+
+      </div>
     </motion.div>
   );
 }
@@ -2854,11 +2903,9 @@ function TwitterAccordion() {
   const status = connStatus?.status ?? (authStatus?.connected ? 'connected' : 'disconnected');
 
   // Credentials state
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [twitterEmail, setTwitterEmail] = useState('');
+  const [cookieString, setCookieString] = useState('');
   const [credsDirty, setCredsDirty] = useState(false);
-  useEffect(() => { setCredsDirty(!!(username || password || twitterEmail)); }, [username, password, twitterEmail]);
+  useEffect(() => { setCredsDirty(!!cookieString.trim()); }, [cookieString]);
 
   // Test state
   const [testSteps, setTestSteps] = useState<TestStep[]>([]);
@@ -2896,20 +2943,34 @@ function TwitterAccordion() {
     setTestRunning(false);
   }, []);
 
+  // React to async connection result arriving via WebSocket
+  const prevConnStatus = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const prev = prevConnStatus.current;
+    const cur = connStatus?.status;
+    if (prev === cur) return;
+    prevConnStatus.current = cur;
+    if (prev === 'connecting' && cur === 'connected') {
+      const handle = connStatus?.displayName || '';
+      toast({ title: `Connected${handle ? ` as ${handle}` : ''}`, variant: 'success' });
+      qc.invalidateQueries({ queryKey: ['twitter-auth-status'] });
+      qc.invalidateQueries({ queryKey: ['connections'] });
+      setTimeout(runTest, 800);
+    } else if (prev === 'connecting' && cur === 'error') {
+      toast({ title: 'Twitter connection failed', description: connStatus?.error || 'Check your credentials', variant: 'destructive' });
+    }
+  }, [connStatus, qc, runTest]);
+
   const connect = useMutation({
-    mutationFn: () => api.twitterConnect(username, password, twitterEmail),
-    onSuccess: (d) => {
-      if (d.success) {
-        toast({ title: `Connected as @${d.handle}`, variant: 'success' });
-        qc.invalidateQueries({ queryKey: ['twitter-auth-status'] });
-        qc.invalidateQueries({ queryKey: ['connections'] });
-        setUsername(''); setPassword(''); setTwitterEmail('');
-        setTimeout(runTest, 800);
-      } else {
-        toast({ title: 'Connection failed', description: d.error, variant: 'destructive' });
-      }
+    mutationFn: () => api.twitterConnect(cookieString),
+    onSuccess: () => {
+      // Connection is async — status arrives via WebSocket / polling.
+      toast({ title: 'Connecting to Twitter…', description: 'Verifying cookie session…' });
+      setCookieString('');
+      qc.invalidateQueries({ queryKey: ['twitter-auth-status'] });
+      qc.invalidateQueries({ queryKey: ['connections'] });
     },
-    onError: (e: Error) => toast({ title: 'Failed', description: e.message, variant: 'destructive' }),
+    onError: (e: Error) => toast({ title: 'Failed to start connection', description: e.message, variant: 'destructive' }),
   });
 
   const disconnect = useMutation({
@@ -3129,7 +3190,7 @@ function TwitterAccordion() {
                           {status !== 'connected' ? (
                             <button onClick={() => setActiveSection('credentials')} className="btn-primary text-xs">
                               <PlugZap className="w-3.5 h-3.5" />
-                              Connect (enter credentials)
+                              Connect (paste cookies)
                             </button>
                           ) : (
                             <button onClick={() => disconnect.mutate()} disabled={disconnect.isPending} className="btn-secondary text-xs">
@@ -3148,12 +3209,40 @@ function TwitterAccordion() {
                     {/* ── Credentials ───────────────────────────────────────── */}
                     {activeSection === 'credentials' && (
                       <div className="space-y-5">
-                        <SectionHeader icon={Key} title="Credentials" subtitle="Your twitter.com login — no developer account or API key needed" />
-                        <div className="space-y-3">
-                          <TextField label="Twitter / X Username" value={username} onChange={(v) => setUsername(v)} placeholder="handle (without @)" />
-                          <TextField label="Email Address" value={twitterEmail} onChange={(v) => setTwitterEmail(v)} placeholder="your@email.com" type="email" />
-                          <SecretField label="Password" value={password} onChange={(v) => setPassword(v)} placeholder="••••••••" />
+                        <SectionHeader icon={Key} title="Cookie Authentication" subtitle="Paste your browser session cookies — works with 2FA, no password needed" />
+
+                        {/* How-to instructions */}
+                        <div className="rounded-xl border border-border bg-secondary/30 p-4 space-y-2.5 text-xs text-muted-foreground">
+                          <p className="font-semibold text-foreground text-[11px] uppercase tracking-wider">How to get your cookies</p>
+                          <ol className="space-y-1.5 list-decimal list-inside">
+                            <li>Open <span className="font-mono text-foreground/80">x.com</span> (or <span className="font-mono text-foreground/80">twitter.com</span>) and make sure you are logged in</li>
+                            <li>Open DevTools: <span className="chip chip-zinc text-[10px]">F12</span> or right-click → Inspect</li>
+                            <li>Go to the <span className="font-semibold text-foreground/80">Network</span> tab, then reload the page</li>
+                            <li>Click any request to <span className="font-mono text-foreground/80">x.com</span> or <span className="font-mono text-foreground/80">twitter.com</span></li>
+                            <li>In <span className="font-semibold text-foreground/80">Request Headers</span>, find the <span className="font-mono text-foreground/80">cookie:</span> header</li>
+                            <li>Right-click → Copy value, then paste below</li>
+                          </ol>
+                          <p className="text-[11px] text-muted-foreground/60 pt-1 border-t border-border/40">
+                            The value looks like: <span className="font-mono text-foreground/50">auth_token=abc123; ct0=xyz...; ...</span>
+                          </p>
                         </div>
+
+                        <div className="space-y-1.5">
+                          <label className="block text-xs font-medium text-muted-foreground">Cookie Header Value</label>
+                          <textarea
+                            value={cookieString}
+                            onChange={(e) => setCookieString(e.target.value)}
+                            placeholder="auth_token=…; ct0=…; twid=…"
+                            rows={4}
+                            className="input-warm font-mono text-xs resize-none w-full"
+                            spellCheck={false}
+                            autoComplete="off"
+                          />
+                          <p className="text-[11px] text-muted-foreground/50">
+                            Your cookies are stored locally and never sent anywhere except Twitter's API.
+                          </p>
+                        </div>
+
                         {authStatus?.handle && (
                           <p className="text-xs text-emerald-400 flex items-center gap-1.5">
                             <CheckCircle2 className="w-3.5 h-3.5" /> Currently connected as @{authStatus.handle}
@@ -3161,7 +3250,7 @@ function TwitterAccordion() {
                         )}
                         <button
                           onClick={() => connect.mutate()}
-                          disabled={!username || !password || !twitterEmail || connect.isPending}
+                          disabled={!cookieString.trim() || connect.isPending}
                           className="btn-primary text-xs"
                         >
                           {connect.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PlugZap className="w-3.5 h-3.5" />}
@@ -3273,18 +3362,19 @@ function NotionAccordion() {
   });
   const [token, setToken] = useState('');
   const [workspaceName, setWorkspaceName] = useState('');
-  const [credsDirty, setCredsDirty] = useState(false);
+  const [savedWorkspaceName, setSavedWorkspaceName] = useState('');
 
   useEffect(() => {
     if (raw) {
       setToken('');  // keep token field empty; we never echo secrets back
-      setWorkspaceName((raw as Record<string, string>).workspaceName || '');
+      const wn = (raw as Record<string, string>).workspaceName || '';
+      setWorkspaceName(wn);
+      setSavedWorkspaceName(wn);
     }
   }, [raw]);
 
-  useEffect(() => {
-    setCredsDirty(!!(token));
-  }, [token]);
+  const tokenConfigured = !!(raw && (raw as Record<string, string>).configured);
+  const credsDirty = !!(token) || workspaceName !== savedWorkspaceName;
 
   // Test state
   const [testSteps, setTestSteps] = useState<TestStep[]>([]);
@@ -3338,7 +3428,7 @@ function NotionAccordion() {
       qc.invalidateQueries({ queryKey: ['credentials'] });
       qc.invalidateQueries({ queryKey: ['connections'] });
       setToken('');
-      setCredsDirty(false);
+      setSavedWorkspaceName(workspaceName);
       setTimeout(runTest, 800);
     },
     onError: (e: Error) => toast({ title: 'Connection failed', description: e.message, variant: 'destructive' }),
@@ -3544,8 +3634,8 @@ function NotionAccordion() {
                             label="Integration Secret (secret_…)"
                             value={token}
                             onChange={setToken}
-                            placeholder="secret_..."
-                            hint={raw && (raw as Record<string, string>).configured ? 'A token is already stored — paste a new one to replace it' : undefined}
+                            placeholder={tokenConfigured ? '••••••••••••••••••••••••' : 'secret_...'}
+                            hint={tokenConfigured ? 'An integration secret is already stored — paste a new one to replace it' : undefined}
                           />
                           <TextField
                             label="Workspace Name (optional)"
@@ -3556,7 +3646,7 @@ function NotionAccordion() {
                           <div className="flex gap-2">
                             <button
                               onClick={() => saveAndConnect.mutate()}
-                              disabled={saveAndConnect.isPending || (!credsDirty && !workspaceName)}
+                              disabled={saveAndConnect.isPending || !credsDirty}
                               className="btn-primary text-xs"
                             >
                               {saveAndConnect.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
@@ -3575,15 +3665,15 @@ function NotionAccordion() {
                           {([
                             { key: 'readEnabled' as const,      label: 'Read Access',         desc: 'Allow reading pages, databases, and blocks directly (bypasses outbox)' },
                             { key: 'sendEnabled' as const,       label: 'Write Access',        desc: 'Allow queuing create/update/append/archive operations to the outbox' },
-                            { key: 'requireApproval' as const,   label: 'Require Approval',    desc: 'All write operations must be manually approved before executing' },
-                            { key: 'directSendFromUi' as const,  label: 'Direct Send from UI', desc: 'Write operations from the Chat UI execute immediately without outbox approval' },
+                            { key: 'requireApproval' as const,   label: 'Require Approval',    desc: 'All write operations must be manually approved before executing. When off, operations from the Chat UI execute immediately.' },
                           ]).map(({ key, label, desc }) => (
                             <div key={key} className="px-4 bg-secondary/20">
                               <Toggle
                                 checked={!!localPerm[key]}
                                 onChange={(v) => {
-                                  setLocalPerm({ ...localPerm, [key]: v });
-                                  updatePerm.mutate({ [key]: v });
+                                  const extra = key === 'requireApproval' ? { directSendFromUi: !v } : {};
+                                  setLocalPerm({ ...localPerm, [key]: v, ...extra });
+                                  updatePerm.mutate({ [key]: v, ...extra });
                                 }}
                                 label={label}
                                 description={desc}
@@ -3609,13 +3699,37 @@ function NotionAccordion() {
 // AI Connection Tab
 // ─────────────────────────────────────────────────────────────────────────────
 
+function copyTextToClipboard(text: string): Promise<void> {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text);
+  }
+  // Fallback for non-secure contexts (e.g. accessed via IP/hostname over HTTP)
+  return new Promise((resolve, reject) => {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    try {
+      const ok = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      ok ? resolve() : reject(new Error('execCommand copy failed'));
+    } catch (err) {
+      document.body.removeChild(textarea);
+      reject(err);
+    }
+  });
+}
+
 function CopyField({ label, value, mono = true }: { label: string; value: string; mono?: boolean }) {
   const [copied, setCopied] = useState(false);
   const copy = () => {
-    navigator.clipboard.writeText(value).then(() => {
+    copyTextToClipboard(value).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    });
+    }).catch(() => {});
   };
   return (
     <div className="space-y-1.5">
@@ -3631,6 +3745,33 @@ function CopyField({ label, value, mono = true }: { label: string; value: string
           {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
         </button>
       </div>
+    </div>
+  );
+}
+
+function CodeBlock({ children, className }: { children: string; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    copyTextToClipboard(children).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {});
+  };
+  return (
+    <div className="relative group">
+      <pre className={cn(
+        'text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80',
+        className,
+      )}>
+        {children}
+      </pre>
+      <button
+        onClick={copy}
+        title="Copy"
+        className="absolute top-2 right-2 btn-ghost px-1.5 py-1 opacity-0 group-hover:opacity-100 transition-opacity"
+      >
+        {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+      </button>
     </div>
   );
 }
@@ -3828,7 +3969,7 @@ function AiConnectionTab() {
   const configured = conn?.configured ?? false;
 
   const methods: { id: AiSetupMethod; label: string; sub: string }[] = [
-    { id: 'channel', label: 'OpenClaw Channel', sub: '@w3os/openclaw-conduit plugin' },
+    { id: 'channel', label: 'OpenClaw Channel', sub: '@w3osc/openclaw-conduit plugin' },
     { id: 'gateway', label: 'OpenClaw Gateway', sub: 'via webhooks plugin' },
     { id: 'cli',     label: 'OpenClaw CLI',     sub: 'direct session injection' },
     { id: 'other',   label: 'Other tools',       sub: 'n8n, custom scripts, etc.' },
@@ -3899,7 +4040,7 @@ function AiConnectionTab() {
                   <h3 className="text-sm font-semibold">Install the Conduit channel plugin</h3>
                 </div>
                 <div className="pl-8 space-y-2">
-                  <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80">{`openclaw plugins install @w3os/openclaw-conduit`}</pre>
+                   <CodeBlock>{`openclaw plugins install @w3osc/openclaw-conduit`}</CodeBlock>
                 </div>
               </div>
 
@@ -3909,9 +4050,9 @@ function AiConnectionTab() {
                   <h3 className="text-sm font-semibold">Generate a Conduit API key</h3>
                 </div>
                 <div className="pl-8 space-y-2">
-                  <p className="text-xs text-muted-foreground">
-                    Go to <strong>Settings → Permissions</strong> and generate an API key. You will add it to your OpenClaw config in the next step.
-                  </p>
+                  <span className="text-xs text-muted-foreground">
+                    Go to <button onClick={() => navigate('/settings/permissions')} className="text-primary hover:underline font-semibold cursor-pointer">Settings → Permissions</button> and generate an API key. You will add it to your OpenClaw config in the next step.
+                  </span>
                 </div>
               </div>
 
@@ -3922,18 +4063,35 @@ function AiConnectionTab() {
                 </div>
                 <div className="pl-8 space-y-2">
                   <p className="text-xs text-muted-foreground">
-                    Edit <code className="font-mono text-primary/70 text-[11px]">~/.openclaw/openclaw.json</code> and add:
+                    Run this snippet to automatically inject the channel config into <code className="font-mono text-primary/70 text-[11px]">~/.openclaw/openclaw.json</code>:
                   </p>
-                  <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80 leading-relaxed">{                   `{
-  "channels": {
-    "conduit": {
-      "baseUrl": "${typeof window !== 'undefined' ? window.location.origin : 'http://your-conduit-host:3101'}",
-      "apiKey": "<your sk-arb-... key from Step 2>",
-      "allowFrom": [],
-      "webhookSecret": "<optional shared secret>"
-    }
-  }
-}`}</pre>
+                  <CodeBlock className="leading-relaxed">{`python3 - <<'EOF'
+import json, pathlib, sys
+
+def prompt(msg):
+    with open("/dev/tty") as tty:
+        sys.stdout.write(msg)
+        sys.stdout.flush()
+        return tty.readline().rstrip("\\n")
+
+config_path = pathlib.Path.home() / ".openclaw" / "openclaw.json"
+config_path.parent.mkdir(parents=True, exist_ok=True)
+
+default_url = "${window.location.origin}"
+base_url = prompt(f"Conduit base URL [{default_url}]: ").strip() or default_url
+api_key = prompt("API key (from Step 2): ").strip()
+
+cfg = json.loads(config_path.read_text()) if config_path.exists() else {}
+cfg.setdefault("channels", {})["conduit"] = {
+    "baseUrl": base_url,
+    "apiKey": api_key,
+    "allowFrom": [],
+    "webhookSecret": ""
+}
+
+config_path.write_text(json.dumps(cfg, indent=2))
+print("openclaw.json updated.")
+EOF`}</CodeBlock>
                   <p className="text-xs text-muted-foreground">
                     Restart the Gateway: <code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>
                   </p>
@@ -3983,7 +4141,7 @@ function AiConnectionTab() {
                   <p className="text-xs text-muted-foreground">
                     Edit <code className="font-mono text-primary/70 text-[11px]">~/.openclaw/openclaw.json</code> and add:
                   </p>
-                  <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80 leading-relaxed">{`{
+                   <CodeBlock className="leading-relaxed">{`{
   "plugins": {
     "entries": {
       "webhooks": {
@@ -4001,7 +4159,7 @@ function AiConnectionTab() {
       }
     }
   }
-}`}</pre>
+}`}</CodeBlock>
                   <p className="text-xs text-muted-foreground">
                     Restart the Gateway: <code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>
                   </p>
@@ -4053,7 +4211,7 @@ function AiConnectionTab() {
                 </div>
                 <div className="pl-8 space-y-2">
                   <p className="text-xs text-muted-foreground">
-                    Go to <strong>Settings → Permissions</strong> and generate an API key. All CLI requests must include <code className="font-mono text-primary/70 text-[11px]">X-API-Key: &lt;your-key&gt;</code>.
+                    Go to <button onClick={() => navigate('/settings/permissions')} className="text-primary hover:underline font-semibold">Settings → Permissions</button> and generate an API key. All CLI requests must include <code className="font-mono text-primary/70 text-[11px]">X-API-Key: &lt;your-key&gt;</code>.
                   </p>
                 </div>
               </div>
@@ -4094,16 +4252,16 @@ function AiConnectionTab() {
                   <p className="text-xs text-muted-foreground">
                     Conduit POSTs JSON to your webhook URL on each message:
                   </p>
-                  <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80 leading-relaxed">{`{
+                   <CodeBlock className="leading-relaxed">{`{
   "sessionId": "<uuid>",
   "streamUrl": "<baseUrl>/api/ai/sessions/<id>/stream",
   "messages": [{ "role": "user", "content": "..." }],
   "systemPrompt": "..."
-}`}</pre>
+}`}</CodeBlock>
                   <p className="text-xs text-muted-foreground">
                     Stream your response back by POSTing chunks to <code className="font-mono text-primary/70 text-[11px]">streamUrl</code>:
                   </p>
-                  <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80 leading-relaxed">{`# First chunk — omit messageId, save the returned one
+                   <CodeBlock className="leading-relaxed">{`# First chunk — omit messageId, save the returned one
 POST <streamUrl>
 X-API-Key: <your-key>
 { "delta": "text chunk", "done": false }
@@ -4112,7 +4270,7 @@ X-API-Key: <your-key>
 { "delta": "next chunk", "done": false, "messageId": "<returned-id>" }
 
 # Final chunk
-{ "delta": "", "done": true, "messageId": "<returned-id>" }`}</pre>
+{ "delta": "", "done": true, "messageId": "<returned-id>" }`}</CodeBlock>
                 </div>
               </div>
             </div>
@@ -4128,7 +4286,7 @@ X-API-Key: <your-key>
                 </div>
                 <div className="pl-8 space-y-2">
                   <p className="text-xs text-muted-foreground">
-                    Go to <strong>Settings → Permissions</strong> and generate an API key. Include it as <code className="font-mono text-primary/70 text-[11px]">X-API-Key: &lt;your-key&gt;</code> on every request.
+                    Go to <button onClick={() => navigate('/settings/permissions')} className="text-primary hover:underline font-semibold">Settings → Permissions</button> and generate an API key. Include it as <code className="font-mono text-primary/70 text-[11px]">X-API-Key: &lt;your-key&gt;</code> on every request.
                   </p>
                 </div>
               </div>
@@ -4142,7 +4300,7 @@ X-API-Key: <your-key>
                   <p className="text-xs text-muted-foreground">
                     The full REST API is described at:
                   </p>
-                  <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80">{`GET ${typeof window !== 'undefined' ? window.location.origin : '<baseUrl>'}/api/openapi.json`}</pre>
+                   <CodeBlock>{`GET ${typeof window !== 'undefined' ? window.location.origin : '<baseUrl>'}/api/openapi.json`}</CodeBlock>
                   <p className="text-xs text-muted-foreground">
                     Configure your tool (n8n, Zapier, custom script, etc.) to use that spec URL and set <code className="font-mono text-primary/70 text-[11px]">X-API-Key</code> as an auth header.
                   </p>
@@ -4185,18 +4343,18 @@ X-API-Key: <your-key>
                   <p className="text-xs text-muted-foreground">
                     Conduit POSTs this payload to your webhook on each message:
                   </p>
-                  <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80 leading-relaxed">{`{
+                   <CodeBlock className="leading-relaxed">{`{
   "sessionId": "<uuid>",
   "streamUrl": "<baseUrl>/api/ai/sessions/<id>/stream",
   "messages": [{ "role": "user", "content": "..." }],
   "systemPrompt": "..."
-}`}</pre>
+}`}</CodeBlock>
                   <p className="text-xs text-muted-foreground">
                     POST token chunks to <code className="font-mono text-primary/70 text-[11px]">streamUrl</code> with <code className="font-mono text-primary/70 text-[11px]">X-API-Key</code>:
                   </p>
-                  <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80 leading-relaxed">{`{ "delta": "text chunk", "done": false }              // first — save returned messageId
+                   <CodeBlock className="leading-relaxed">{`{ "delta": "text chunk", "done": false }              // first — save returned messageId
 { "delta": "next chunk", "done": false, "messageId": "<id>" }
-{ "delta": "", "done": true,  "messageId": "<id>" }    // final`}</pre>
+{ "delta": "", "done": true,  "messageId": "<id>" }    // final`}</CodeBlock>
                 </div>
               </div>
             </div>
@@ -4246,7 +4404,7 @@ X-API-Key: <your-key>
                   <p className="text-xs text-muted-foreground">
                     Create <code className="font-mono text-primary/70 text-[11px]">~/.openclaw/workspace/skills/conduit/SKILL.md</code>:
                   </p>
-                  <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80 leading-relaxed whitespace-pre-wrap break-all">{`---
+                   <CodeBlock className="leading-relaxed whitespace-pre-wrap break-all">{`---
 name: conduit
 description: Read the user's messages, emails, and calendar via Conduit, and stream responses back to the Conduit AI chat interface.
 ---
@@ -4273,7 +4431,7 @@ POST chunks to: ${conn.streamUrlTemplate.replace('{sessionId}', '<sessionId from
 Body: { "delta": "text chunk", "done": false, "messageId": "<id>" }
 - Omit messageId on the first chunk; use the returned ID on all subsequent chunks.
 - Send { "done": true } on the final chunk.
-- Always include X-API-Key: <key>.`}</pre>
+- Always include X-API-Key: <key>.`}</CodeBlock>
                   <p className="text-xs text-muted-foreground">
                     Restart the Gateway: <code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>
                   </p>
@@ -4359,23 +4517,39 @@ Body: { "delta": "text chunk", "done": false, "messageId": "<id>" }
 // ─────────────────────────────────────────────────────────────────────────────
 
 const SOUND_OPTIONS: Array<{ value: SoundStyle; label: string }> = [
-  { value: 'default', label: 'Default ding' },
+  { value: 'default', label: 'Ding' },
   { value: 'chime',   label: 'Chime' },
   { value: 'pop',     label: 'Pop' },
+  { value: 'ping',    label: 'Ping' },
+  { value: 'buzz',    label: 'Buzz' },
+  { value: 'chord',   label: 'Chord' },
+  { value: 'whoosh',  label: 'Whoosh' },
+  { value: 'swoosh',  label: 'Swoosh' },
+  { value: 'thud',    label: 'Thud' },
   { value: 'none',    label: 'None (silent)' },
 ];
 
 function SoundSelect({ value, onChange }: { value: SoundStyle; onChange: (v: SoundStyle) => void }) {
   return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value as SoundStyle)}
-      className="text-xs bg-secondary border border-border rounded-lg px-2 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
-    >
-      {SOUND_OPTIONS.map((o) => (
-        <option key={o.value} value={o.value}>{o.label}</option>
-      ))}
-    </select>
+    <div className="flex items-center gap-1.5">
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as SoundStyle)}
+        className="text-xs bg-secondary border border-border rounded-lg px-2 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
+      >
+        {SOUND_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
+      <button
+        onClick={() => playSound(value)}
+        disabled={value === 'none'}
+        title={value === 'none' ? 'No sound to preview' : 'Preview sound'}
+        className="flex items-center justify-center w-6 h-6 rounded-md text-muted-foreground hover:text-foreground hover:bg-white/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+      >
+        <Play className="w-3 h-3" />
+      </button>
+    </div>
   );
 }
 
@@ -4443,6 +4617,17 @@ function NotificationsTab() {
           ))}
         </div>
       )}
+
+      {/* Reset to defaults */}
+      <div className="flex justify-end">
+        <button
+          onClick={() => save(DEFAULT_SOUND_SETTINGS)}
+          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <RotateCcw className="w-3 h-3" />
+          Reset to defaults
+        </button>
+      </div>
     </div>
   );
 }
@@ -4451,10 +4636,43 @@ function NotificationsTab() {
 // Obsidian Vault Tab
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── Helpers for SSH deploy key deep links ─────────────────────────────────────
+
+function inferDeployKeyUrl(remoteUrl: string): { platform: 'github' | 'gitlab' | null; url: string | null } {
+  try {
+    // SSH: git@github.com:org/repo.git
+    const sshMatch = remoteUrl.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
+    if (sshMatch) {
+      const host = sshMatch[1];
+      const repoPath = sshMatch[2];
+      if (host.includes('github')) return { platform: 'github', url: `https://github.com/${repoPath}/settings/keys` };
+      if (host.includes('gitlab')) return { platform: 'gitlab', url: `https://gitlab.com/${repoPath}/-/settings/repository#js-deploy-keys-settings` };
+      return { platform: null, url: null };
+    }
+    // HTTPS: https://github.com/org/repo.git
+    const url = new URL(remoteUrl);
+    const repoPath = url.pathname.replace(/^\//, '').replace(/\.git$/, '');
+    if (url.hostname.includes('github')) return { platform: 'github', url: `https://github.com/${repoPath}/settings/keys` };
+    if (url.hostname.includes('gitlab')) return { platform: 'gitlab', url: `https://gitlab.com/${repoPath}/-/settings/repository#js-deploy-keys-settings` };
+    return { platform: null, url: null };
+  } catch {
+    return { platform: null, url: null };
+  }
+}
+
+// Clone phase ordering for the progress indicator
+const CLONE_PHASES = [
+  { key: 'connecting', label: 'Connecting' },
+  { key: 'cloning', label: 'Cloning' },
+  { key: 'resolving', label: 'Resolving objects' },
+  { key: 'finalizing', label: 'Finalizing' },
+];
+
 function ObsidianVaultTab() {
   const qc = useQueryClient();
   const connStatus = useConnectionStore((s) => s.statuses['obsidian']);
   const status = connStatus?.status ?? 'disconnected';
+  const clonePhase = connStatus?.phase ?? null;
 
   const { data: configData, isLoading: configLoading, refetch: refetchConfig } = useQuery({
     queryKey: ['obsidian-config'],
@@ -4465,18 +4683,38 @@ function ObsidianVaultTab() {
   const vault = configData?.vault as ObsidianVaultConfigRow | undefined;
   const configured = configData?.configured ?? false;
 
-  // Form state
-  const [name, setName] = useState(vault?.name ?? '');
-  const [remoteUrl, setRemoteUrl] = useState(vault?.remoteUrl ?? '');
-  const [authType, setAuthType] = useState<'https' | 'ssh'>(vault?.authType ?? 'https');
+  // Track whether a clone was started in this session (to prevent button flickering
+  // while waiting for WS status update after the instant API response)
+  const [cloneInitiated, setCloneInitiated] = useState(false);
+
+  // Reset cloneInitiated if connection status transitions away from connecting
+  useEffect(() => {
+    if (status === 'connected' || status === 'error') {
+      setCloneInitiated(false);
+    }
+  }, [status]);
+
+  // Form state — initialised from vault on first load only (not on every refetch).
+  // We track the vault id we last seeded from so that switching to a different vault
+  // config triggers a re-seed, but background refetches of the same vault don't
+  // clobber in-flight user edits.
+  const seededVaultIdRef = React.useRef<number | null>(null);
+  const [name, setName] = useState('');
+  const [remoteUrl, setRemoteUrl] = useState('');
+  const [authType, setAuthType] = useState<'https' | 'ssh'>('https');
   const [httpsToken, setHttpsToken] = useState('');
-  const [branch, setBranch] = useState(vault?.branch ?? 'main');
+  const [branch, setBranch] = useState('main');
   const [showToken, setShowToken] = useState(false);
-  const [sshPublicKey, setSshPublicKey] = useState(vault?.sshPublicKey ?? '');
+  const [sshPublicKey, setSshPublicKey] = useState('');
+  const [sshFingerprint, setSshFingerprint] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
+  // Seed form fields when vault data first arrives or the vault id changes.
+  // Deliberately NOT listing individual field setters as deps — we only want
+  // this to run when the backing vault record itself changes.
   useEffect(() => {
-    if (vault) {
+    if (vault && vault.id !== seededVaultIdRef.current) {
+      seededVaultIdRef.current = vault.id;
       setName(vault.name);
       setRemoteUrl(vault.remoteUrl);
       setAuthType(vault.authType);
@@ -4484,6 +4722,30 @@ function ObsidianVaultTab() {
       setSshPublicKey(vault.sshPublicKey ?? '');
     }
   }, [vault]);
+
+  // Keep sshPublicKey in sync when the server updates it (e.g. after generate).
+  // We only apply the server value when local state is empty to avoid clobbering
+  // a just-generated key that's already been set into local state.
+  useEffect(() => {
+    if (vault?.sshPublicKey && !sshPublicKey) {
+      setSshPublicKey(vault.sshPublicKey);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vault?.sshPublicKey]);
+
+  // Fetch the fingerprint for the stored key on load (when a key exists).
+  useEffect(() => {
+    if (vault?.hasSshPrivateKey && !sshFingerprint) {
+      api.getObsidianSshFingerprint()
+        .then((r) => setSshFingerprint(r.fingerprint))
+        .catch(() => {});
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vault?.hasSshPrivateKey]);
+
+  // Test connection state — only cleared by explicit user action (field edits or save),
+  // not by background refetches.
+  const [testResult, setTestResult] = useState<{ success: boolean; error?: string } | null>(null);
 
   const saveConfig = useMutation({
     mutationFn: () => api.saveObsidianConfig({
@@ -4494,17 +4756,25 @@ function ObsidianVaultTab() {
       branch,
     }),
     onSuccess: () => {
-      toast({ title: 'Vault configuration saved' });
+      toast({ title: 'Configuration saved' });
+      setTestResult(null);
+      setHttpsToken(''); // clear token field — it's now saved server-side
       refetchConfig();
       qc.invalidateQueries({ queryKey: ['obsidian-config'] });
     },
     onError: (e: Error) => toast({ title: e.message }),
   });
 
+  const testConnection = useMutation({
+    mutationFn: () => api.testObsidianConnection(),
+    onSuccess: (data) => setTestResult(data),
+    onError: (e: Error) => setTestResult({ success: false, error: e.message }),
+  });
+
   const cloneVault = useMutation({
     mutationFn: () => api.cloneObsidianVault(),
     onSuccess: () => {
-      toast({ title: 'Clone started — this may take a moment' });
+      setCloneInitiated(true);
       setTimeout(() => {
         refetchConfig();
         qc.invalidateQueries({ queryKey: ['connections'] });
@@ -4526,7 +4796,9 @@ function ObsidianVaultTab() {
     mutationFn: () => api.generateObsidianSshKey(),
     onSuccess: (data) => {
       setSshPublicKey(data.publicKey);
-      toast({ title: 'SSH key generated. Add the public key to your git host.' });
+      setSshFingerprint(data.fingerprint ?? null);
+      setTestResult(null); // new key means prior test result is stale
+      toast({ title: 'SSH key generated' });
       refetchConfig();
     },
     onError: (e: Error) => toast({ title: e.message }),
@@ -4536,6 +4808,17 @@ function ObsidianVaultTab() {
     mutationFn: () => api.deleteObsidianConfig(false),
     onSuccess: () => {
       toast({ title: 'Vault configuration removed' });
+      setCloneInitiated(false);
+      setTestResult(null);
+      // Reset seed guard so the form can be seeded fresh if a new vault is configured
+      seededVaultIdRef.current = null;
+      setName('');
+      setRemoteUrl('');
+      setAuthType('https');
+      setBranch('main');
+      setSshPublicKey('');
+      setSshFingerprint(null);
+      setHttpsToken('');
       refetchConfig();
       qc.invalidateQueries({ queryKey: ['connections'] });
     },
@@ -4543,10 +4826,29 @@ function ObsidianVaultTab() {
   });
 
   const copyPublicKey = () => {
-    navigator.clipboard.writeText(sshPublicKey);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    copyTextToClipboard(sshPublicKey).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {});
   };
+
+  // Derive deploy key deep link from current remote URL
+  const deployKeyInfo = inferDeployKeyUrl(remoteUrl);
+
+  // Whether the form has unsaved changes vs what's saved in the vault
+  const hasUnsavedChanges = configured && vault && (
+    name !== vault.name ||
+    remoteUrl !== vault.remoteUrl ||
+    authType !== vault.authType ||
+    branch !== vault.branch ||
+    httpsToken !== ''
+  );
+
+  // Determine whether the Connect section shows a cloning in-progress state
+  const isCloning = cloneInitiated || (status === 'connecting' && connStatus?.mode === 'cloning');
+  const currentPhaseIndex = clonePhase
+    ? CLONE_PHASES.findIndex((p) => p.key === clonePhase)
+    : (isCloning ? 0 : -1);
 
   if (configLoading) {
     return (
@@ -4557,232 +4859,446 @@ function ObsidianVaultTab() {
   }
 
   return (
-    <div className="space-y-6">
-      {/* Status overview */}
-      <div className="flex items-start gap-3">
-        <div className="w-10 h-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center flex-shrink-0">
-          <BookOpen className="w-5 h-5 text-primary" />
+    <div className="space-y-0">
+
+      {/* ── Section 1: Repository ── */}
+      <div className="space-y-4 pb-5">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/15 text-primary text-[10px] font-bold flex-shrink-0">1</span>
+          <h4 className="text-xs font-semibold text-foreground uppercase tracking-wide">Repository</h4>
         </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2.5 flex-wrap">
-            <h3 className="text-sm font-semibold">{vault?.name || 'Obsidian Vault'}</h3>
-            <StatusBadge status={status as 'connected'|'disconnected'|'connecting'|'error'} />
+
+        <div className="space-y-3 pl-7">
+          <div className="grid grid-cols-[1fr_auto] gap-3 items-end">
+            <div className="space-y-1.5">
+              <label className="block text-xs font-medium text-muted-foreground">Vault Name</label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="my-vault"
+                className="input-warm"
+              />
+              <p className="text-[11px] text-muted-foreground/60">Short identifier — used as the local folder name.</p>
+            </div>
+            <div className="space-y-1.5">
+              <label className="block text-xs font-medium text-muted-foreground">Branch</label>
+              <input
+                type="text"
+                value={branch}
+                onChange={(e) => setBranch(e.target.value)}
+                placeholder="main"
+                className="input-warm w-28"
+              />
+            </div>
           </div>
-          <div className="text-xs text-muted-foreground mt-0.5 space-y-0.5">
-            {vault?.lastSyncedAt && (
-              <div className="flex items-center gap-1.5">
-                <CheckCircle2 className="w-3 h-3 text-emerald-500" />
-                <span>Last synced {timeAgo(vault.lastSyncedAt)}</span>
-              </div>
-            )}
-            {vault?.lastCommitHash && (
-              <div className="flex items-center gap-1.5">
-                <GitBranch className="w-3 h-3" />
-                <span className="font-mono">{vault.lastCommitHash.slice(0, 8)}</span>
-              </div>
-            )}
-            {vault?.syncError && (
-              <div className="flex items-center gap-1.5 text-red-400">
-                <XCircle className="w-3 h-3" />
-                <span>{vault.syncError}</span>
-              </div>
-            )}
+
+          <div className="space-y-1.5">
+            <label className="block text-xs font-medium text-muted-foreground">Remote URL</label>
+            <input
+              type="text"
+              value={remoteUrl}
+              onChange={(e) => { setRemoteUrl(e.target.value); setTestResult(null); }}
+              placeholder="https://github.com/user/vault.git or git@github.com:user/vault.git"
+              className="input-warm font-mono text-xs"
+            />
+            <p className="text-[11px] text-muted-foreground/60">The git remote your obsidian-git plugin syncs to.</p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          {configured && (
+      </div>
+
+      <div className="border-t border-white/5 mb-5" />
+
+      {/* ── Section 2: Authentication ── */}
+      <div className="space-y-4 pb-5">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/15 text-primary text-[10px] font-bold flex-shrink-0">2</span>
+          <h4 className="text-xs font-semibold text-foreground uppercase tracking-wide">Authentication</h4>
+        </div>
+
+        <div className="space-y-3 pl-7">
+          {/* Auth type toggle */}
+          <div className="flex gap-2">
             <button
-              onClick={() => syncVault.mutate()}
-              disabled={syncVault.isPending}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+              onClick={() => {
+                setAuthType('https');
+                setTestResult(null);
+                // Convert git@host:org/repo.git → https://host/org/repo.git
+                const sshMatch = remoteUrl.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
+                if (sshMatch) setRemoteUrl(`https://${sshMatch[1]}/${sshMatch[2]}.git`);
+              }}
+              className={cn(
+                'flex-1 px-3 py-2 rounded-xl border text-sm font-medium transition-all',
+                authType === 'https'
+                  ? 'bg-primary/10 border-primary/30 text-primary'
+                  : 'border-white/10 text-muted-foreground hover:border-white/20',
+              )}
             >
-              <RefreshCw className={cn('w-3.5 h-3.5', syncVault.isPending && 'animate-spin')} />
-              Sync Now
+              HTTPS / Token
             </button>
+            <button
+              onClick={() => {
+                setAuthType('ssh');
+                setTestResult(null);
+                // Convert https://host/org/repo.git → git@host:org/repo.git
+                try {
+                  if (remoteUrl.startsWith('http')) {
+                    const u = new URL(remoteUrl);
+                    const repoPath = u.pathname.replace(/^\//, '').replace(/\.git$/, '');
+                    setRemoteUrl(`git@${u.hostname}:${repoPath}.git`);
+                  }
+                } catch { /* unparseable URL — leave as-is */ }
+              }}
+              className={cn(
+                'flex-1 px-3 py-2 rounded-xl border text-sm font-medium transition-all',
+                authType === 'ssh'
+                  ? 'bg-primary/10 border-primary/30 text-primary'
+                  : 'border-white/10 text-muted-foreground hover:border-white/20',
+              )}
+            >
+              SSH Key
+            </button>
+          </div>
+
+          {authType === 'https' && (
+            <div className="space-y-1.5">
+              <label className="block text-xs font-medium text-muted-foreground">Personal Access Token</label>
+              <div className="relative">
+                <input
+                  type={showToken ? 'text' : 'password'}
+                  value={httpsToken}
+                  onChange={(e) => { setHttpsToken(e.target.value); setTestResult(null); }}
+                  placeholder={vault?.hasHttpsToken ? '••••••••••••••••' : 'ghp_...'}
+                  className="input-warm pr-10 font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowToken(!showToken)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                >
+                  {showToken ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+              <p className="text-[11px] text-muted-foreground/60">
+                {vault?.hasHttpsToken
+                  ? 'A token is already saved. Enter a new one to replace it.'
+                  : 'Create a GitHub/GitLab PAT with repo read/write scope.'}
+              </p>
+            </div>
+          )}
+
+          {authType === 'ssh' && (
+            <div className="space-y-3">
+              {/* SSH key display */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-medium text-muted-foreground">SSH Public Key</label>
+                  <button
+                    onClick={() => generateSshKey.mutate()}
+                    disabled={generateSshKey.isPending}
+                    className="flex items-center gap-1 text-[11px] text-primary hover:text-primary/80 transition-colors"
+                  >
+                    {generateSshKey.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                    {sshPublicKey ? 'Regenerate key' : 'Generate key'}
+                  </button>
+                </div>
+
+                {sshPublicKey ? (
+                  <div className="space-y-1.5">
+                    <div className="relative group">
+                      <textarea
+                        readOnly
+                        value={sshPublicKey}
+                        rows={2}
+                        className="w-full bg-black/20 border border-white/10 rounded-xl p-3 pr-10 text-[11px] font-mono text-foreground/60 resize-none focus:outline-none"
+                      />
+                      <button
+                        onClick={copyPublicKey}
+                        className="absolute right-2.5 top-2.5 p-1 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
+                        title="Copy public key"
+                      >
+                        {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-muted-foreground" />}
+                      </button>
+                    </div>
+                    {sshFingerprint && (
+                      <p className="text-[11px] font-mono text-muted-foreground/60 px-1 select-all">
+                        Fingerprint: {sshFingerprint}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="bg-black/20 border border-dashed border-white/10 rounded-xl p-4 text-xs text-muted-foreground text-center">
+                    No SSH key generated yet.
+                  </div>
+                )}
+              </div>
+
+              {/* Deploy key instructions */}
+              {sshPublicKey && (
+                <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 space-y-2">
+                  <p className="text-xs font-medium text-amber-400/90">Add this key to your git host</p>
+                  <ol className="text-[11px] text-muted-foreground space-y-1 list-decimal list-inside">
+                    <li>Copy the public key above</li>
+                    <li>
+                      {deployKeyInfo.url ? (
+                        <a
+                          href={deployKeyInfo.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-amber-400 hover:text-amber-300 underline underline-offset-2 transition-colors"
+                        >
+                          Open {deployKeyInfo.platform === 'github' ? 'GitHub' : 'GitLab'} deploy keys
+                          <ExternalLink className="w-2.5 h-2.5" />
+                        </a>
+                      ) : (
+                        <a
+                          href="https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
+                        >
+                          Open your repository's deploy keys settings
+                          <ExternalLink className="w-2.5 h-2.5" />
+                        </a>
+                      )}
+                    </li>
+                    <li>Add the key with <span className="font-medium text-foreground/80">read &amp; write</span> access</li>
+                    <li>Come back and test the connection below</li>
+                  </ol>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Save + Test row */}
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              onClick={() => saveConfig.mutate()}
+              disabled={saveConfig.isPending || !name || !remoteUrl || (configured && !hasUnsavedChanges)}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+            >
+              {saveConfig.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+              {hasUnsavedChanges ? 'Save Changes' : configured ? 'Saved' : 'Save Configuration'}
+            </button>
+
+            {configured && !hasUnsavedChanges && (
+              <button
+                onClick={() => testConnection.mutate()}
+                disabled={testConnection.isPending}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl border border-white/10 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors disabled:opacity-50"
+              >
+                {testConnection.isPending
+                  ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  : testResult?.success
+                    ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                    : testResult?.success === false
+                      ? <XCircle className="w-3.5 h-3.5 text-red-400" />
+                      : <Play className="w-3.5 h-3.5" />
+                }
+                Test Connection
+              </button>
+            )}
+          </div>
+
+          {/* Test result inline feedback */}
+          {testResult && (
+            <div className={cn(
+              'flex items-start gap-2 p-3 rounded-xl text-xs',
+              testResult.success
+                ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400'
+                : 'bg-red-500/10 border border-red-500/20 text-red-400',
+            )}>
+              {testResult.success
+                ? <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                : <XCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+              }
+              <span>
+                {testResult.success
+                  ? 'Repository is accessible. Ready to clone.'
+                  : testResult.error ?? 'Connection failed.'}
+              </span>
+            </div>
           )}
         </div>
       </div>
 
-      <div className="space-y-1.5">
-        <label className="block text-xs font-medium text-muted-foreground">Vault Name</label>
-        <input
-          type="text"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="my-vault"
-          className="input-warm"
-        />
-        <p className="text-[11px] text-muted-foreground/60">A short identifier. Used as the local folder name.</p>
-      </div>
+      <div className="border-t border-white/5 mb-5" />
 
-      <div className="space-y-1.5">
-        <label className="block text-xs font-medium text-muted-foreground">Remote URL</label>
-        <input
-          type="text"
-          value={remoteUrl}
-          onChange={(e) => setRemoteUrl(e.target.value)}
-          placeholder="https://github.com/user/vault.git or git@github.com:user/vault.git"
-          className="input-warm font-mono text-xs"
-        />
-        <p className="text-[11px] text-muted-foreground/60">The git remote where your obsidian-git plugin pushes to.</p>
-      </div>
-
-      <div className="space-y-1.5">
-        <label className="block text-xs font-medium text-muted-foreground">Branch</label>
-        <input
-          type="text"
-          value={branch}
-          onChange={(e) => setBranch(e.target.value)}
-          placeholder="main"
-          className="input-warm"
-        />
-      </div>
-
-      {/* Auth type selector */}
-      <div className="space-y-3">
-        <label className="block text-xs font-medium text-muted-foreground">Authentication</label>
-        <div className="flex gap-2">
-          <button
-            onClick={() => setAuthType('https')}
-            className={cn(
-              'flex-1 px-3 py-2 rounded-xl border text-sm font-medium transition-all',
-              authType === 'https'
-                ? 'bg-primary/10 border-primary/30 text-primary'
-                : 'border-white/10 text-muted-foreground hover:border-white/20',
-            )}
-          >
-            HTTPS / Token
-          </button>
-          <button
-            onClick={() => setAuthType('ssh')}
-            className={cn(
-              'flex-1 px-3 py-2 rounded-xl border text-sm font-medium transition-all',
-              authType === 'ssh'
-                ? 'bg-primary/10 border-primary/30 text-primary'
-                : 'border-white/10 text-muted-foreground hover:border-white/20',
-            )}
-          >
-            SSH Key
-          </button>
+      {/* ── Section 3: Connect ── */}
+      <div className="space-y-4 pb-5">
+        <div className="flex items-center gap-2 mb-1">
+          <span className={cn(
+            'flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold flex-shrink-0',
+            status === 'connected' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-primary/15 text-primary',
+          )}>3</span>
+          <h4 className="text-xs font-semibold text-foreground uppercase tracking-wide">Connect</h4>
+          {status === 'connected' && (
+            <span className="text-[10px] font-medium text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full ml-1">
+              Connected
+            </span>
+          )}
         </div>
 
-        {authType === 'https' && (
-          <div className="space-y-1.5">
-            <label className="block text-xs font-medium text-muted-foreground">Personal Access Token</label>
-            <div className="relative">
-              <input
-                type={showToken ? 'text' : 'password'}
-                value={httpsToken}
-                onChange={(e) => setHttpsToken(e.target.value)}
-                placeholder={vault?.hasHttpsToken ? '••••••••••••••••' : 'ghp_...'}
-                className="input-warm pr-10 font-mono"
-              />
-              <button
-                type="button"
-                onClick={() => setShowToken(!showToken)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              >
-                {showToken ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-              </button>
+        <div className="pl-7">
+          {!configured ? (
+            // Not yet configured — prompt to complete steps above
+            <div className="rounded-xl border border-white/8 bg-white/3 p-4 text-center">
+              <p className="text-xs text-muted-foreground">Complete steps 1 and 2 above, then save your configuration to continue.</p>
             </div>
-            <p className="text-[11px] text-muted-foreground/60">
-              {vault?.hasHttpsToken ? 'A token is already saved. Enter a new one to replace it.' : 'Create a GitHub/GitLab PAT with repo read/write scope.'}
-            </p>
-          </div>
-        )}
-
-        {authType === 'ssh' && (
-          <div className="space-y-3">
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <label className="block text-xs font-medium text-muted-foreground">SSH Public Key</label>
-                <div className="flex gap-2">
+          ) : isCloning ? (
+            // Cloning in progress — show phase indicator
+            <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 space-y-4">
+              <div className="flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin text-primary flex-shrink-0" />
+                <span className="text-sm font-medium text-foreground">Cloning vault...</span>
+              </div>
+              <div className="space-y-2">
+                {CLONE_PHASES.map((phase, index) => {
+                  const isDone = currentPhaseIndex > index;
+                  const isCurrent = currentPhaseIndex === index;
+                  return (
+                    <div key={phase.key} className={cn(
+                      'flex items-center gap-2.5 text-xs transition-colors',
+                      isDone ? 'text-emerald-400' : isCurrent ? 'text-foreground' : 'text-muted-foreground/40',
+                    )}>
+                      {isDone
+                        ? <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+                        : isCurrent
+                          ? <Loader2 className="w-3.5 h-3.5 flex-shrink-0 animate-spin text-primary" />
+                          : <div className="w-3.5 h-3.5 flex-shrink-0 rounded-full border border-white/15" />
+                      }
+                      <span className={isCurrent ? 'font-medium' : ''}>{phase.label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-muted-foreground/60">This may take a minute for large vaults.</p>
+            </div>
+          ) : status === 'connected' ? (
+            // Connected — show status + actions
+            <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 space-y-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                    <span className="text-sm font-medium text-foreground">{vault?.name}</span>
+                  </div>
+                  <div className="flex items-center gap-3 text-[11px] text-muted-foreground pl-6">
+                    {vault?.lastSyncedAt && (
+                      <span className="flex items-center gap-1">
+                        <CheckCircle2 className="w-2.5 h-2.5 text-emerald-500" />
+                        Synced {timeAgo(vault.lastSyncedAt)}
+                      </span>
+                    )}
+                    {vault?.lastCommitHash && (
+                      <span className="flex items-center gap-1 font-mono">
+                        <GitBranch className="w-2.5 h-2.5" />
+                        {vault.lastCommitHash.slice(0, 8)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
                   <button
-                    onClick={() => generateSshKey.mutate()}
-                    disabled={generateSshKey.isPending}
-                    className="flex items-center gap-1 text-[11px] text-primary hover:text-primary/80"
+                    onClick={() => syncVault.mutate()}
+                    disabled={syncVault.isPending}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors disabled:opacity-50"
                   >
-                    {generateSshKey.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-                    Generate new key
+                    <RefreshCw className={cn('w-3 h-3', syncVault.isPending && 'animate-spin')} />
+                    Sync Now
                   </button>
-                  {sshPublicKey && (
-                    <button
-                      onClick={copyPublicKey}
-                      className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
-                    >
-                      {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                      {copied ? 'Copied' : 'Copy'}
-                    </button>
+                  <a
+                    href="/vault"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/10 border border-primary/20 text-xs font-medium text-primary hover:bg-primary/15 transition-colors"
+                  >
+                    <BookOpen className="w-3 h-3" />
+                    Open Vault
+                  </a>
+                </div>
+              </div>
+              {vault?.syncError && (
+                <div className="flex items-start gap-1.5 text-[11px] text-red-400 pt-1 border-t border-white/5">
+                  <XCircle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                  <span>Last sync error: {vault.syncError}</span>
+                </div>
+              )}
+            </div>
+          ) : status === 'error' ? (
+            // Error state
+            <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-4 space-y-3">
+              <div className="flex items-start gap-2">
+                <XCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+                <div className="space-y-1 flex-1">
+                  <p className="text-sm font-medium text-foreground">Connection failed</p>
+                  {connStatus?.error && (
+                    <p className="text-[11px] text-red-400/80 font-mono">{connStatus.error}</p>
                   )}
                 </div>
               </div>
-              {sshPublicKey ? (
-                <textarea
-                  readOnly
-                  value={sshPublicKey}
-                  rows={3}
-                  className="w-full bg-black/20 border border-white/10 rounded-xl p-3 text-[11px] font-mono text-foreground/60 resize-none focus:outline-none"
-                />
-              ) : (
-                <div className="bg-black/20 border border-white/10 rounded-xl p-3 text-xs text-muted-foreground text-center">
-                  No SSH key generated yet. Click "Generate new key" above.
-                </div>
-              )}
-              <p className="text-[11px] text-muted-foreground/60">
-                Add this public key to your GitHub/GitLab deploy keys (read + write access).
-              </p>
+              <div className="flex gap-2 pt-1">
+                <button
+                  onClick={() => { setCloneInitiated(true); cloneVault.mutate(); }}
+                  disabled={cloneVault.isPending}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  Retry Clone
+                </button>
+              </div>
             </div>
-          </div>
-        )}
-      </div>
-
-      {/* Save */}
-      <div className="flex gap-2">
-        <button
-          onClick={() => saveConfig.mutate()}
-          disabled={saveConfig.isPending || !name || !remoteUrl}
-          className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
-        >
-          {saveConfig.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-          Save Configuration
-        </button>
-        {configured && !cloneVault.isPending && status !== 'connected' && (
-          <button
-            onClick={() => cloneVault.mutate()}
-            disabled={cloneVault.isPending}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl border border-white/10 text-sm font-medium hover:bg-white/5 transition-colors"
-          >
-            {cloneVault.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <GitBranch className="w-4 h-4" />}
-            Clone Vault
-          </button>
-        )}
-        {configured && status === 'connected' && (
-          <a href="/vault" className="flex items-center gap-2 px-4 py-2 rounded-xl border border-white/10 text-sm font-medium hover:bg-white/5 transition-colors">
-            <BookOpen className="w-4 h-4" />
-            Open Vault
-          </a>
-        )}
+          ) : (
+            // Not yet cloned
+            <div className="rounded-xl border border-white/8 bg-white/3 p-4 space-y-3">
+              <div className="flex items-start gap-3">
+                <div className="w-8 h-8 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <GitBranch className="w-4 h-4 text-primary" />
+                </div>
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-foreground">Ready to clone</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    Conduit will clone your repository locally and keep it in sync automatically every 5 minutes.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => { setCloneInitiated(true); cloneVault.mutate(); }}
+                disabled={cloneVault.isPending || hasUnsavedChanges === true}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+                title={hasUnsavedChanges ? 'Save your configuration changes first' : undefined}
+              >
+                <GitBranch className="w-4 h-4" />
+                Clone Vault
+              </button>
+              {hasUnsavedChanges && (
+                <p className="text-[11px] text-amber-400/80">Save your configuration changes before cloning.</p>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Danger zone */}
       {configured && (
-        <div className="border border-red-500/20 rounded-xl p-4 space-y-3">
-          <h4 className="text-xs font-semibold text-red-400">Danger Zone</h4>
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs font-medium text-foreground">Remove vault configuration</p>
-              <p className="text-[11px] text-muted-foreground mt-0.5">Removes the config from Conduit. The local clone is kept on disk.</p>
+        <>
+          <div className="border-t border-white/5 mb-5" />
+          <div className="border border-red-500/20 rounded-xl p-4 space-y-3">
+            <h4 className="text-xs font-semibold text-red-400">Danger Zone</h4>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-medium text-foreground">Remove vault configuration</p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">Removes the config from Conduit. The local clone is kept on disk.</p>
+              </div>
+              <button
+                onClick={() => deleteVault.mutate()}
+                disabled={deleteVault.isPending}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/30 text-xs text-red-400 hover:bg-red-500/10 transition-colors"
+              >
+                {deleteVault.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                Remove
+              </button>
             </div>
-            <button
-              onClick={() => deleteVault.mutate()}
-              disabled={deleteVault.isPending}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/30 text-xs text-red-400 hover:bg-red-500/10 transition-colors"
-            >
-              {deleteVault.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-              Remove
-            </button>
           </div>
-        </div>
+        </>
       )}
     </div>
   );
@@ -4850,6 +5366,7 @@ export default function Connections() {
   })();
 
   const [activeTab, setActiveTabState] = React.useState<TopTabId>(resolvedTopTab);
+  React.useEffect(() => { setActiveTabState(resolvedTopTab); }, [resolvedTopTab]);
   const setActiveTab = (id: TopTabId) => {
     setActiveTabState(id);
     navigate(`/settings/${id}`, { replace: true });

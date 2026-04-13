@@ -1,6 +1,6 @@
 {
-  "name": "@w3os/openclaw-conduit",
-  "version": "1.0.0",
+  "name": "@w3osc/openclaw-conduit",
+  "version": "1.0.5",
   "description": "OpenClaw channel plugin that connects Conduit as a native messaging channel",
   "type": "module",
   "exports": {
@@ -8,13 +8,21 @@
     "./setup": "./dist/setup-entry.js"
   },
   "main": "./dist/index.js",
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
   },
   "openclaw": {
-    "extensions": ["./dist/index.js"],
+    "extensions": [
+      "./dist/index.js"
+    ],
     "setupEntry": "./dist/setup-entry.js",
     "channel": {
       "id": "conduit",
@@ -26,7 +34,12 @@
       "minGatewayVersion": "2026.3.24-beta.2"
     }
   },
-  "keywords": ["openclaw", "conduit", "channel", "plugin"],
+  "keywords": [
+    "openclaw",
+    "conduit",
+    "channel",
+    "plugin"
+  ],
   "license": "MIT",
   "devDependencies": {
     "openclaw": "latest",

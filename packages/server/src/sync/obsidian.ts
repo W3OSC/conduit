@@ -103,9 +103,15 @@ export class ObsidianVaultSync {
   /**
    * Clone the remote repository into localPath.
    * Handles both HTTPS (with optional PAT) and SSH (with private key).
+   * Broadcasts discrete phase events via WebSocket during the clone process.
    */
-  async clone(config: VaultConfig): Promise<void> {
+  async clone(config: VaultConfig, onPhase?: (phase: string, message: string) => void): Promise<void> {
     this.config = config;
+
+    const emitPhase = (phase: string, message: string) => {
+      broadcast({ type: 'connection:status', data: { service: 'obsidian', status: 'connecting', mode: 'cloning', phase, message } });
+      onPhase?.(phase, message);
+    };
 
     fs.mkdirSync(path.dirname(config.localPath), { recursive: true });
 
@@ -124,11 +130,16 @@ export class ObsidianVaultSync {
     }
 
     console.log(`[obsidian] Cloning ${config.remoteUrl} → ${config.localPath}`);
+    emitPhase('connecting', 'Connecting to repository...');
 
     const remoteUrl = this.buildAuthenticatedUrl(config);
     const baseGit = this.buildBaseGit(config);
 
+    emitPhase('cloning', 'Cloning repository...');
+
     await baseGit.clone(remoteUrl, config.localPath, ['--branch', config.branch]);
+
+    emitPhase('finalizing', 'Finalizing...');
 
     this.git = this.buildGit(config);
     this.connected = true;
@@ -347,6 +358,104 @@ export class ObsidianVaultSync {
   }
 
   // ── SSH key generation ─────────────────────────────────────────────────────
+
+  /**
+   * Test connectivity to the remote repository without cloning.
+   * Runs `git ls-remote` with the configured credentials.
+   * Returns { success: true } or { success: false, error: string }.
+   */
+  static async testConnection(config: Pick<VaultConfig, 'remoteUrl' | 'authType' | 'httpsToken' | 'sshPrivateKey'>): Promise<{ success: boolean; error?: string }> {
+    const TEST_TIMEOUT_MS = 15_000;
+
+    // Validate that credentials are present before even trying
+    if (config.authType === 'ssh' && !config.sshPrivateKey) {
+      return { success: false, error: 'No SSH key found. Generate an SSH key first.' };
+    }
+    if (config.authType === 'https' && !config.httpsToken) {
+      return { success: false, error: 'No personal access token saved. Enter and save your token first.' };
+    }
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'conduit-test-'));
+    try {
+      const options: Partial<SimpleGitOptions> = {
+        baseDir: tmpDir,
+        binary: 'git',
+        maxConcurrentProcesses: 1,
+        // Abort git subprocess if it takes too long
+        timeout: { block: TEST_TIMEOUT_MS },
+      };
+      const git = simpleGit(options);
+
+      // Disable interactive prompts so git fails fast instead of hanging
+      git.env({
+        ...process.env,
+        GIT_TERMINAL_PROMPT: '0',
+        GIT_ASKPASS: 'echo',
+      });
+
+      // Build authenticated URL / env
+      let remoteUrl = config.remoteUrl;
+
+      if (config.authType === 'ssh' && config.sshPrivateKey) {
+        const keyPath = path.join(tmpDir, 'id');
+        fs.writeFileSync(keyPath, config.sshPrivateKey, { mode: 0o600 });
+        git.env({
+          ...process.env,
+          GIT_TERMINAL_PROMPT: '0',
+          GIT_ASKPASS: 'echo',
+          GIT_SSH_COMMAND: `ssh -i "${keyPath}" -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=10`,
+        });
+      } else if (config.authType === 'https' && config.httpsToken) {
+        try {
+          const url = new URL(config.remoteUrl);
+          url.password = config.httpsToken;
+          url.username = 'x-token';
+          remoteUrl = url.toString();
+        } catch { /* not a valid URL — use as-is */ }
+      }
+
+      // Race the git operation against a hard timeout
+      const testPromise = git.listRemote(['--heads', remoteUrl]);
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Connection timed out after 15 seconds')), TEST_TIMEOUT_MS),
+      );
+
+      await Promise.race([testPromise, timeoutPromise]);
+      return { success: true };
+    } catch (e) {
+      const raw = e instanceof Error ? e.message : String(e);
+      // Extract the most human-readable part of the git error
+      const match = raw.match(/(?:fatal|error): (.+)/i);
+      const error = match ? match[1].trim() : raw.split('\n')[0].trim();
+      return { success: false, error };
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * Compute the SHA256 fingerprint of an SSH public key string.
+   * Returns a string like "SHA256:ZXi+15yL..." or null on failure.
+   */
+  static async getPublicKeyFingerprint(publicKey: string): Promise<string | null> {
+    const { execFile } = await import('child_process');
+    const { promisify } = await import('util');
+    const execFileAsync = promisify(execFile);
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'conduit-fp-'));
+    const keyPath = path.join(tmpDir, 'key.pub');
+    try {
+      fs.writeFileSync(keyPath, publicKey.trim() + '\n', 'utf-8');
+      const { stdout } = await execFileAsync('ssh-keygen', ['-l', '-E', 'sha256', '-f', keyPath]);
+      // stdout: "256 SHA256:xxxx comment (ED25519)"
+      const match = stdout.match(/SHA256:\S+/);
+      return match ? match[0] : null;
+    } catch {
+      return null;
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }
 
   /**
    * Generate a new Ed25519 SSH key pair.

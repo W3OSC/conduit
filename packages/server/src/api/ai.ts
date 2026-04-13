@@ -5,6 +5,7 @@ import { getDb } from '../db/client.js';
 import { aiSessions, aiMessages, apiKeys, settings } from '../db/schema.js';
 import { optionalAuth, apiKeyAuth, type AuthedRequest } from '../auth/middleware.js';
 import { broadcast, onNextBroadcast } from '../websocket/hub.js';
+import { getConnectionManager } from '../connections/manager.js';
 
 const router = Router();
 
@@ -251,6 +252,8 @@ router.post('/connection', optionalAuth, (req, res) => {
   setSetting(KEY_API_KEY_ID,     String(key.id));
   setSetting(KEY_API_KEY_PREFIX, prefix);
 
+  getConnectionManager().checkAiStatus();
+
   const baseUrl = getBaseUrl(req);
   res.json({
     configured:        true,
@@ -338,6 +341,7 @@ router.delete('/connection', optionalAuth, (req, res) => {
   deleteSetting(KEY_WEBHOOK_URL);
   deleteSetting(KEY_API_KEY_ID);
   deleteSetting(KEY_API_KEY_PREFIX);
+  getConnectionManager().disconnectAi();
   res.json({ success: true });
 });
 

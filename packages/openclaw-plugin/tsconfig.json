@@ -12,7 +12,10 @@
     "declarationMap": true,
     "sourceMap": true,
     "esModuleInterop": false,
-    "allowSyntheticDefaultImports": false
+    "allowSyntheticDefaultImports": false,
+    "ignoreDeprecations": "6.0",
+    "declaration": false,
+    "declarationMap": false
   },
   "include": ["index.ts", "setup-entry.ts", "src/**/*.ts"],
   "exclude": ["node_modules", "dist"]

@@ -17,7 +17,7 @@ import { getDb } from '../db/client.js';
 import { settings, obsidianVaultConfig } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 
-export type ServiceName = 'slack' | 'discord' | 'telegram' | 'gmail' | 'calendar' | 'twitter' | 'notion' | 'obsidian';
+export type ServiceName = 'slack' | 'discord' | 'telegram' | 'gmail' | 'calendar' | 'twitter' | 'notion' | 'obsidian' | 'ai';
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
 export interface ServiceStatus {
@@ -50,6 +50,7 @@ export class ConnectionManager {
     twitter:  { status: 'disconnected' },
     notion:   { status: 'disconnected' },
     obsidian: { status: 'disconnected' },
+    ai:       { status: 'disconnected' },
   };
 
   // Per-account Gmail/Calendar statuses
@@ -145,14 +146,15 @@ export class ConnectionManager {
       tasks.push(this.connectGmail().catch((e) => console.error('[gmail] Auto-connect failed:', e)));
     }
 
-    // Twitter — restore session from stored cookies (no re-login needed when cookies are valid)
+    // Twitter — restore session from stored cookie string / persisted cookie jar
     const twitterRaw = getCreds('twitter') as TwitterCredsLite | null;
-    if (twitterRaw?.username && twitterRaw?.password) {
+    if (twitterRaw?.cookieString) {
       const twitterCreds: TwitterCreds = {
-        username: twitterRaw.username,
-        password: twitterRaw.password,
-        email: twitterRaw.email || '',
+        cookieString: twitterRaw.cookieString,
         cookies: twitterRaw.cookies,
+        userId: twitterRaw.userId,
+        handle: twitterRaw.handle,
+        displayName: twitterRaw.displayName,
       };
       tasks.push(this.connectTwitter(twitterCreds).catch((e) => console.error('[twitter] Auto-connect failed:', e)));
     }
@@ -170,8 +172,27 @@ export class ConnectionManager {
       tasks.push(this.connectObsidian().catch((e) => console.error('[obsidian] Auto-connect failed:', e)));
     }
 
+    // AI — reflect configured status from stored settings
+    this.checkAiStatus();
+
     await Promise.allSettled(tasks);
     console.log('[conduit] Auto-connect complete.');
+  }
+
+  /** Reads AI webhook settings and updates the ai connection status accordingly. */
+  checkAiStatus(): void {
+    const db = getDb();
+    const webhookRow = db.select().from(settings).where(eq(settings.key, 'ai.webhookUrl')).get();
+    const keyIdRow   = db.select().from(settings).where(eq(settings.key, 'ai.apiKeyId')).get();
+    const configured = !!(webhookRow?.value && keyIdRow?.value);
+    this.setStatus('ai', configured
+      ? { status: 'connected', mode: 'webhook', displayName: webhookRow!.value }
+      : { status: 'disconnected' },
+    );
+  }
+
+  disconnectAi(): void {
+    this.setStatus('ai', { status: 'disconnected', mode: undefined, displayName: undefined });
   }
 
   async connectSlack(): Promise<void> {
@@ -357,23 +378,28 @@ export class ConnectionManager {
   }
 
   async connectTwitter(creds: TwitterCreds): Promise<void> {
-    if (!creds.username || !creds.password) { this.setStatus('twitter', { status: 'error', error: 'Twitter credentials not configured' }); return; }
+    if (!creds.cookieString?.trim()) { this.setStatus('twitter', { status: 'error', error: 'Twitter cookie string not configured' }); return; }
     this.setStatus('twitter', { status: 'connecting' });
     try {
       if (this.twitter) this.twitter.disconnect();
       this.twitter = new TwitterSync();
-      const ok = await this.twitter.connect(creds);
-      if (!ok) { this.setStatus('twitter', { status: 'error', error: 'Twitter login failed — check credentials' }); return; }
+      await this.twitter.connect(creds);
       const info = this.twitter.accountInfo;
       this.setStatus('twitter', { status: 'connected', accountId: info?.userId, displayName: info?.handle ? `@${info.handle}` : info?.displayName, mode: 'cookie' });
-
-      // First connect → full DM sync; reconnect → incremental (polling handles it)
-      if (!this.twitter.hasBeenSynced()) {
-        this.twitter.syncDMs().catch(console.error);
-      }
-      // DM polling is already started inside twitter.connect() via setInterval
+      // DM polling and initial sync are started inside twitter.connect() via setInterval + syncDMs()
     } catch (e) {
-      this.setStatus('twitter', { status: 'error', error: e instanceof Error ? e.message : String(e) });
+      const raw = e instanceof Error ? e.message : String(e);
+      // agent-twitter-client sometimes throws with a JSON string from Twitter's API — extract the human-readable message
+      const friendly = (() => {
+        try {
+          const parsed = JSON.parse(raw) as { errors?: Array<{ message?: string }> };
+          const msg = parsed?.errors?.[0]?.message;
+          if (msg) return `Twitter: ${msg}`;
+        } catch { /* not JSON */ }
+        return raw;
+      })();
+      this.setStatus('twitter', { status: 'error', error: friendly });
+      throw new Error(friendly);
     }
   }
 
@@ -759,10 +785,17 @@ export class ConnectionManager {
             name: 'Feed access',
             run: async () => {
               if (!this.twitter) throw new Error('Not connected');
-              const feed = await this.twitter.getHomeFeed(1);
-              if (!feed.length) return 'No tweets in feed (authenticated but feed may be empty)';
-              const t = feed[0];
-              return `@${t.username}: ${(t.text || '').slice(0, 80)}`;
+              try {
+                const feed = await this.twitter.getHomeFeed(1);
+                if (!feed.length) return 'No tweets in feed (authenticated but feed may be empty)';
+                const t = feed[0];
+                return `@${t.username}: ${(t.text || '').slice(0, 80)}`;
+              } catch (e) {
+                // Surface ApiError.data if available for better diagnostics
+                const apiData = (e as Record<string, unknown>)?.data;
+                const detail = apiData ? ` — ${JSON.stringify(apiData).slice(0, 120)}` : '';
+                throw new Error(`${e instanceof Error ? e.message : String(e)}${detail}`);
+              }
             },
           },
         ];

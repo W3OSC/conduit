@@ -229,7 +229,7 @@ export default function Outbox() {
           onChange={setStatusFilter}
         />
         <FilterBar
-          options={['all', 'slack', 'discord', 'telegram', 'twitter', 'gmail', 'calendar'] as const}
+          options={['all', 'slack', 'discord', 'telegram', 'twitter', 'gmail', 'calendar', 'notion', 'obsidian'] as const}
           value={sourceFilter}
           onChange={setSourceFilter}
         />

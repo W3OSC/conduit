@@ -9,7 +9,7 @@ router.get('/:service', optionalAuth, async (req, res) => {
   const authedReq = req as AuthedRequest;
   const service = (req.params['service'] as string) as ServiceName;
 
-  if (!['slack', 'discord', 'telegram', 'twitter', 'gmail', 'calendar'].includes(service)) {
+  if (!['slack', 'discord', 'telegram', 'twitter', 'gmail', 'calendar', 'notion'].includes(service)) {
     res.status(400).json({ error: 'Unknown service' });
     return;
   }
