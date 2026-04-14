@@ -5,6 +5,17 @@
   "name": "Conduit",
   "description": "Conduit personal communications hub — read messages, emails, and calendar; queue outbound sends for approval.",
   "configSchema": { "type": "object" },
+  "uiHints": {
+    "apiKey": {
+      "label": "API key",
+      "placeholder": "sk-arb-...",
+      "sensitive": true
+    },
+    "webhookSecret": {
+      "label": "Webhook secret",
+      "sensitive": true
+    }
+  },
   "channelConfigs": {
     "conduit": {
       "schema": {
@@ -18,7 +29,6 @@
           },
           "apiKey": {
             "type": "string",
-            "sensitive": true,
             "description": "Conduit API key (sk-arb-...). Generate one in Settings → Permissions."
           },
           "allowFrom": {
@@ -28,7 +38,6 @@
           },
           "webhookSecret": {
             "type": "string",
-            "sensitive": true,
             "description": "Optional secret Conduit sends as Authorization: Bearer <secret> on each inbound message for request verification."
           }
         }
