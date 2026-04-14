@@ -18,6 +18,7 @@
           },
           "apiKey": {
             "type": "string",
+            "sensitive": true,
             "description": "Conduit API key (sk-arb-...). Generate one in Settings → Permissions."
           },
           "allowFrom": {
@@ -27,6 +28,7 @@
           },
           "webhookSecret": {
             "type": "string",
+            "sensitive": true,
             "description": "Optional secret Conduit sends as Authorization: Bearer <secret> on each inbound message for request verification."
           }
         }

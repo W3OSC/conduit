@@ -187,7 +187,7 @@ export class ObsidianVaultSync {
 
       this.updateDbStatus('idle', { lastSyncedAt: this.lastSyncedAt.toISOString(), lastCommitHash: commitHash });
       broadcast({ type: 'connection:status', data: { service: 'obsidian', status: 'connected', lastSync: this.lastSyncedAt.toISOString() } });
-      console.log(`[obsidian] Synced to ${commitHash.slice(0, 8)}`);
+      // Routine sync log suppressed to keep logs clean
       return commitHash;
     } catch (e) {
       this.isSyncing = false;
