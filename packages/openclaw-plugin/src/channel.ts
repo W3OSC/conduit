@@ -109,8 +109,8 @@ export const conduitPlugin = createChatChannelPlugin<ResolvedAccount>({
   security: {
     dm: {
       channelKey: 'conduit',
-      resolvePolicy: (account) => account.allowFrom.length > 0 ? 'allowlist' : 'allow_all',
-      resolveAllowFrom: (account) => account.allowFrom,
+      resolvePolicy: (account) => (account.allowFrom?.length ?? 0) > 0 ? 'allowlist' : 'allow_all',
+      resolveAllowFrom: (account) => account.allowFrom ?? [],
       defaultPolicy: 'allow_all',
     },
   },

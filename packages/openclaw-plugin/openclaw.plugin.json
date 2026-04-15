@@ -36,12 +36,10 @@
       "uiHints": {
         "apiKey": {
           "label": "API key",
-          "placeholder": "sk-arb-...",
-          "sensitive": true
+          "placeholder": "sk-arb-..."
         },
         "webhookSecret": {
-          "label": "Webhook secret",
-          "sensitive": true
+          "label": "Webhook secret"
         }
       }
     }
