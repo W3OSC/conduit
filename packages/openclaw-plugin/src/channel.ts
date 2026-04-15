@@ -79,7 +79,7 @@ const conduitBase = createChannelPluginBase({
   // Conduit only needs `applyAccountConfig` — the wizard stores the baseUrl,
   // apiKey, allowFrom, and webhookSecret under `channels.conduit`.
   setup: {
-    applyAccountConfig({ cfg, input }) {
+    applyAccountConfig({ cfg, input }: { cfg: OpenClawConfig; input: Record<string, unknown> }) {
       const next = { ...(cfg as Record<string, unknown>) };
       const channels = { ...((next['channels'] as Record<string, unknown>) ?? {}) };
       channels['conduit'] = {
@@ -95,7 +95,7 @@ const conduitBase = createChannelPluginBase({
     listAccountIds: () => ['default'],
     resolveAccount,
     inspectAccount,
-    isConfigured: async (account) => {
+    isConfigured: async (account: ResolvedAccount) => {
       const result = await verifyConnection({ baseUrl: account.baseUrl, apiKey: account.apiKey });
       return result.ok;
     },
@@ -109,8 +109,8 @@ export const conduitPlugin = createChatChannelPlugin<ResolvedAccount>({
   security: {
     dm: {
       channelKey: 'conduit',
-      resolvePolicy: (account) => (account.allowFrom?.length ?? 0) > 0 ? 'allowlist' : 'allow_all',
-      resolveAllowFrom: (account) => account.allowFrom ?? [],
+      resolvePolicy: (account: ResolvedAccount) => (account.allowFrom?.length ?? 0) > 0 ? 'allowlist' : 'allow_all',
+      resolveAllowFrom: (account: ResolvedAccount) => account.allowFrom ?? [],
       defaultPolicy: 'allow_all',
     },
   },
@@ -129,7 +129,7 @@ export const conduitPlugin = createChatChannelPlugin<ResolvedAccount>({
     base: { deliveryMode: 'direct' },
     attachedResults: {
       channel: 'conduit',
-      sendText: async (params) => {
+      sendText: async (params: { to: unknown; text: string }) => {
         // `params.to` holds the streamUrl injected by the inbound handler via
         // the session conversation id.  We re-use the streaming helper with
         // a single done:true chunk for proactive sends where no ongoing

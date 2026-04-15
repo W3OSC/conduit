@@ -27,6 +27,8 @@
  */
 
 import { defineChannelPluginEntry } from 'openclaw/plugin-sdk/channel-core';
+import type { OpenClawPluginApi } from 'openclaw/plugin-sdk/channel-core';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { conduitPlugin } from './src/channel.js';
 import { parseInboundPayload, verifyWebhookSecret, handleConduitInbound } from './src/inbound.js';
 import type { ConduitInboundPayload } from './src/inbound.js';
@@ -37,9 +39,9 @@ export default defineChannelPluginEntry({
   description: 'Conduit personal communications hub — read messages, emails, and calendar.',
   plugin: conduitPlugin,
 
-  registerCliMetadata(api) {
+  registerCliMetadata(api: OpenClawPluginApi) {
     api.registerCli(
-      ({ program }) => {
+      ({ program }: { program: { command: (name: string) => { description: (d: string) => unknown } } }) => {
         program
           .command('conduit')
           .description('Conduit channel management');
@@ -56,7 +58,7 @@ export default defineChannelPluginEntry({
     );
   },
 
-  registerFull(api) {
+  registerFull(api: OpenClawPluginApi) {
     // ── Inbound HTTP route ────────────────────────────────────────────────────
     // Conduit POSTs AI chat messages here. We parse the payload, dispatch it
     // into the OpenClaw agent session, and stream the reply back.
@@ -64,7 +66,7 @@ export default defineChannelPluginEntry({
       path: '/channels/conduit/inbound',
       // 'plugin' auth = plugin-managed; we verify the webhook secret ourselves.
       auth: 'plugin',
-      handler: async (req, res) => {
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
         // Resolve the current account config to get the webhook secret and apiKey.
         let account: Awaited<ReturnType<typeof conduitPlugin['config']['resolveAccount']>>;
         try {
