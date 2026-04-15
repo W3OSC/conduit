@@ -10,10 +10,11 @@ import { getConnectionManager } from '../connections/manager.js';
 const router = Router();
 
 // ── Settings keys ─────────────────────────────────────────────────────────────
-const KEY_WEBHOOK_URL   = 'ai.webhookUrl';
-const KEY_API_KEY_ID    = 'ai.apiKeyId';
+const KEY_WEBHOOK_URL    = 'ai.webhookUrl';
+const KEY_API_KEY_ID     = 'ai.apiKeyId';
 const KEY_API_KEY_PREFIX = 'ai.apiKeyPrefix';
-const KEY_PERMISSIONS   = 'ai.permissions';
+const KEY_PERMISSIONS    = 'ai.permissions';
+const KEY_VERIFIED       = 'ai.verified'; // '1' once a connection test has passed
 
 // ── Permission defaults ───────────────────────────────────────────────────────
 
@@ -204,9 +205,11 @@ router.get('/connection', optionalAuth, (req, res) => {
   const keyPrefix   = getSetting(KEY_API_KEY_PREFIX);
   const baseUrl     = getBaseUrl(req);
   const configured  = !!(webhookUrl && keyId);
+  const verified    = configured && getSetting(KEY_VERIFIED) === '1';
 
   res.json({
     configured,
+    verified,
     webhookUrl: webhookUrl ?? null,
     keyPrefix:  keyPrefix  ?? null,
     baseUrl,
@@ -251,12 +254,15 @@ router.post('/connection', optionalAuth, (req, res) => {
   setSetting(KEY_WEBHOOK_URL,    webhookUrl.trim());
   setSetting(KEY_API_KEY_ID,     String(key.id));
   setSetting(KEY_API_KEY_PREFIX, prefix);
+  // Clear any previous verification — the new URL must pass a test before being marked connected
+  deleteSetting(KEY_VERIFIED);
 
   getConnectionManager().checkAiStatus();
 
   const baseUrl = getBaseUrl(req);
   res.json({
     configured:        true,
+    verified:          false,
     webhookUrl:        webhookUrl.trim(),
     keyPrefix:         prefix,
     apiKey:            rawKey,          // returned ONCE
@@ -291,8 +297,9 @@ router.post('/connection/test', optionalAuth, async (req, res) => {
 
   try {
     const fetchRes = await fetch(webhookUrl, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method:    'POST',
+      headers:   { 'Content-Type': 'application/json' },
+      redirect:  'manual',
       body: JSON.stringify({
         sessionId:     testSessionId,
         messageId:     nanoid(),
@@ -304,6 +311,15 @@ router.post('/connection/test', optionalAuth, async (req, res) => {
       }),
       signal: AbortSignal.timeout(10000),
     });
+
+    // opaqueredirect means the server returned a 3xx redirect. A POST redirected via
+    // 301/302 is silently downgraded to GET by browsers/fetch, so we surface this
+    // explicitly rather than silently hitting the wrong endpoint.
+    if (fetchRes.type === 'opaqueredirect' || (fetchRes.status >= 300 && fetchRes.status < 400)) {
+      const location = fetchRes.headers.get('location') ?? '(no location header)';
+      res.json({ success: false, error: `Webhook URL redirects to ${location} — update the URL to the final destination` });
+      return;
+    }
 
     if (!fetchRes.ok) {
       res.json({ success: false, error: `Webhook returned ${fetchRes.status} ${fetchRes.statusText}` });
@@ -317,6 +333,9 @@ router.post('/connection/test', optionalAuth, async (req, res) => {
   // Wait for the AI to stream a token back
   try {
     await roundTripPromise;
+    // Mark the connection as verified so it shows as fully connected
+    setSetting(KEY_VERIFIED, '1');
+    getConnectionManager().checkAiStatus();
     res.json({ success: true, latencyMs: Date.now() - start });
   } catch {
     res.json({
@@ -341,6 +360,7 @@ router.delete('/connection', optionalAuth, (req, res) => {
   deleteSetting(KEY_WEBHOOK_URL);
   deleteSetting(KEY_API_KEY_ID);
   deleteSetting(KEY_API_KEY_PREFIX);
+  deleteSetting(KEY_VERIFIED);
   getConnectionManager().disconnectAi();
   res.json({ success: true });
 });
@@ -528,12 +548,17 @@ router.post('/sessions/:id/messages', optionalAuth, async (req, res) => {
         };
         if (systemPrompt) payload['systemPrompt'] = systemPrompt;
 
-        await fetch(webhookUrl, {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify(payload),
-          signal:  AbortSignal.timeout(30000),
+        const deliveryRes = await fetch(webhookUrl, {
+          method:   'POST',
+          headers:  { 'Content-Type': 'application/json' },
+          redirect: 'manual',
+          body:     JSON.stringify(payload),
+          signal:   AbortSignal.timeout(30000),
         });
+        if (deliveryRes.type === 'opaqueredirect' || (deliveryRes.status >= 300 && deliveryRes.status < 400)) {
+          const location = deliveryRes.headers.get('location') ?? '(no location header)';
+          throw new Error(`Webhook URL redirects to ${location} — update the configured URL to the final destination`);
+        }
       } catch (err) {
         console.error(`[ai] Webhook delivery failed for session ${id}:`, err);
         broadcast({

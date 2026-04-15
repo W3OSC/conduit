@@ -182,12 +182,17 @@ export class ConnectionManager {
   /** Reads AI webhook settings and updates the ai connection status accordingly. */
   checkAiStatus(): void {
     const db = getDb();
-    const webhookRow = db.select().from(settings).where(eq(settings.key, 'ai.webhookUrl')).get();
-    const keyIdRow   = db.select().from(settings).where(eq(settings.key, 'ai.apiKeyId')).get();
-    const configured = !!(webhookRow?.value && keyIdRow?.value);
-    this.setStatus('ai', configured
-      ? { status: 'connected', mode: 'webhook', displayName: webhookRow!.value }
-      : { status: 'disconnected' },
+    const webhookRow  = db.select().from(settings).where(eq(settings.key, 'ai.webhookUrl')).get();
+    const keyIdRow    = db.select().from(settings).where(eq(settings.key, 'ai.apiKeyId')).get();
+    const verifiedRow = db.select().from(settings).where(eq(settings.key, 'ai.verified')).get();
+    const configured  = !!(webhookRow?.value && keyIdRow?.value);
+    const verified    = configured && verifiedRow?.value === '1';
+    this.setStatus('ai',
+      !configured
+        ? { status: 'disconnected' }
+        : verified
+          ? { status: 'connected',   mode: 'webhook', displayName: webhookRow!.value }
+          : { status: 'connecting',  mode: 'webhook', displayName: webhookRow!.value },
     );
   }
 

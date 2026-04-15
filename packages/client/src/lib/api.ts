@@ -1081,6 +1081,8 @@ export interface KeyPermissionsResponse {
 
 export interface AiConnection {
   configured: boolean;
+  /** True only after a connection test has passed. The connection is not fully enabled until this is true. */
+  verified: boolean;
   webhookUrl: string | null;
   keyPrefix: string | null;
   baseUrl: string;

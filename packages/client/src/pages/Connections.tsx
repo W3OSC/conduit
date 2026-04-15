@@ -3936,6 +3936,7 @@ function AiConnectionTab() {
       const result = await api.testAiConnection();
       if (result.success) {
         setTestState('success');
+        qc.invalidateQueries({ queryKey: ['ai-connection'] });
         toast({ title: `Connection verified (${result.latencyMs}ms)`, variant: 'success' });
       } else {
         setTestState('error');
@@ -3967,6 +3968,7 @@ function AiConnectionTab() {
   }
 
   const configured = conn?.configured ?? false;
+  const verified   = conn?.verified   ?? false;
 
   const methods: { id: AiSetupMethod; label: string; sub: string }[] = [
     { id: 'channel', label: 'OpenClaw Channel', sub: '@w3osc/openclaw-conduit plugin' },
@@ -3985,16 +3987,21 @@ function AiConnectionTab() {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2.5 flex-wrap">
             <h2 className="text-sm font-semibold">AI Connection</h2>
-            {configured ? (
+            {verified ? (
               <span className="chip chip-emerald text-[10px]">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block" />
                 Connected
+              </span>
+            ) : configured ? (
+              <span className="chip chip-amber text-[10px]">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block" />
+                Needs test
               </span>
             ) : (
               <span className="chip chip-zinc text-[10px]">Not configured</span>
             )}
           </div>
-          {configured && (
+          {verified && (
             <button onClick={() => navigate('/ai')} className="mt-2 inline-flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 transition-colors">
               Open AI Chat <ArrowRight className="w-3 h-3" />
             </button>
@@ -4127,6 +4134,45 @@ EOF`}</CodeBlock>
                   </button>
                 </div>
               </div>
+
+              <div className="p-4 space-y-3">
+                <div className="flex items-center gap-2.5">
+                  <StepNumber n={5} />
+                  <h3 className="text-sm font-semibold">Test the connection</h3>
+                </div>
+                <p className="text-xs text-muted-foreground pl-8">
+                  Ensure your Gateway is running (<code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>), then send a test ping.
+                </p>
+                <div className="pl-8 flex items-center gap-3 flex-wrap">
+                  <button
+                    onClick={handleTest}
+                    disabled={testState === 'testing'}
+                    className="btn-secondary"
+                  >
+                    {testState === 'testing'
+                      ? <Loader2 className="w-4 h-4 animate-spin" />
+                      : <RefreshCw className="w-4 h-4" />}
+                    {testState === 'testing' ? 'Testing…' : 'Test connection'}
+                  </button>
+                  {testState === 'success' && (
+                    <span className="flex items-center gap-1.5 text-xs text-emerald-400">
+                      <CircleCheck className="w-4 h-4" /> Round-trip confirmed
+                    </span>
+                  )}
+                  {testState === 'error' && (
+                    <span className="flex items-center gap-1.5 text-xs text-red-400">
+                      <CircleX className="w-4 h-4" /> {testError}
+                    </span>
+                  )}
+                </div>
+                {testState === 'success' && (
+                  <div className="pl-8">
+                    <button onClick={() => navigate('/ai')} className="btn-primary">
+                      <Bot className="w-4 h-4" /> Open AI Chat
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -4197,6 +4243,45 @@ EOF`}</CodeBlock>
                     Connect
                   </button>
                 </div>
+              </div>
+
+              <div className="p-4 space-y-3">
+                <div className="flex items-center gap-2.5">
+                  <StepNumber n={3} />
+                  <h3 className="text-sm font-semibold">Test the connection</h3>
+                </div>
+                <p className="text-xs text-muted-foreground pl-8">
+                  Ensure your Gateway is running (<code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>), then send a test ping.
+                </p>
+                <div className="pl-8 flex items-center gap-3 flex-wrap">
+                  <button
+                    onClick={handleTest}
+                    disabled={testState === 'testing'}
+                    className="btn-secondary"
+                  >
+                    {testState === 'testing'
+                      ? <Loader2 className="w-4 h-4 animate-spin" />
+                      : <RefreshCw className="w-4 h-4" />}
+                    {testState === 'testing' ? 'Testing…' : 'Test connection'}
+                  </button>
+                  {testState === 'success' && (
+                    <span className="flex items-center gap-1.5 text-xs text-emerald-400">
+                      <CircleCheck className="w-4 h-4" /> Round-trip confirmed
+                    </span>
+                  )}
+                  {testState === 'error' && (
+                    <span className="flex items-center gap-1.5 text-xs text-red-400">
+                      <CircleX className="w-4 h-4" /> {testError}
+                    </span>
+                  )}
+                </div>
+                {testState === 'success' && (
+                  <div className="pl-8">
+                    <button onClick={() => navigate('/ai')} className="btn-primary">
+                      <Bot className="w-4 h-4" /> Open AI Chat
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -4272,6 +4357,45 @@ X-API-Key: <your-key>
 # Final chunk
 { "delta": "", "done": true, "messageId": "<returned-id>" }`}</CodeBlock>
                 </div>
+              </div>
+
+              <div className="p-4 space-y-3">
+                <div className="flex items-center gap-2.5">
+                  <StepNumber n={4} />
+                  <h3 className="text-sm font-semibold">Test the connection</h3>
+                </div>
+                <p className="text-xs text-muted-foreground pl-8">
+                  Ensure your endpoint is running, then send a test ping.
+                </p>
+                <div className="pl-8 flex items-center gap-3 flex-wrap">
+                  <button
+                    onClick={handleTest}
+                    disabled={testState === 'testing'}
+                    className="btn-secondary"
+                  >
+                    {testState === 'testing'
+                      ? <Loader2 className="w-4 h-4 animate-spin" />
+                      : <RefreshCw className="w-4 h-4" />}
+                    {testState === 'testing' ? 'Testing…' : 'Test connection'}
+                  </button>
+                  {testState === 'success' && (
+                    <span className="flex items-center gap-1.5 text-xs text-emerald-400">
+                      <CircleCheck className="w-4 h-4" /> Round-trip confirmed
+                    </span>
+                  )}
+                  {testState === 'error' && (
+                    <span className="flex items-center gap-1.5 text-xs text-red-400">
+                      <CircleX className="w-4 h-4" /> {testError}
+                    </span>
+                  )}
+                </div>
+                {testState === 'success' && (
+                  <div className="pl-8">
+                    <button onClick={() => navigate('/ai')} className="btn-primary">
+                      <Bot className="w-4 h-4" /> Open AI Chat
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -4357,6 +4481,45 @@ X-API-Key: <your-key>
 { "delta": "", "done": true,  "messageId": "<id>" }    // final`}</CodeBlock>
                 </div>
               </div>
+
+              <div className="p-4 space-y-3">
+                <div className="flex items-center gap-2.5">
+                  <StepNumber n={5} />
+                  <h3 className="text-sm font-semibold">Test the connection</h3>
+                </div>
+                <p className="text-xs text-muted-foreground pl-8">
+                  Ensure your tool is running, then send a test ping.
+                </p>
+                <div className="pl-8 flex items-center gap-3 flex-wrap">
+                  <button
+                    onClick={handleTest}
+                    disabled={testState === 'testing'}
+                    className="btn-secondary"
+                  >
+                    {testState === 'testing'
+                      ? <Loader2 className="w-4 h-4 animate-spin" />
+                      : <RefreshCw className="w-4 h-4" />}
+                    {testState === 'testing' ? 'Testing…' : 'Test connection'}
+                  </button>
+                  {testState === 'success' && (
+                    <span className="flex items-center gap-1.5 text-xs text-emerald-400">
+                      <CircleCheck className="w-4 h-4" /> Round-trip confirmed
+                    </span>
+                  )}
+                  {testState === 'error' && (
+                    <span className="flex items-center gap-1.5 text-xs text-red-400">
+                      <CircleX className="w-4 h-4" /> {testError}
+                    </span>
+                  )}
+                </div>
+                {testState === 'success' && (
+                  <div className="pl-8">
+                    <button onClick={() => navigate('/ai')} className="btn-primary">
+                      <Bot className="w-4 h-4" /> Open AI Chat
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -4390,77 +4553,7 @@ X-API-Key: <your-key>
               </p>
               <p className="text-[11px] text-muted-foreground">To rotate, disconnect and reconnect.</p>
             </div>
-          </div>
-
-          {/* Add Conduit skill to OpenClaw workspace */}
-          {conn && (
-            <div className="rounded-xl border border-border bg-secondary/30 divide-y divide-border">
-              <div className="p-4 space-y-2">
-                <div className="flex items-center gap-2.5">
-                  <StepNumber n={3} />
-                  <h3 className="text-sm font-semibold">Add the Conduit skill to your OpenClaw workspace</h3>
-                </div>
-                <div className="pl-8 space-y-2">
-                  <p className="text-xs text-muted-foreground">
-                    Create <code className="font-mono text-primary/70 text-[11px]">~/.openclaw/workspace/skills/conduit/SKILL.md</code>:
-                  </p>
-                   <CodeBlock className="leading-relaxed whitespace-pre-wrap break-all">{`---
-name: conduit
-description: Read the user's messages, emails, and calendar via Conduit, and stream responses back to the Conduit AI chat interface.
----
-
-You have access to the Conduit API — a personal communications hub.
-
-Base URL: ${conn.baseUrl}
-API Key: <the key shown above>
-OpenAPI spec: ${conn.openApiUrl}
-
-Include X-API-Key: <key> on every request.
-
-Key endpoints:
-- GET /api/activity
-- GET /api/messages?source=<platform>&chat_id=<id>
-- GET /api/contacts
-- GET /api/gmail/messages
-- GET /api/calendar/events
-- POST /api/outbox
-
-Streaming responses back to Conduit:
-POST chunks to: ${conn.streamUrlTemplate.replace('{sessionId}', '<sessionId from payload>')}
-
-Body: { "delta": "text chunk", "done": false, "messageId": "<id>" }
-- Omit messageId on the first chunk; use the returned ID on all subsequent chunks.
-- Send { "done": true } on the final chunk.
-- Always include X-API-Key: <key>.`}</CodeBlock>
-                  <p className="text-xs text-muted-foreground">
-                    Restart the Gateway: <code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>
-                  </p>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Conduit endpoints */}
-          {conn && (
-            <div className="rounded-xl border border-border bg-secondary/30 divide-y divide-border">
-              <div className="p-4 space-y-3">
-                <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Conduit endpoints</p>
-                <CopyField label="Stream endpoint template" value={conn.streamUrlTemplate} />
-                <CopyField label="OpenAPI spec URL" value={conn.openApiUrl} />
-              </div>
-            </div>
-          )}
-
-          {/* Test */}
-          <div className="rounded-xl border border-border bg-secondary/30 p-4 space-y-3">
-            <div className="flex items-center gap-2.5">
-              <StepNumber n={4} />
-              <h3 className="text-sm font-semibold">Test the connection</h3>
-            </div>
-            <p className="text-xs text-muted-foreground pl-8">
-              Ensure your Gateway is running (<code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>), then send a test ping.
-            </p>
-            <div className="pl-8 flex items-center gap-3 flex-wrap">
+            <div className="p-4 flex items-center gap-3 flex-wrap">
               <button
                 onClick={handleTest}
                 disabled={testState === 'testing'}
@@ -4481,14 +4574,12 @@ Body: { "delta": "text chunk", "done": false, "messageId": "<id>" }
                   <CircleX className="w-4 h-4" /> {testError}
                 </span>
               )}
-            </div>
-            {testState === 'success' && (
-              <div className="pl-8">
+              {testState === 'success' && (
                 <button onClick={() => navigate('/ai')} className="btn-primary">
                   <Bot className="w-4 h-4" /> Open AI Chat
                 </button>
-              </div>
-            )}
+              )}
+            </div>
           </div>
 
           {/* Danger zone */}

@@ -1,6 +1,6 @@
 {
   "name": "@w3osc/openclaw-conduit",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "description": "OpenClaw channel plugin that connects Conduit as a native messaging channel",
   "type": "module",
   "exports": {
