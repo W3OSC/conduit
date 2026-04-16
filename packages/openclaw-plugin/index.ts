@@ -88,10 +88,25 @@ export default defineChannelPluginEntry({
           return true;
         }
 
-        // Parse the payload.
+        // Parse the payload. OpenClaw may or may not pre-parse the body onto
+        // req.body for 'plugin' auth routes, so we fall back to reading the
+        // raw stream if req.body is not already an object.
+        let rawBody: unknown = (req as unknown as { body: unknown }).body;
+        if (typeof rawBody !== 'object' || rawBody === null) {
+          rawBody = await new Promise<unknown>((resolve, reject) => {
+            const chunks: Buffer[] = [];
+            req.on('data', (chunk: Buffer) => chunks.push(chunk));
+            req.on('end', () => {
+              try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+              catch (e) { reject(e); }
+            });
+            req.on('error', reject);
+          }).catch(() => null);
+        }
+
         let payload: ConduitInboundPayload;
         try {
-          payload = parseInboundPayload((req as unknown as { body: unknown }).body);
+          payload = parseInboundPayload(rawBody);
         } catch (err) {
           res.statusCode = 400;
           res.setHeader('Content-Type', 'application/json');

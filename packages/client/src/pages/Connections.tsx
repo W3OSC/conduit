@@ -3907,6 +3907,8 @@ function AiConnectionTab() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const [webhookUrl, setWebhookUrl] = useState('');
+  const [channelHost, setChannelHost] = useState('localhost');
+  const [channelPort, setChannelPort] = useState('18789');
   const [shownApiKey, setShownApiKey] = useState<string | null>(null);
   const [testState, setTestState] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [testError, setTestError] = useState<string | null>(null);
@@ -3918,6 +3920,20 @@ function AiConnectionTab() {
     queryFn: api.aiConnection,
     staleTime: 10000,
   });
+
+  // Pre-populate host/port from the saved webhook URL if it matches the channel pattern
+  useEffect(() => {
+    if (!conn?.webhookUrl) return;
+    try {
+      const u = new URL(conn.webhookUrl);
+      if (u.pathname === '/channels/conduit/inbound') {
+        setChannelHost(u.hostname);
+        setChannelPort(u.port || '18789');
+      }
+    } catch {
+      // not a valid URL — leave defaults
+    }
+  }, [conn?.webhookUrl]);
 
   const setupMutation = useMutation({
     mutationFn: (url: string) => api.setupAiConnection(url),
@@ -4111,22 +4127,35 @@ EOF`}</CodeBlock>
               <div className="p-4 space-y-3">
                 <div className="flex items-center gap-2.5">
                   <StepNumber n={4} />
-                  <h3 className="text-sm font-semibold">Enter the inbound URL and connect</h3>
+                  <h3 className="text-sm font-semibold">Enter the Gateway address and connect</h3>
                 </div>
                 <div className="pl-8 space-y-3">
                   <p className="text-xs text-muted-foreground">
-                    Conduit will POST AI chat messages to this URL. If you set a <code className="font-mono text-primary/70 text-[11px]">webhookSecret</code> above, Conduit sends it as <code className="font-mono text-primary/70 text-[11px]">Authorization: Bearer &lt;secret&gt;</code>.
+                    Enter the host and port where your OpenClaw Gateway is running. Conduit will POST AI chat messages to <code className="font-mono text-primary/70 text-[11px]">/channels/conduit/inbound</code> on that address.
                   </p>
-                  <input
-                    type="url"
-                    value={webhookUrl}
-                    onChange={(e) => setWebhookUrl(e.target.value)}
-                    placeholder="http://localhost:18789/channels/conduit/inbound"
-                    className="input-warm"
-                  />
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={channelHost}
+                      onChange={(e) => setChannelHost(e.target.value)}
+                      placeholder="localhost"
+                      className="input-warm flex-1"
+                    />
+                    <span className="text-muted-foreground text-sm">:</span>
+                    <input
+                      type="text"
+                      value={channelPort}
+                      onChange={(e) => setChannelPort(e.target.value.replace(/\D/g, ''))}
+                      placeholder="18789"
+                      className="input-warm w-24"
+                    />
+                  </div>
+                  <p className="text-[11px] text-muted-foreground font-mono">
+                    → http://{channelHost || 'localhost'}:{channelPort || '18789'}/channels/conduit/inbound
+                  </p>
                   <button
-                    onClick={() => setupMutation.mutate(webhookUrl)}
-                    disabled={!webhookUrl.trim() || setupMutation.isPending}
+                    onClick={() => setupMutation.mutate(`http://${channelHost.trim() || 'localhost'}:${channelPort.trim() || '18789'}/channels/conduit/inbound`)}
+                    disabled={!channelHost.trim() || !channelPort.trim() || setupMutation.isPending}
                     className="btn-primary"
                   >
                     {setupMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlugZap className="w-4 h-4" />}
