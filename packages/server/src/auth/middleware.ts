@@ -56,6 +56,18 @@ export function apiKeyAuth(required = true) {
   };
 }
 
+// uiOnlyAuth — blocks API key requests entirely; credentials endpoints must only be
+// accessible by the UI user (session cookie). Falls through to uiAuthMiddleware upstream
+// for session enforcement when login is enabled.
+export function uiOnlyAuth(req: Request, res: Response, next: NextFunction): void {
+  if (req.headers['x-api-key']) {
+    res.status(403).json({ error: 'Credentials endpoints are not accessible via API key' });
+    return;
+  }
+  (req as AuthedRequest).actor = 'ui';
+  next();
+}
+
 export function optionalAuth(req: Request, res: Response, next: NextFunction): void {
   const authedReq = req as AuthedRequest;
   const rawKey = req.headers['x-api-key'] as string | undefined;

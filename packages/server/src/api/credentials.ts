@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { getDb } from '../db/client.js';
 import { settings } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
-import { optionalAuth } from '../auth/middleware.js';
+import { optionalAuth, uiOnlyAuth } from '../auth/middleware.js';
 
 const router = Router();
 
@@ -70,7 +70,7 @@ function setCreds(service: Service, creds: Creds): void {
 }
 
 // GET /api/credentials/:service/raw — returns full unredacted credentials (for Settings UI)
-router.get('/:service/raw', optionalAuth, (req, res) => {
+router.get('/:service/raw', uiOnlyAuth, (req, res) => {
   const service = req.params['service'] as Service;
   if (!CRED_KEYS[service]) return res.status(400).json({ error: 'Unknown service' });
   const creds = getCreds(service);
@@ -94,7 +94,7 @@ router.get('/', optionalAuth, (_req, res) => {
 });
 
 // PUT /api/credentials/:service — save credentials (never redacted on write)
-router.put('/:service', optionalAuth, (req, res) => {
+router.put('/:service', uiOnlyAuth, (req, res) => {
   const service = req.params['service'] as Service;
   if (!CRED_KEYS[service]) return res.status(400).json({ error: 'Unknown service' });
 
