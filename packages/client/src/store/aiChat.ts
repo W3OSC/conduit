@@ -24,6 +24,7 @@ interface AiChatStore {
   setMessages: (sessionId: string, messages: AiMessage[]) => void;
   addMessage: (sessionId: string, message: AiMessage) => void;
   updateMessage: (sessionId: string, messageId: string, updates: Partial<AiMessage>) => void;
+  replaceOptimisticMessage: (sessionId: string, message: AiMessage) => void;
 
   // Active streaming state per session
   streaming: Record<string, StreamingMessage | null>;
@@ -40,7 +41,7 @@ interface AiChatStore {
   setWaiting: (sessionId: string, waiting: boolean) => void;
 }
 
-export const useAiChatStore = create<AiChatStore>((set, get) => ({
+export const useAiChatStore = create<AiChatStore>((set) => ({
   sessions: [],
   setSessions: (sessions) => set({ sessions }),
   addSession: (session) =>
@@ -66,7 +67,19 @@ export const useAiChatStore = create<AiChatStore>((set, get) => ({
 
   messages: {},
   setMessages: (sessionId, messages) =>
-    set((s) => ({ messages: { ...s.messages, [sessionId]: messages } })),
+    set((s) => {
+      // Drop any in-flight (streaming: true) rows coming from the REST snapshot —
+      // those are owned by the ai:token WebSocket stream.  Merging them would
+      // produce a blank duplicate bubble alongside the live streaming bubble.
+      const settled = messages.filter((m) => !m.streaming);
+      // Preserve any finalized messages that are already in the store but not
+      // yet in the DB snapshot (e.g. just written by finalizeStream before the
+      // query re-ran).
+      const current = s.messages[sessionId] ?? [];
+      const incomingIds = new Set(settled.map((m) => m.id));
+      const localOnly = current.filter((m) => !m.streaming && !incomingIds.has(m.id));
+      return { messages: { ...s.messages, [sessionId]: [...settled, ...localOnly] } };
+    }),
   addMessage: (sessionId, message) =>
     set((s) => ({
       messages: {
@@ -83,6 +96,36 @@ export const useAiChatStore = create<AiChatStore>((set, get) => ({
         ),
       },
     })),
+  replaceOptimisticMessage: (sessionId, message) =>
+    set((s) => {
+      const existing = s.messages[sessionId] || [];
+      // If the real message is already present, just remove any optimistic entry
+      if (existing.some((m) => m.id === message.id)) {
+        return {
+          messages: {
+            ...s.messages,
+            [sessionId]: existing.filter((m) => !m.id.startsWith('opt-')),
+          },
+        };
+      }
+      // Replace the optimistic entry with the confirmed message
+      const hasOptimistic = existing.some((m) => m.id.startsWith('opt-'));
+      if (hasOptimistic) {
+        return {
+          messages: {
+            ...s.messages,
+            [sessionId]: existing.map((m) => (m.id.startsWith('opt-') ? message : m)),
+          },
+        };
+      }
+      // No optimistic entry — just append (fallback)
+      return {
+        messages: {
+          ...s.messages,
+          [sessionId]: [...existing, message],
+        },
+      };
+    }),
 
   streaming: {},
   startStream: (sessionId, messageId) =>
@@ -115,10 +158,10 @@ export const useAiChatStore = create<AiChatStore>((set, get) => ({
       };
     }),
   finalizeStream: (sessionId, messageId) => {
-    const { streaming, messages } = get();
-    const stream = streaming[sessionId];
-
     set((s) => {
+      // Read streaming state from within the setter so we always see the
+      // latest value, even if appendToken() was called just before us.
+      const stream = s.streaming[sessionId];
       // Persist the streamed content into the messages array
       const finalContent = stream?.content ?? '';
       const finalToolCalls = stream?.toolCalls;

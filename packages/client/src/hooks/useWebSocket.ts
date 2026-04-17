@@ -175,11 +175,11 @@ export function useWebSocket() {
             toolCalls?: Array<{ name: string; input: unknown; output?: unknown }>;
           };
           const store = useAiChatStore.getState();
+          // Always append the delta first (the final chunk may carry the last token)
+          store.appendToken(d.sessionId, d.messageId, d.delta, d.toolCalls);
+          if (store.waiting[d.sessionId]) store.setWaiting(d.sessionId, false);
           if (d.done) {
             store.finalizeStream(d.sessionId, d.messageId);
-          } else {
-            store.appendToken(d.sessionId, d.messageId, d.delta, d.toolCalls);
-            if (store.waiting[d.sessionId]) store.setWaiting(d.sessionId, false);
           }
           break;
         }
@@ -187,8 +187,13 @@ export function useWebSocket() {
         case 'ai:message': {
           const d = event.data as { sessionId: string; message: import('../lib/api').AiMessage };
           const store = useAiChatStore.getState();
-          const existing = store.messages[d.sessionId] || [];
-          if (!existing.some((m) => m.id === d.message.id)) store.addMessage(d.sessionId, d.message);
+          if (d.message.role === 'user') {
+            // Replace any optimistic placeholder for this user message
+            store.replaceOptimisticMessage(d.sessionId, d.message);
+          } else {
+            const existing = store.messages[d.sessionId] || [];
+            if (!existing.some((m) => m.id === d.message.id)) store.addMessage(d.sessionId, d.message);
+          }
           break;
         }
 

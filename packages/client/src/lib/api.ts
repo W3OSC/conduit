@@ -367,8 +367,10 @@ export const api = {
 
   // ── AI Chat ─────────────────────────────────────────────────────────────────
   aiConnection: () => request<AiConnection>('/ai/connection'),
-  setupAiConnection: (webhookUrl: string) =>
-    request<AiConnection & { apiKey: string }>('/ai/connection', { method: 'POST', body: JSON.stringify({ webhookUrl }) }),
+  setupAiConnection: (webhookUrl: string, gatewayToken?: string) =>
+    request<AiConnection & { apiKey: string }>('/ai/connection', { method: 'POST', body: JSON.stringify({ webhookUrl, gatewayToken: gatewayToken || undefined }) }),
+  updateAiConnection: (patch: { callbackBaseUrl?: string | null; gatewayToken?: string | null }) =>
+    request<AiConnection>('/ai/connection', { method: 'PATCH', body: JSON.stringify(patch) }),
   updateAiCallbackBase: (callbackBaseUrl: string | null) =>
     request<AiConnection>('/ai/connection', { method: 'PATCH', body: JSON.stringify({ callbackBaseUrl }) }),
   testAiConnection: () =>
@@ -1093,6 +1095,11 @@ export interface AiConnection {
    * container or machine and cannot reach `localhost`.
    */
   callbackBaseUrl: string | null;
+  /**
+   * Optional Bearer token sent as `Authorization: Bearer <token>` on every outbound webhook
+   * request. Required when the webhook endpoint is protected by gateway authentication.
+   */
+  gatewayToken: string | null;
   baseUrl: string;
   streamUrlTemplate: string;
   openApiUrl: string;

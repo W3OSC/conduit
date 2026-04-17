@@ -449,6 +449,7 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
     setError,
     setWaiting,
     addMessage,
+    replaceOptimisticMessage,
   } = useAiChatStore();
 
   const sessionMessages = allMessages[session.id] ?? [];
@@ -483,8 +484,7 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
   const sendMutation = useMutation({
     mutationFn: (content: string) => api.sendAiMessage(session.id, content),
     onSuccess: (message) => {
-      const existing = useAiChatStore.getState().messages[session.id] ?? [];
-      if (!existing.some((m) => m.id === message.id)) addMessage(session.id, message);
+      replaceOptimisticMessage(session.id, message);
       setWaiting(session.id, true);
       setTimeout(() => virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'smooth' }), 50);
     },
@@ -514,7 +514,10 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
   };
 
   const items: Array<{ type: 'message'; msg: AiMessage } | { type: 'streaming' } | { type: 'thinking' }> = [
-    ...sessionMessages.map((msg) => ({ type: 'message' as const, msg })),
+    // Exclude in-flight assistant rows — the live { type: 'streaming' } bubble
+    // below already renders them; including them here would cause a duplicate
+    // blank bubble while the stream is active.
+    ...sessionMessages.filter((msg) => !msg.streaming).map((msg) => ({ type: 'message' as const, msg })),
     ...(isStreaming && streamState ? [{ type: 'streaming' as const }] : []),
     ...(!isStreaming && isWaiting ? [{ type: 'thinking' as const }] : []),
   ];

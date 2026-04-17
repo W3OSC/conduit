@@ -3916,6 +3916,9 @@ function AiConnectionTab() {
   const [testError, setTestError] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
   const [method, setMethod] = useState<AiSetupMethod>('channel');
+  // Gateway token — sent as Authorization: Bearer <token> to the webhook
+  const [gatewayToken, setGatewayToken] = useState('');
+  const [gatewayTokenSaving, setGatewayTokenSaving] = useState(false);
   // Callback base URL panel (connected state)
   const [cbLocation, setCbLocation] = useState<'auto' | 'localhost' | 'docker' | 'custom'>('auto');
   const [customCbHost, setCustomCbHost] = useState('');
@@ -3927,6 +3930,11 @@ function AiConnectionTab() {
     queryFn: api.aiConnection,
     staleTime: 10000,
   });
+
+  // Pre-populate gateway token from saved setting
+  useEffect(() => {
+    setGatewayToken(conn?.gatewayToken ?? '');
+  }, [conn?.gatewayToken]);
 
   // Pre-populate agent location + port from the saved webhook URL
   useEffect(() => {
@@ -3963,7 +3971,7 @@ function AiConnectionTab() {
   }, [conn?.callbackBaseUrl]);
 
   const setupMutation = useMutation({
-    mutationFn: (url: string) => api.setupAiConnection(url),
+    mutationFn: (url: string) => api.setupAiConnection(url, gatewayToken || undefined),
     onSuccess: (data) => {
       if (data.apiKey) setShownApiKey(data.apiKey);
       qc.invalidateQueries({ queryKey: ['ai-connection'] });
@@ -3971,6 +3979,19 @@ function AiConnectionTab() {
     },
     onError: (err) => toast({ title: 'Setup failed', description: String(err), variant: 'destructive' }),
   });
+
+  const handleSaveGatewayToken = async () => {
+    setGatewayTokenSaving(true);
+    try {
+      await api.updateAiConnection({ gatewayToken: gatewayToken.trim() || null });
+      qc.invalidateQueries({ queryKey: ['ai-connection'] });
+      toast({ title: 'Gateway token saved', variant: 'success' });
+    } catch (e) {
+      toast({ title: 'Failed to save', description: String(e), variant: 'destructive' });
+    } finally {
+      setGatewayTokenSaving(false);
+    }
+  };
 
   const handleTest = async () => {
     setTestState('testing');
@@ -4335,9 +4356,6 @@ EOF`}</CodeBlock>
                   <h3 className="text-sm font-semibold">Enter the webhook URL and connect</h3>
                 </div>
                 <div className="pl-8 space-y-3">
-                  <p className="text-xs text-muted-foreground">
-                    Conduit will send <code className="font-mono text-primary/70 text-[11px]">Authorization: Bearer &lt;secret&gt;</code> on every request.
-                  </p>
                   <input
                     type="url"
                     value={webhookUrl}
@@ -4345,6 +4363,19 @@ EOF`}</CodeBlock>
                     placeholder="http://192.168.1.x:18789/plugins/webhooks/conduit"
                     className="input-warm"
                   />
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-muted-foreground font-medium">Gateway token (if required)</label>
+                    <input
+                      type="password"
+                      value={gatewayToken}
+                      onChange={(e) => setGatewayToken(e.target.value)}
+                      placeholder="Bearer token your gateway requires"
+                      className="input-warm font-mono"
+                    />
+                    <p className="text-[11px] text-muted-foreground">
+                      Sent as <code className="font-mono text-[11px]">Authorization: Bearer &lt;token&gt;</code> on every outbound request. Leave blank if not required.
+                    </p>
+                  </div>
                   <button
                     onClick={() => setupMutation.mutate(webhookUrl)}
                     disabled={!webhookUrl.trim() || setupMutation.isPending}
@@ -4663,6 +4694,29 @@ X-API-Key: <your-key>
                 {conn?.keyPrefix}<span className="text-muted-foreground">••••••••••••••••••••••••••••••••••••</span>
               </p>
               <p className="text-[11px] text-muted-foreground">To rotate, disconnect and reconnect.</p>
+            </div>
+            <div className="p-4 space-y-3">
+              <div className="space-y-1">
+                <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Gateway Token</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Sent as <code className="font-mono text-[11px]">Authorization: Bearer &lt;token&gt;</code> on every outbound webhook request.
+                  Required when the webhook endpoint enforces gateway authentication.
+                </p>
+              </div>
+              <input
+                type="password"
+                value={gatewayToken}
+                onChange={(e) => setGatewayToken(e.target.value)}
+                placeholder="Leave blank if not required"
+                className="input font-mono text-sm w-full"
+              />
+              <button
+                onClick={handleSaveGatewayToken}
+                disabled={gatewayTokenSaving}
+                className="btn-secondary"
+              >
+                {gatewayTokenSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save'}
+              </button>
             </div>
             <div className="p-4 space-y-3">
               <div className="space-y-1">

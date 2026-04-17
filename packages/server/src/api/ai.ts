@@ -16,6 +16,7 @@ const KEY_API_KEY_PREFIX    = 'ai.apiKeyPrefix';
 const KEY_PERMISSIONS       = 'ai.permissions';
 const KEY_VERIFIED          = 'ai.verified'; // '1' once a connection test has passed
 const KEY_CALLBACK_BASE_URL = 'ai.callbackBaseUrl'; // override for streamUrl/conduitBaseUrl sent to the AI agent
+const KEY_GATEWAY_TOKEN     = 'ai.gatewayToken'; // optional Bearer token sent as Authorization header to the webhook
 
 // ── Permission defaults ───────────────────────────────────────────────────────
 
@@ -219,6 +220,7 @@ router.get('/connection', optionalAuth, (req, res) => {
   const keyId           = getSetting(KEY_API_KEY_ID);
   const keyPrefix       = getSetting(KEY_API_KEY_PREFIX);
   const callbackBaseUrl = getSetting(KEY_CALLBACK_BASE_URL);
+  const gatewayToken    = getSetting(KEY_GATEWAY_TOKEN);
   const baseUrl         = getBaseUrl(req);
   const configured      = !!(webhookUrl && keyId);
   const verified        = configured && getSetting(KEY_VERIFIED) === '1';
@@ -229,6 +231,7 @@ router.get('/connection', optionalAuth, (req, res) => {
     webhookUrl:      webhookUrl      ?? null,
     keyPrefix:       keyPrefix       ?? null,
     callbackBaseUrl: callbackBaseUrl ?? null,
+    gatewayToken:    gatewayToken    ?? null,
     baseUrl,
     streamUrlTemplate: `${baseUrl}/api/ai/sessions/{sessionId}/stream`,
     openApiUrl: `${baseUrl}/api/openapi.json`,
@@ -241,7 +244,7 @@ router.get('/connection', optionalAuth, (req, res) => {
 
 router.post('/connection', optionalAuth, (req, res) => {
   const db = getDb();
-  const { webhookUrl, callbackBaseUrl } = req.body as { webhookUrl: string; callbackBaseUrl?: string };
+  const { webhookUrl, callbackBaseUrl, gatewayToken } = req.body as { webhookUrl: string; callbackBaseUrl?: string; gatewayToken?: string };
   if (!webhookUrl?.trim()) {
     res.status(400).json({ error: 'webhookUrl is required' });
     return;
@@ -274,6 +277,11 @@ router.post('/connection', optionalAuth, (req, res) => {
   if (callbackBaseUrl?.trim()) {
     setSetting(KEY_CALLBACK_BASE_URL, callbackBaseUrl.trim().replace(/\/$/, ''));
   }
+  if (gatewayToken?.trim()) {
+    setSetting(KEY_GATEWAY_TOKEN, gatewayToken.trim());
+  } else {
+    deleteSetting(KEY_GATEWAY_TOKEN);
+  }
   // Clear any previous verification — the new URL must pass a test before being marked connected
   deleteSetting(KEY_VERIFIED);
 
@@ -281,6 +289,7 @@ router.post('/connection', optionalAuth, (req, res) => {
 
   const baseUrl         = getBaseUrl(req);
   const savedCallback   = getSetting(KEY_CALLBACK_BASE_URL);
+  const savedToken      = getSetting(KEY_GATEWAY_TOKEN);
   res.json({
     configured:        true,
     verified:          false,
@@ -288,6 +297,7 @@ router.post('/connection', optionalAuth, (req, res) => {
     keyPrefix:         prefix,
     apiKey:            rawKey,          // returned ONCE
     callbackBaseUrl:   savedCallback ?? null,
+    gatewayToken:      savedToken    ?? null,
     baseUrl,
     streamUrlTemplate: `${baseUrl}/api/ai/sessions/{sessionId}/stream`,
     openApiUrl:        `${baseUrl}/api/openapi.json`,
@@ -299,7 +309,7 @@ router.post('/connection', optionalAuth, (req, res) => {
 // re-generating the API key or re-saving the webhook URL.
 
 router.patch('/connection', optionalAuth, (req, res) => {
-  const { callbackBaseUrl } = req.body as { callbackBaseUrl?: string | null };
+  const { callbackBaseUrl, gatewayToken } = req.body as { callbackBaseUrl?: string | null; gatewayToken?: string | null };
 
   if (callbackBaseUrl === null || callbackBaseUrl === '') {
     deleteSetting(KEY_CALLBACK_BASE_URL);
@@ -307,10 +317,17 @@ router.patch('/connection', optionalAuth, (req, res) => {
     setSetting(KEY_CALLBACK_BASE_URL, callbackBaseUrl.trim().replace(/\/$/, ''));
   }
 
+  if (gatewayToken === null || gatewayToken === '') {
+    deleteSetting(KEY_GATEWAY_TOKEN);
+  } else if (gatewayToken !== undefined) {
+    setSetting(KEY_GATEWAY_TOKEN, gatewayToken.trim());
+  }
+
   const webhookUrl      = getSetting(KEY_WEBHOOK_URL);
   const keyPrefix       = getSetting(KEY_API_KEY_PREFIX);
   const keyId           = getSetting(KEY_API_KEY_ID);
   const savedCallback   = getSetting(KEY_CALLBACK_BASE_URL);
+  const savedToken      = getSetting(KEY_GATEWAY_TOKEN);
   const baseUrl         = getBaseUrl(req);
   const configured      = !!(webhookUrl && keyId);
   const verified        = configured && getSetting(KEY_VERIFIED) === '1';
@@ -318,9 +335,10 @@ router.patch('/connection', optionalAuth, (req, res) => {
   res.json({
     configured,
     verified,
-    webhookUrl:      webhookUrl  ?? null,
-    keyPrefix:       keyPrefix   ?? null,
+    webhookUrl:      webhookUrl    ?? null,
+    keyPrefix:       keyPrefix     ?? null,
     callbackBaseUrl: savedCallback ?? null,
+    gatewayToken:    savedToken    ?? null,
     baseUrl,
     streamUrlTemplate: `${baseUrl}/api/ai/sessions/{sessionId}/stream`,
     openApiUrl:        `${baseUrl}/api/openapi.json`,
@@ -350,10 +368,15 @@ router.post('/connection/test', optionalAuth, async (req, res) => {
     15000,
   );
 
+  const gatewayToken = getSetting(KEY_GATEWAY_TOKEN);
+  const authHeaders: Record<string, string> = gatewayToken
+    ? { Authorization: `Bearer ${gatewayToken}` }
+    : {};
+
   try {
     const fetchRes = await fetch(webhookUrl, {
       method:    'POST',
-      headers:   { 'Content-Type': 'application/json' },
+      headers:   { 'Content-Type': 'application/json', ...authHeaders },
       redirect:  'manual',
       body: JSON.stringify({
         sessionId:     testSessionId,
@@ -605,9 +628,14 @@ router.post('/sessions/:id/messages', optionalAuth, async (req, res) => {
         };
         if (systemPrompt) payload['systemPrompt'] = systemPrompt;
 
+        const deliveryGatewayToken = getSetting(KEY_GATEWAY_TOKEN);
+        const deliveryAuthHeaders: Record<string, string> = deliveryGatewayToken
+          ? { Authorization: `Bearer ${deliveryGatewayToken}` }
+          : {};
+
         const deliveryRes = await fetch(webhookUrl, {
           method:   'POST',
-          headers:  { 'Content-Type': 'application/json' },
+          headers:  { 'Content-Type': 'application/json', ...deliveryAuthHeaders },
           redirect: 'manual',
           body:     JSON.stringify(payload),
           signal:   AbortSignal.timeout(30000),
@@ -638,17 +666,14 @@ router.post('/sessions/:id/stream', apiKeyAuth(true), (req, res) => {
   // Verify session exists (test pings use ephemeral IDs that won't be in DB — that's fine)
   const session = db.select().from(aiSessions).where(eq(aiSessions.id, id)).get();
 
-  const {
-    delta,
-    done = false,
-    toolCalls,
-    messageId: existingMsgId,
-  } = req.body as {
-    delta?: string;
-    done?: boolean;
-    toolCalls?: Array<{ name: string; input: unknown; output?: unknown }>;
-    messageId?: string;
-  };
+  const body = req.body as Record<string, unknown>;
+
+  // Defensively coerce all fields to valid SQLite-bindable types.
+  // The AI agent (especially third-party gateways) may send unexpected types.
+  const delta        = typeof body['delta']     === 'string'  ? body['delta']     : '';
+  const done         = body['done'] === true;
+  const toolCalls    = Array.isArray(body['toolCalls'])        ? body['toolCalls'] : null;
+  const existingMsgId = typeof body['messageId'] === 'string' ? body['messageId'] : undefined;
 
   let msgId = existingMsgId;
 
@@ -657,10 +682,10 @@ router.post('/sessions/:id/stream', apiKeyAuth(true), (req, res) => {
     if (!msgId) {
       msgId = nanoid();
       db.insert(aiMessages).values({
-        id: msgId,
+        id:        msgId,
         sessionId: id,
-        role: 'assistant',
-        content: delta || '',
+        role:      'assistant',
+        content:   delta,
         toolCalls: toolCalls ? JSON.stringify(toolCalls) : null,
         streaming: !done,
         createdAt: new Date().toISOString(),
@@ -670,7 +695,7 @@ router.post('/sessions/:id/stream', apiKeyAuth(true), (req, res) => {
       if (existing) {
         db.update(aiMessages)
           .set({
-            content:   existing.content + (delta || ''),
+            content:   existing.content + delta,
             toolCalls: toolCalls ? JSON.stringify(toolCalls) : existing.toolCalls,
             streaming: !done,
           })
@@ -684,7 +709,7 @@ router.post('/sessions/:id/stream', apiKeyAuth(true), (req, res) => {
 
   broadcast({
     type: 'ai:token',
-    data: { sessionId: id, messageId: msgId, delta: delta || '', done, toolCalls: toolCalls ?? undefined },
+    data: { sessionId: id, messageId: msgId, delta, done, toolCalls: toolCalls ?? undefined },
   });
 
   res.json({ success: true, messageId: msgId });
