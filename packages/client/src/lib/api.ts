@@ -368,7 +368,7 @@ export const api = {
   // ── AI Chat ─────────────────────────────────────────────────────────────────
   aiConnection: () => request<AiConnection>('/ai/connection'),
   setupAiConnection: (webhookUrl: string, gatewayToken?: string) =>
-    request<AiConnection & { apiKey: string }>('/ai/connection', { method: 'POST', body: JSON.stringify({ webhookUrl, gatewayToken: gatewayToken || undefined }) }),
+    request<AiConnection>('/ai/connection', { method: 'POST', body: JSON.stringify({ webhookUrl, gatewayToken: gatewayToken || undefined }) }),
   updateAiConnection: (patch: { callbackBaseUrl?: string | null; gatewayToken?: string | null }) =>
     request<AiConnection>('/ai/connection', { method: 'PATCH', body: JSON.stringify(patch) }),
   updateAiCallbackBase: (callbackBaseUrl: string | null) =>
@@ -1088,7 +1088,6 @@ export interface AiConnection {
   /** True only after a connection test has passed. The connection is not fully enabled until this is true. */
   verified: boolean;
   webhookUrl: string | null;
-  keyPrefix: string | null;
   /**
    * Optional override for the base URL sent to the AI agent as `conduitBaseUrl` and used to
    * build `streamUrl` in webhook payloads. Set this when the AI agent runs in a separate
@@ -1103,8 +1102,6 @@ export interface AiConnection {
   baseUrl: string;
   streamUrlTemplate: string;
   openApiUrl: string;
-  /** Only present on POST /ai/connection response — shown once */
-  apiKey?: string;
 }
 
 export interface AiPermissions {

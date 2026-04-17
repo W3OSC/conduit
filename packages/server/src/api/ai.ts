@@ -1,18 +1,16 @@
 import { Router } from 'express';
-import { randomBytes, createHash } from 'crypto';
+import { randomBytes } from 'crypto';
 import { eq, desc, asc } from 'drizzle-orm';
 import { getDb } from '../db/client.js';
-import { aiSessions, aiMessages, apiKeys, settings } from '../db/schema.js';
+import { aiSessions, aiMessages, settings } from '../db/schema.js';
 import { optionalAuth, apiKeyAuth, type AuthedRequest } from '../auth/middleware.js';
-import { broadcast, onNextBroadcast } from '../websocket/hub.js';
+import { broadcast, onNextBroadcast, collectBroadcast } from '../websocket/hub.js';
 import { getConnectionManager } from '../connections/manager.js';
 
 const router = Router();
 
 // ── Settings keys ─────────────────────────────────────────────────────────────
 const KEY_WEBHOOK_URL       = 'ai.webhookUrl';
-const KEY_API_KEY_ID        = 'ai.apiKeyId';
-const KEY_API_KEY_PREFIX    = 'ai.apiKeyPrefix';
 const KEY_PERMISSIONS       = 'ai.permissions';
 const KEY_VERIFIED          = 'ai.verified'; // '1' once a connection test has passed
 const KEY_CALLBACK_BASE_URL = 'ai.callbackBaseUrl'; // override for streamUrl/conduitBaseUrl sent to the AI agent
@@ -101,7 +99,7 @@ function getCallbackBase(req: import('express').Request): string {
   return getBaseUrl(req);
 }
 
-function buildSystemPrompt(baseUrl: string, apiKey: string | undefined, sessionId: string, perms: AiPermissions): string {
+function buildSystemPrompt(baseUrl: string, sessionId: string, perms: AiPermissions): string {
   // Build the list of allowed endpoints based on permissions
   const allowed: string[] = [];
   const denied:  string[] = [];
@@ -182,11 +180,10 @@ Conduit is a self-hosted platform that connects to Slack, Discord, Telegram, Twi
 You are connected to this Conduit instance via API. Use the API to read context about the user's communications before responding, and to take permitted actions on their behalf.
 
 **Base URL:** ${baseUrl}
-**API Key:** ${apiKey ?? '(not configured — set an API key in Settings → Permissions)'}
 **OpenAPI Spec:** ${baseUrl}/api/openapi.json
 
 ## What You Can Access
-Include the header \`X-API-Key: ${apiKey ?? '<your-api-key>'}\` on every request.
+Include the header \`X-API-Key: <your-api-key>\` on every request. Your API key was provisioned for you in Conduit → Settings → Permissions.
 
 ${allowed.join('\n')}${deniedSection}
 
@@ -213,23 +210,20 @@ Send \`"done": true\` on the final chunk. Always pass the \`messageId\` returned
 }
 
 // ── GET /ai/connection ────────────────────────────────────────────────────────
-// Returns the global AI connection status and config (no secret key exposed).
+// Returns the global AI connection status and config.
 
 router.get('/connection', optionalAuth, (req, res) => {
   const webhookUrl      = getSetting(KEY_WEBHOOK_URL);
-  const keyId           = getSetting(KEY_API_KEY_ID);
-  const keyPrefix       = getSetting(KEY_API_KEY_PREFIX);
   const callbackBaseUrl = getSetting(KEY_CALLBACK_BASE_URL);
   const gatewayToken    = getSetting(KEY_GATEWAY_TOKEN);
   const baseUrl         = getBaseUrl(req);
-  const configured      = !!(webhookUrl && keyId);
+  const configured      = !!webhookUrl;
   const verified        = configured && getSetting(KEY_VERIFIED) === '1';
 
   res.json({
     configured,
     verified,
     webhookUrl:      webhookUrl      ?? null,
-    keyPrefix:       keyPrefix       ?? null,
     callbackBaseUrl: callbackBaseUrl ?? null,
     gatewayToken:    gatewayToken    ?? null,
     baseUrl,
@@ -239,41 +233,16 @@ router.get('/connection', optionalAuth, (req, res) => {
 });
 
 // ── POST /ai/connection ───────────────────────────────────────────────────────
-// First-time setup: saves webhook URL and generates the shared API key.
-// Returns the raw key ONCE.
+// First-time setup: saves webhook URL and optional gateway token.
 
 router.post('/connection', optionalAuth, (req, res) => {
-  const db = getDb();
   const { webhookUrl, callbackBaseUrl, gatewayToken } = req.body as { webhookUrl: string; callbackBaseUrl?: string; gatewayToken?: string };
   if (!webhookUrl?.trim()) {
     res.status(400).json({ error: 'webhookUrl is required' });
     return;
   }
 
-  // Revoke any previous key
-  const prevKeyId = getSetting(KEY_API_KEY_ID);
-  if (prevKeyId) {
-    db.update(apiKeys)
-      .set({ revokedAt: new Date().toISOString() })
-      .where(eq(apiKeys.id, parseInt(prevKeyId)))
-      .run();
-  }
-
-  // Generate new shared key
-  const rawKey = `sk-arb-${randomBytes(24).toString('hex')}`;
-  const hash   = createHash('sha256').update(rawKey).digest('hex');
-  const prefix = rawKey.slice(0, 12);
-
-  const key = db.insert(apiKeys).values({
-    name:      'AI Connection',
-    keyHash:   hash,
-    keyPrefix: prefix,
-    createdAt: new Date().toISOString(),
-  }).returning().get();
-
-  setSetting(KEY_WEBHOOK_URL,    webhookUrl.trim());
-  setSetting(KEY_API_KEY_ID,     String(key.id));
-  setSetting(KEY_API_KEY_PREFIX, prefix);
+  setSetting(KEY_WEBHOOK_URL, webhookUrl.trim());
   if (callbackBaseUrl?.trim()) {
     setSetting(KEY_CALLBACK_BASE_URL, callbackBaseUrl.trim().replace(/\/$/, ''));
   }
@@ -287,15 +256,13 @@ router.post('/connection', optionalAuth, (req, res) => {
 
   getConnectionManager().checkAiStatus();
 
-  const baseUrl         = getBaseUrl(req);
-  const savedCallback   = getSetting(KEY_CALLBACK_BASE_URL);
-  const savedToken      = getSetting(KEY_GATEWAY_TOKEN);
+  const baseUrl       = getBaseUrl(req);
+  const savedCallback = getSetting(KEY_CALLBACK_BASE_URL);
+  const savedToken    = getSetting(KEY_GATEWAY_TOKEN);
   res.json({
     configured:        true,
     verified:          false,
     webhookUrl:        webhookUrl.trim(),
-    keyPrefix:         prefix,
-    apiKey:            rawKey,          // returned ONCE
     callbackBaseUrl:   savedCallback ?? null,
     gatewayToken:      savedToken    ?? null,
     baseUrl,
@@ -323,20 +290,17 @@ router.patch('/connection', optionalAuth, (req, res) => {
     setSetting(KEY_GATEWAY_TOKEN, gatewayToken.trim());
   }
 
-  const webhookUrl      = getSetting(KEY_WEBHOOK_URL);
-  const keyPrefix       = getSetting(KEY_API_KEY_PREFIX);
-  const keyId           = getSetting(KEY_API_KEY_ID);
-  const savedCallback   = getSetting(KEY_CALLBACK_BASE_URL);
-  const savedToken      = getSetting(KEY_GATEWAY_TOKEN);
-  const baseUrl         = getBaseUrl(req);
-  const configured      = !!(webhookUrl && keyId);
-  const verified        = configured && getSetting(KEY_VERIFIED) === '1';
+  const webhookUrl    = getSetting(KEY_WEBHOOK_URL);
+  const savedCallback = getSetting(KEY_CALLBACK_BASE_URL);
+  const savedToken    = getSetting(KEY_GATEWAY_TOKEN);
+  const baseUrl       = getBaseUrl(req);
+  const configured    = !!webhookUrl;
+  const verified      = configured && getSetting(KEY_VERIFIED) === '1';
 
   res.json({
     configured,
     verified,
     webhookUrl:      webhookUrl    ?? null,
-    keyPrefix:       keyPrefix     ?? null,
     callbackBaseUrl: savedCallback ?? null,
     gatewayToken:    savedToken    ?? null,
     baseUrl,
@@ -346,14 +310,13 @@ router.patch('/connection', optionalAuth, (req, res) => {
 });
 
 // ── POST /ai/connection/test ──────────────────────────────────────────────────
-// Sends a test ping to the configured webhook and waits for an ai:token event
-// to confirm the full round-trip works.
+// Sends a test ping to the configured webhook, waits for the AI to stream a
+// complete response, and validates that the response contains "ack".
 
 router.post('/connection/test', optionalAuth, async (req, res) => {
   const webhookUrl = getSetting(KEY_WEBHOOK_URL);
-  const keyIdStr   = getSetting(KEY_API_KEY_ID);
 
-  if (!webhookUrl || !keyIdStr) {
+  if (!webhookUrl) {
     res.status(400).json({ error: 'AI connection is not configured' });
     return;
   }
@@ -362,9 +325,10 @@ router.post('/connection/test', optionalAuth, async (req, res) => {
   const testSessionId = `test-${nanoid(8)}`;
   const start    = Date.now();
 
-  // Listen for any ai:token event from this test session
-  const roundTripPromise = onNextBroadcast(
+  // Collect all ai:token events for this test session until done:true is received
+  const roundTripPromise = collectBroadcast(
     (ev) => ev.type === 'ai:token' && (ev.data as { sessionId?: string }).sessionId === testSessionId,
+    (ev) => (ev.data as { done?: boolean }).done === true,
     15000,
   );
 
@@ -382,7 +346,7 @@ router.post('/connection/test', optionalAuth, async (req, res) => {
         sessionId:     testSessionId,
         messageId:     nanoid(),
         role:          'user',
-        content:       'Conduit connection test — please respond with a single word: "connected"',
+        content:       "Reply with 'ack'",
         conduitBaseUrl: callbackBase,
         streamUrl:     `${callbackBase}/api/ai/sessions/${testSessionId}/stream`,
         isTest:        true,
@@ -408,9 +372,21 @@ router.post('/connection/test', optionalAuth, async (req, res) => {
     return;
   }
 
-  // Wait for the AI to stream a token back
+  // Wait for the AI to stream a complete response and validate its content
   try {
-    await roundTripPromise;
+    const events = await roundTripPromise;
+    const fullResponse = events
+      .map((ev) => (ev.data as { delta?: string }).delta ?? '')
+      .join('');
+
+    if (!fullResponse.toLowerCase().includes('ack')) {
+      res.json({
+        success: false,
+        error: `AI responded but the response did not contain "ack". Got: "${fullResponse.slice(0, 200)}"`,
+      });
+      return;
+    }
+
     // Mark the connection as verified so it shows as fully connected
     setSetting(KEY_VERIFIED, '1');
     getConnectionManager().checkAiStatus();
@@ -418,28 +394,19 @@ router.post('/connection/test', optionalAuth, async (req, res) => {
   } catch {
     res.json({
       success: false,
-      error: 'Webhook was reached but the AI did not stream a response within 15 seconds. Check that the AI agent is configured to POST back to the stream URL.',
+      error: 'Webhook was reached but the AI did not stream a complete response within 15 seconds. Check that the AI agent is configured to POST back to the stream URL.',
     });
   }
 });
 
 // ── DELETE /ai/connection ─────────────────────────────────────────────────────
-// Disconnects the AI: revokes the key and clears settings.
+// Disconnects the AI: clears the webhook URL and related settings.
 
 router.delete('/connection', optionalAuth, (req, res) => {
-  const db = getDb();
-  const keyIdStr = getSetting(KEY_API_KEY_ID);
-  if (keyIdStr) {
-    db.update(apiKeys)
-      .set({ revokedAt: new Date().toISOString() })
-      .where(eq(apiKeys.id, parseInt(keyIdStr)))
-      .run();
-  }
   deleteSetting(KEY_WEBHOOK_URL);
-  deleteSetting(KEY_API_KEY_ID);
-  deleteSetting(KEY_API_KEY_PREFIX);
   deleteSetting(KEY_VERIFIED);
   deleteSetting(KEY_CALLBACK_BASE_URL);
+  deleteSetting(KEY_GATEWAY_TOKEN);
   getConnectionManager().disconnectAi();
   res.json({ success: true });
 });
@@ -565,8 +532,6 @@ router.post('/sessions/:id/messages', optionalAuth, async (req, res) => {
 
   // Load global connection config
   const webhookUrl   = getSetting(KEY_WEBHOOK_URL);
-  const keyIdStr     = getSetting(KEY_API_KEY_ID);
-  const baseUrl      = getBaseUrl(req);
   const callbackBase = getCallbackBase(req);
 
   // Store user message
@@ -584,30 +549,11 @@ router.post('/sessions/:id/messages', optionalAuth, async (req, res) => {
 
   res.json(userMessage);
 
-  // Build system prompt for first message in this session (needs the raw API key)
-  // We generate a fresh short-lived key for the system prompt so we can include the raw value.
-  // The main connection key (keyIdStr) is the authoritative one for auth on /stream.
-  // We pass a *fresh* key in the system prompt that has been pre-registered so auth works.
+  // Build system prompt for first message in this session
   let systemPrompt: string | undefined;
-  let deliveryApiKey: string | undefined;
 
   if (!session.systemPromptSent) {
-    if (keyIdStr) {
-      // Mint a fresh usable key for this bootstrap — caller will authenticate with it on /stream
-      const rawKey = `sk-arb-${randomBytes(24).toString('hex')}`;
-      const hash   = createHash('sha256').update(rawKey).digest('hex');
-      const prefix = rawKey.slice(0, 12);
-      db.insert(apiKeys).values({
-        name:      `AI Session Key: ${id.slice(0, 8)}`,
-        keyHash:   hash,
-        keyPrefix: prefix,
-        createdAt: new Date().toISOString(),
-      }).run();
-      deliveryApiKey = rawKey;
-    }
-    // deliveryApiKey is only set when a keyIdStr is present; undefined is intentional here
-    // and will cause buildSystemPrompt to omit the key from the prompt.
-    systemPrompt = buildSystemPrompt(callbackBase, deliveryApiKey, id, getPermissions());
+    systemPrompt = buildSystemPrompt(callbackBase, id, getPermissions());
     db.update(aiSessions)
       .set({ systemPromptSent: true, updatedAt: new Date().toISOString() })
       .where(eq(aiSessions.id, id))
@@ -670,7 +616,24 @@ router.post('/sessions/:id/stream', apiKeyAuth(true), (req, res) => {
 
   // Defensively coerce all fields to valid SQLite-bindable types.
   // The AI agent (especially third-party gateways) may send unexpected types.
-  const delta        = typeof body['delta']     === 'string'  ? body['delta']     : '';
+  //
+  // delta may be a plain string OR an array of Anthropic-style content blocks
+  // e.g. [{"type":"text","text":"hello"}]. Extract and join all text values.
+  const rawDelta = body['delta'];
+  let delta = '';
+  if (typeof rawDelta === 'string') {
+    delta = rawDelta;
+  } else if (Array.isArray(rawDelta)) {
+    delta = rawDelta
+      .map((block: unknown) => {
+        if (typeof block === 'string') return block;
+        if (typeof block === 'object' && block !== null && typeof (block as Record<string, unknown>)['text'] === 'string') {
+          return (block as Record<string, unknown>)['text'] as string;
+        }
+        return '';
+      })
+      .join('');
+  }
   const done         = body['done'] === true;
   const toolCalls    = Array.isArray(body['toolCalls'])        ? body['toolCalls'] : null;
   const existingMsgId = typeof body['messageId'] === 'string' ? body['messageId'] : undefined;

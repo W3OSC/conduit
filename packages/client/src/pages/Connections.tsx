@@ -3723,32 +3723,6 @@ function copyTextToClipboard(text: string): Promise<void> {
   });
 }
 
-function CopyField({ label, value, mono = true }: { label: string; value: string; mono?: boolean }) {
-  const [copied, setCopied] = useState(false);
-  const copy = () => {
-    copyTextToClipboard(value).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }).catch(() => {});
-  };
-  return (
-    <div className="space-y-1.5">
-      <label className="block text-xs font-medium text-muted-foreground">{label}</label>
-      <div className="flex items-center gap-2">
-        <div className={cn(
-          'flex-1 rounded-xl border border-border bg-secondary px-3 py-2.5 text-sm overflow-x-auto whitespace-nowrap',
-          mono ? 'font-mono text-primary/80' : 'text-foreground',
-        )}>
-          {value}
-        </div>
-        <button onClick={copy} className="btn-ghost p-2 flex-shrink-0" title="Copy">
-          {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function CodeBlock({ children, className }: { children: string; className?: string }) {
   const [copied, setCopied] = useState(false);
   const copy = () => {
@@ -3911,7 +3885,6 @@ function AiConnectionTab() {
   const [agentLocation, setAgentLocation] = useState<'localhost' | 'docker' | 'custom'>('localhost');
   const [customAgentHost, setCustomAgentHost] = useState('');
   const [channelPort, setChannelPort] = useState('18789');
-  const [shownApiKey, setShownApiKey] = useState<string | null>(null);
   const [testState, setTestState] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [testError, setTestError] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
@@ -3972,8 +3945,7 @@ function AiConnectionTab() {
 
   const setupMutation = useMutation({
     mutationFn: (url: string) => api.setupAiConnection(url, gatewayToken || undefined),
-    onSuccess: (data) => {
-      if (data.apiKey) setShownApiKey(data.apiKey);
+    onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['ai-connection'] });
       toast({ title: 'AI connection saved', variant: 'success' });
     },
@@ -4016,7 +3988,6 @@ function AiConnectionTab() {
     setDisconnecting(true);
     try {
       await api.disconnectAi();
-      setShownApiKey(null);
       setTestState('idle');
       qc.invalidateQueries({ queryKey: ['ai-connection'] });
       toast({ title: 'AI connection removed' });
@@ -4313,6 +4284,18 @@ EOF`}</CodeBlock>
               <div className="p-4 space-y-2">
                 <div className="flex items-center gap-2.5">
                   <StepNumber n={1} />
+                  <h3 className="text-sm font-semibold">Generate a Conduit API key</h3>
+                </div>
+                <div className="pl-8 space-y-2">
+                  <p className="text-xs text-muted-foreground">
+                    Go to <button onClick={() => navigate('/settings/permissions')} className="text-primary hover:underline font-semibold cursor-pointer">Settings → Permissions</button> and generate an API key. Configure your OpenClaw agent with it so it can authenticate against the Conduit API.
+                  </p>
+                </div>
+              </div>
+
+              <div className="p-4 space-y-2">
+                <div className="flex items-center gap-2.5">
+                  <StepNumber n={2} />
                   <h3 className="text-sm font-semibold">Enable the Webhooks plugin</h3>
                 </div>
                 <div className="pl-8 space-y-2">
@@ -4352,7 +4335,7 @@ EOF`}</CodeBlock>
 
               <div className="p-4 space-y-3">
                 <div className="flex items-center gap-2.5">
-                  <StepNumber n={2} />
+                  <StepNumber n={3} />
                   <h3 className="text-sm font-semibold">Enter the webhook URL and connect</h3>
                 </div>
                 <div className="pl-8 space-y-3">
@@ -4389,7 +4372,7 @@ EOF`}</CodeBlock>
 
               <div className="p-4 space-y-3">
                 <div className="flex items-center gap-2.5">
-                  <StepNumber n={3} />
+                  <StepNumber n={4} />
                   <h3 className="text-sm font-semibold">Test the connection</h3>
                 </div>
                 <p className="text-xs text-muted-foreground pl-8">
@@ -4668,32 +4651,11 @@ X-API-Key: <your-key>
       ) : (
         <div className="space-y-5">
 
-          {/* Shown-once API key banner */}
-          {shownApiKey && (
-            <div className="rounded-xl border border-primary/30 bg-primary/8 p-4 space-y-3">
-              <div className="flex items-start gap-2.5">
-                <Key className="w-4 h-4 text-primary flex-shrink-0 mt-0.5" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-primary/90">Conduit API key — save it now</p>
-                  <p className="text-xs text-primary/70 mt-0.5">Shown once. Add it to your agent or tool as <code className="font-mono text-[11px]">X-API-Key</code>.</p>
-                </div>
-              </div>
-              <CopyField label="Conduit API Key" value={shownApiKey} />
-            </div>
-          )}
-
           {/* Connection details */}
           <div className="rounded-xl border border-border bg-secondary/30 divide-y divide-border">
             <div className="p-4 space-y-1.5">
               <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Webhook URL</p>
               <p className="text-sm text-foreground font-mono break-all">{conn?.webhookUrl}</p>
-            </div>
-            <div className="p-4 space-y-1.5">
-              <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Conduit API Key</p>
-              <p className="text-sm text-foreground font-mono">
-                {conn?.keyPrefix}<span className="text-muted-foreground">••••••••••••••••••••••••••••••••••••</span>
-              </p>
-              <p className="text-[11px] text-muted-foreground">To rotate, disconnect and reconnect.</p>
             </div>
             <div className="p-4 space-y-3">
               <div className="space-y-1">
@@ -4815,7 +4777,7 @@ X-API-Key: <your-key>
           <div className="rounded-xl border border-red-500/15 bg-red-500/5 p-4 flex items-center justify-between gap-4">
             <div>
               <p className="text-sm font-medium text-foreground">Disconnect AI</p>
-              <p className="text-xs text-muted-foreground mt-0.5">Revokes the API key and clears the webhook URL. Chat sessions and messages are preserved.</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Clears the webhook URL and connection settings. Chat sessions and messages are preserved.</p>
             </div>
             <button
               onClick={handleDisconnect}

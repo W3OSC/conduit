@@ -136,6 +136,39 @@ export function onNextBroadcast(
   });
 }
 
+/**
+ * Collects broadcast events matching `predicate` until `isDone` returns true
+ * for one of the collected events, then resolves with the full array.
+ * Rejects after timeoutMs ms if `isDone` is never satisfied.
+ */
+export function collectBroadcast(
+  predicate: (event: WsEvent) => boolean,
+  isDone: (event: WsEvent) => boolean,
+  timeoutMs = 15000,
+): Promise<WsEvent[]> {
+  return new Promise((resolve, reject) => {
+    const collected: WsEvent[] = [];
+
+    const timer = setTimeout(() => {
+      internalListeners.delete(fn);
+      reject(new Error('Timed out waiting for realtime event'));
+    }, timeoutMs);
+
+    function fn(event: WsEvent) {
+      if (predicate(event)) {
+        collected.push(event);
+        if (isDone(event)) {
+          clearTimeout(timer);
+          internalListeners.delete(fn);
+          resolve(collected);
+        }
+      }
+    }
+
+    internalListeners.add(fn);
+  });
+}
+
 export function getConnectedCount(): number {
   return clients.size;
 }
