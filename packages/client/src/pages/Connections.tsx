@@ -3907,14 +3907,19 @@ function AiConnectionTab() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const [webhookUrl, setWebhookUrl] = useState('');
-  const [channelHost, setChannelHost] = useState('localhost');
+  // Where is the AI agent running? drives the host used in webhook URL + callback base URL
+  const [agentLocation, setAgentLocation] = useState<'localhost' | 'docker' | 'custom'>('localhost');
+  const [customAgentHost, setCustomAgentHost] = useState('');
   const [channelPort, setChannelPort] = useState('18789');
   const [shownApiKey, setShownApiKey] = useState<string | null>(null);
   const [testState, setTestState] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [testError, setTestError] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
   const [method, setMethod] = useState<AiSetupMethod>('channel');
-  const [callbackBaseUrl, setCallbackBaseUrl] = useState('');
+  // Callback base URL panel (connected state)
+  const [cbLocation, setCbLocation] = useState<'auto' | 'localhost' | 'docker' | 'custom'>('auto');
+  const [customCbHost, setCustomCbHost] = useState('');
+  const [cbPort, setCbPort] = useState(window.location.port || '3101');
   const [callbackSaving, setCallbackSaving] = useState(false);
 
   const { data: conn, isLoading } = useQuery<AiConnection>({
@@ -3923,13 +3928,16 @@ function AiConnectionTab() {
     staleTime: 10000,
   });
 
-  // Pre-populate host/port from the saved webhook URL if it matches the channel pattern
+  // Pre-populate agent location + port from the saved webhook URL
   useEffect(() => {
     if (!conn?.webhookUrl) return;
     try {
       const u = new URL(conn.webhookUrl);
       if (u.pathname === '/channels/conduit/inbound') {
-        setChannelHost(u.hostname);
+        const host = u.hostname;
+        if (host === 'localhost' || host === '127.0.0.1') setAgentLocation('localhost');
+        else if (host === '172.17.0.1') setAgentLocation('docker');
+        else { setAgentLocation('custom'); setCustomAgentHost(host); }
         setChannelPort(u.port || '18789');
       }
     } catch {
@@ -3937,9 +3945,21 @@ function AiConnectionTab() {
     }
   }, [conn?.webhookUrl]);
 
-  // Pre-populate callbackBaseUrl from saved setting
+  // Pre-populate callback base URL selector from saved setting
   useEffect(() => {
-    setCallbackBaseUrl(conn?.callbackBaseUrl ?? '');
+    const saved = conn?.callbackBaseUrl;
+    if (!saved) { setCbLocation('auto'); return; }
+    try {
+      const u = new URL(saved);
+      const h = u.hostname;
+      const p = u.port || '3101';
+      setCbPort(p);
+      if (h === 'localhost' || h === '127.0.0.1') setCbLocation('localhost');
+      else if (h === '172.17.0.1') setCbLocation('docker');
+      else { setCbLocation('custom'); setCustomCbHost(h); }
+    } catch {
+      setCbLocation('custom'); setCustomCbHost(saved);
+    }
   }, [conn?.callbackBaseUrl]);
 
   const setupMutation = useMutation({
@@ -3986,10 +4006,18 @@ function AiConnectionTab() {
     }
   };
 
+  const resolvedCbUrl = (() => {
+    const port = cbPort || window.location.port || '3101';
+    if (cbLocation === 'auto') return null;
+    if (cbLocation === 'localhost') return `http://localhost:${port}`;
+    if (cbLocation === 'docker')    return `http://172.17.0.1:${port}`;
+    return customCbHost.trim() ? `http://${customCbHost.trim()}:${port}` : null;
+  })();
+
   const handleSaveCallbackBase = async () => {
     setCallbackSaving(true);
     try {
-      await api.updateAiCallbackBase(callbackBaseUrl.trim() || null);
+      await api.updateAiCallbackBase(resolvedCbUrl);
       qc.invalidateQueries({ queryKey: ['ai-connection'] });
       toast({ title: 'Callback base URL saved', variant: 'success' });
     } catch (e) {
@@ -4005,6 +4033,13 @@ function AiConnectionTab() {
 
   const configured = conn?.configured ?? false;
   const verified   = conn?.verified   ?? false;
+
+  // Derive the host for the OpenClaw webhook URL from the agent location selector
+  const resolvedChannelHost =
+    agentLocation === 'localhost' ? 'localhost' :
+    agentLocation === 'docker'    ? '172.17.0.1' :
+    customAgentHost.trim();
+  const resolvedChannelUrl = `http://${resolvedChannelHost || 'localhost'}:${channelPort || '18789'}/channels/conduit/inbound`;
 
   const methods: { id: AiSetupMethod; label: string; sub: string }[] = [
     { id: 'channel', label: 'OpenClaw Channel', sub: '@w3osc/openclaw-conduit plugin' },
@@ -4153,15 +4188,40 @@ EOF`}</CodeBlock>
                   <p className="text-xs text-muted-foreground">
                     Enter the host and port where your OpenClaw Gateway is running. Conduit will POST AI chat messages to <code className="font-mono text-primary/70 text-[11px]">/channels/conduit/inbound</code> on that address.
                   </p>
+                  {/* Agent location selector */}
+                  <div className="flex gap-2">
+                    {(['localhost', 'docker', 'custom'] as const).map((loc) => (
+                      <button
+                        key={loc}
+                        onClick={() => setAgentLocation(loc)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                          agentLocation === loc
+                            ? 'bg-primary/15 border-primary/40 text-primary'
+                            : 'bg-secondary/40 border-border text-muted-foreground hover:text-foreground'
+                        }`}
+                      >
+                        {loc === 'localhost' ? 'Localhost' : loc === 'docker' ? 'Docker' : 'Custom'}
+                      </button>
+                    ))}
+                  </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', maxWidth: '360px' }}>
-                    <input
-                      type="text"
-                      value={channelHost}
-                      onChange={(e) => setChannelHost(e.target.value)}
-                      placeholder="localhost"
-                      className="input-warm"
-                      style={{ flex: '1 1 auto', width: 0 }}
-                    />
+                    {agentLocation === 'custom' ? (
+                      <input
+                        type="text"
+                        value={customAgentHost}
+                        onChange={(e) => setCustomAgentHost(e.target.value)}
+                        placeholder="e.g. 192.168.1.10"
+                        className="input-warm"
+                        style={{ flex: '1 1 auto', width: 0 }}
+                      />
+                    ) : (
+                      <div
+                        className="input-warm text-muted-foreground select-none"
+                        style={{ flex: '1 1 auto', width: 0 }}
+                      >
+                        {agentLocation === 'docker' ? '172.17.0.1' : 'localhost'}
+                      </div>
+                    )}
                     <span className="text-muted-foreground text-sm" style={{ flexShrink: 0 }}>:</span>
                     <input
                       type="text"
@@ -4173,11 +4233,11 @@ EOF`}</CodeBlock>
                     />
                   </div>
                   <p className="text-[11px] text-muted-foreground font-mono">
-                    → http://{channelHost || 'localhost'}:{channelPort || '18789'}/channels/conduit/inbound
+                    → {resolvedChannelUrl}
                   </p>
                   <button
-                    onClick={() => setupMutation.mutate(`http://${channelHost.trim() || 'localhost'}:${channelPort.trim() || '18789'}/channels/conduit/inbound`)}
-                    disabled={!channelHost.trim() || !channelPort.trim() || setupMutation.isPending}
+                    onClick={() => setupMutation.mutate(resolvedChannelUrl)}
+                    disabled={(agentLocation === 'custom' && !customAgentHost.trim()) || !channelPort.trim() || setupMutation.isPending}
                     className="btn-primary"
                   >
                     {setupMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlugZap className="w-4 h-4" />}
@@ -4604,31 +4664,69 @@ X-API-Key: <your-key>
               </p>
               <p className="text-[11px] text-muted-foreground">To rotate, disconnect and reconnect.</p>
             </div>
-            <div className="p-4 space-y-2">
+            <div className="p-4 space-y-3">
               <div className="space-y-1">
                 <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Callback Base URL</p>
                 <p className="text-[11px] text-muted-foreground">
-                  The URL Conduit sends to the AI agent as <code className="font-mono text-[11px]">conduitBaseUrl</code> and uses to build <code className="font-mono text-[11px]">streamUrl</code>.
-                  Set this when the AI agent cannot reach <code className="font-mono text-[11px]">localhost</code> (e.g. running in a separate container).
-                  Leave blank to use the auto-detected server URL.
+                  The URL Conduit sends to the AI agent as <code className="font-mono text-[11px]">conduitBaseUrl</code> / <code className="font-mono text-[11px]">streamUrl</code>.
+                  Use <strong>Docker</strong> when the agent runs in a separate container and can't reach localhost.
                 </p>
               </div>
-              <div className="flex gap-2">
-                <input
-                  type="url"
-                  value={callbackBaseUrl}
-                  onChange={(e) => setCallbackBaseUrl(e.target.value)}
-                  placeholder={`http://your-server:${conn?.baseUrl ? new URL(conn.baseUrl).port || '3101' : '3101'}`}
-                  className="input flex-1 font-mono text-sm"
-                />
-                <button
-                  onClick={handleSaveCallbackBase}
-                  disabled={callbackSaving}
-                  className="btn-secondary flex-shrink-0"
-                >
-                  {callbackSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save'}
-                </button>
+              {/* Location selector */}
+              <div className="flex gap-2 flex-wrap">
+                {(['auto', 'localhost', 'docker', 'custom'] as const).map((loc) => (
+                  <button
+                    key={loc}
+                    onClick={() => setCbLocation(loc)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                      cbLocation === loc
+                        ? 'bg-primary/15 border-primary/40 text-primary'
+                        : 'bg-secondary/40 border-border text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    {loc === 'auto' ? 'Auto' : loc === 'localhost' ? 'Localhost' : loc === 'docker' ? 'Docker' : 'Custom'}
+                  </button>
+                ))}
               </div>
+              {cbLocation !== 'auto' && (
+                <div className="flex items-center gap-2">
+                  {cbLocation === 'custom' ? (
+                    <input
+                      type="text"
+                      value={customCbHost}
+                      onChange={(e) => setCustomCbHost(e.target.value)}
+                      placeholder="e.g. 192.168.1.10"
+                      className="input flex-1 font-mono text-sm"
+                    />
+                  ) : (
+                    <div className="input flex-1 font-mono text-sm text-muted-foreground select-none">
+                      {cbLocation === 'docker' ? '172.17.0.1' : 'localhost'}
+                    </div>
+                  )}
+                  <span className="text-muted-foreground text-sm flex-shrink-0">:</span>
+                  <input
+                    type="text"
+                    value={cbPort}
+                    onChange={(e) => setCbPort(e.target.value.replace(/\D/g, ''))}
+                    placeholder={window.location.port || '3101'}
+                    className="input font-mono text-sm flex-shrink-0"
+                    style={{ width: '80px' }}
+                  />
+                </div>
+              )}
+              {resolvedCbUrl && (
+                <p className="text-[11px] text-muted-foreground font-mono">→ {resolvedCbUrl}</p>
+              )}
+              {cbLocation === 'auto' && (
+                <p className="text-[11px] text-muted-foreground">Uses the auto-detected server URL from the incoming request.</p>
+              )}
+              <button
+                onClick={handleSaveCallbackBase}
+                disabled={callbackSaving || (cbLocation === 'custom' && !customCbHost.trim())}
+                className="btn-secondary"
+              >
+                {callbackSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save'}
+              </button>
             </div>
             <div className="p-4 flex items-center gap-3 flex-wrap">
               <button
