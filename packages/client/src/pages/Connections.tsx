@@ -30,7 +30,8 @@ import {
 import { useConnectionStore, useSyncStore, type SyncProgress } from '@/store';
 import { ServiceIcon, ServiceLogo, SERVICE_CONFIG } from '@/components/shared/ServiceBadge';
 import { StatusBadge, StatusDot } from '@/components/shared/StatusDot';
-import { cn, timeAgo, formatDate } from '@/lib/utils';
+import { cn, timeAgo, formatDate, copyToClipboard } from '@/lib/utils';
+import { CopyButton } from '@/components/shared/CopyButton';
 import { toast } from '@/store';
 import type { NotificationSoundSettings, SoundStyle } from '@/hooks/useNotificationSound';
 import { DEFAULT_SOUND_SETTINGS, playSound } from '@/hooks/useNotificationSound';
@@ -136,24 +137,14 @@ function Toggle({ checked, onChange, label, description }: {
 }
 
 function CopyableScope({ scope }: { scope: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = () => {
-    navigator.clipboard.writeText(scope).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  };
   return (
     <div className="flex items-center gap-2 rounded-lg border border-border bg-secondary/60 px-3 py-2">
       <code className="flex-1 text-[10px] text-foreground/80 break-all leading-relaxed">{scope}</code>
-      <button
-        type="button"
-        onClick={copy}
-        className="flex-shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+      <CopyButton
+        text={scope}
         title="Copy scopes"
-      >
-        {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-      </button>
+        className="flex-shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+      />
     </div>
   );
 }
@@ -1450,7 +1441,7 @@ function ApiKeysPanel() {
     onSuccess: () => { toast({ title: 'API key revoked' }); qc.invalidateQueries({ queryKey: ['api-keys'] }); },
   });
 
-  const copy = (v: string) => { copyTextToClipboard(v).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }).catch(() => {}); };
+  const copy = (v: string) => { copyToClipboard(v).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }).catch(() => {}); };
 
   return (
     <div className="space-y-4">
@@ -1723,7 +1714,7 @@ function PermissionsTab() {
   const { data: keys = [] } = useQuery({ queryKey: ['api-keys'], queryFn: api.apiKeys });
   const activeKeys = keys.filter((k) => !k.revokedAt);
 
-  const copyKey = (v: string) => { copyTextToClipboard(v).then(() => { setCopiedKey(true); setTimeout(() => setCopiedKey(false), 2000); }).catch(() => {}); };
+  const copyKey = (v: string) => { copyToClipboard(v).then(() => { setCopiedKey(true); setTimeout(() => setCopiedKey(false), 2000); }).catch(() => {}); };
 
   const orderedPerms = ALL_SERVICES.map((svc) => local.find((p) => p.service === svc)).filter(Boolean) as Permission[];
 
@@ -3722,38 +3713,7 @@ function NotionAccordion() {
 // AI Connection Tab
 // ─────────────────────────────────────────────────────────────────────────────
 
-function copyTextToClipboard(text: string): Promise<void> {
-  if (navigator.clipboard && window.isSecureContext) {
-    return navigator.clipboard.writeText(text);
-  }
-  // Fallback for non-secure contexts (e.g. accessed via IP/hostname over HTTP)
-  return new Promise((resolve, reject) => {
-    const textarea = document.createElement('textarea');
-    textarea.value = text;
-    textarea.style.position = 'fixed';
-    textarea.style.opacity = '0';
-    document.body.appendChild(textarea);
-    textarea.focus();
-    textarea.select();
-    try {
-      const ok = document.execCommand('copy');
-      document.body.removeChild(textarea);
-      ok ? resolve() : reject(new Error('execCommand copy failed'));
-    } catch (err) {
-      document.body.removeChild(textarea);
-      reject(err);
-    }
-  });
-}
-
 function CodeBlock({ children, className }: { children: string; className?: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = () => {
-    copyTextToClipboard(children).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }).catch(() => {});
-  };
   return (
     <div className="relative group">
       <pre className={cn(
@@ -3762,40 +3722,11 @@ function CodeBlock({ children, className }: { children: string; className?: stri
       )}>
         {children}
       </pre>
-      <button
-        onClick={copy}
+      <CopyButton
+        text={children}
         title="Copy"
-        className="absolute top-2 right-2 btn-ghost px-1.5 py-1 opacity-0 group-hover:opacity-100 transition-opacity"
-      >
-        {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-      </button>
-    </div>
-  );
-}
-
-function CodeBlock({ children, className }: { children: string; className?: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = () => {
-    copyTextToClipboard(children).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }).catch(() => {});
-  };
-  return (
-    <div className="relative group">
-      <pre className={cn(
-        'text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80',
-        className,
-      )}>
-        {children}
-      </pre>
-      <button
-        onClick={copy}
-        title="Copy"
-        className="absolute top-2 right-2 btn-ghost px-1.5 py-1 opacity-0 group-hover:opacity-100 transition-opacity"
-      >
-        {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-      </button>
+        className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"
+      />
     </div>
   );
 }
@@ -3954,10 +3885,8 @@ function AiConnectionTab() {
     staleTime: 10000,
   });
 
-  // Pre-populate gateway token from saved setting
-  useEffect(() => {
-    setGatewayToken(conn?.gatewayToken ?? '');
-  }, [conn?.gatewayToken]);
+  // Gateway token is write-only (server never returns the raw token), so the
+  // local input always starts empty and the user types a new value to change it.
 
   // Pre-populate agent location + port from the saved webhook URL
   useEffect(() => {
@@ -4176,54 +4105,9 @@ function AiConnectionTab() {
                 </div>
               </div>
 
-              <div className="p-4 space-y-2">
-                <div className="flex items-center gap-2.5">
-                  <StepNumber n={3} />
-                  <h3 className="text-sm font-semibold">Add the channel config to OpenClaw</h3>
-                </div>
-                <div className="pl-8 space-y-2">
-                  <p className="text-xs text-muted-foreground">
-                    Run this snippet to automatically inject the channel config into <code className="font-mono text-primary/70 text-[11px]">~/.openclaw/openclaw.json</code>:
-                  </p>
-                  <CodeBlock className="leading-relaxed">{`python3 - <<'EOF'
-import json, pathlib, sys
-
-def prompt(msg):
-    with open("/dev/tty") as tty:
-        sys.stdout.write(msg)
-        sys.stdout.flush()
-        return tty.readline().rstrip("\\n")
-
-config_path = pathlib.Path.home() / ".openclaw" / "openclaw.json"
-config_path.parent.mkdir(parents=True, exist_ok=True)
-
-default_url = "${window.location.origin}"
-base_url = prompt(f"Conduit base URL [{default_url}]: ").strip() or default_url
-api_key = prompt("API key (from Step 2): ").strip()
-
-cfg = json.loads(config_path.read_text()) if config_path.exists() else {}
-cfg.setdefault("channels", {})["conduit"] = {
-    "baseUrl": base_url,
-    "apiKey": api_key,
-    "allowFrom": [],
-    "webhookSecret": ""
-}
-
-config_path.write_text(json.dumps(cfg, indent=2))
-print("openclaw.json updated.")
-EOF`}</CodeBlock>
-                  <p className="text-xs text-muted-foreground">
-                    Restart the Gateway: <code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    The plugin registers an inbound route at: <code className="font-mono text-primary/70 text-[11px]">http://&lt;openclaw-host&gt;:18789/channels/conduit/inbound</code>
-                  </p>
-                </div>
-              </div>
-
               <div className="p-4 space-y-3">
                 <div className="flex items-center gap-2.5">
-                  <StepNumber n={4} />
+                  <StepNumber n={3} />
                   <h3 className="text-sm font-semibold">Enter the Gateway address and connect</h3>
                 </div>
                 <div className="pl-8 space-y-3">
@@ -4288,43 +4172,49 @@ EOF`}</CodeBlock>
                 </div>
               </div>
 
-              <div className="p-4 space-y-3">
+              <div className="p-4 space-y-2">
                 <div className="flex items-center gap-2.5">
-                  <StepNumber n={5} />
-                  <h3 className="text-sm font-semibold">Test the connection</h3>
+                  <StepNumber n={4} />
+                  <h3 className="text-sm font-semibold">Add the channel config to OpenClaw</h3>
                 </div>
-                <p className="text-xs text-muted-foreground pl-8">
-                  Ensure your Gateway is running (<code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>), then send a test ping.
-                </p>
-                <div className="pl-8 flex items-center gap-3 flex-wrap">
-                  <button
-                    onClick={handleTest}
-                    disabled={testState === 'testing'}
-                    className="btn-secondary"
-                  >
-                    {testState === 'testing'
-                      ? <Loader2 className="w-4 h-4 animate-spin" />
-                      : <RefreshCw className="w-4 h-4" />}
-                    {testState === 'testing' ? 'Testing…' : 'Test connection'}
-                  </button>
-                  {testState === 'success' && (
-                    <span className="flex items-center gap-1.5 text-xs text-emerald-400">
-                      <CircleCheck className="w-4 h-4" /> Round-trip confirmed
-                    </span>
-                  )}
-                  {testState === 'error' && (
-                    <span className="flex items-center gap-1.5 text-xs text-red-400">
-                      <CircleX className="w-4 h-4" /> {testError}
-                    </span>
-                  )}
+                <div className="pl-8 space-y-2">
+                  <p className="text-xs text-muted-foreground">
+                    Run this snippet to automatically inject the channel config into <code className="font-mono text-primary/70 text-[11px]">~/.openclaw/openclaw.json</code>:
+                  </p>
+                  <CodeBlock className="leading-relaxed">{`python3 - <<'EOF'
+import json, pathlib, sys
+
+def prompt(msg):
+    with open("/dev/tty") as tty:
+        sys.stdout.write(msg)
+        sys.stdout.flush()
+        return tty.readline().rstrip("\\n")
+
+config_path = pathlib.Path.home() / ".openclaw" / "openclaw.json"
+config_path.parent.mkdir(parents=True, exist_ok=True)
+
+default_url = "${window.location.origin}"
+base_url = prompt(f"Conduit base URL [{default_url}]: ").strip() or default_url
+api_key = prompt("API key (from Step 2): ").strip()
+
+cfg = json.loads(config_path.read_text()) if config_path.exists() else {}
+cfg.setdefault("channels", {})["conduit"] = {
+    "baseUrl": base_url,
+    "apiKey": api_key,
+    "allowFrom": [],
+    "webhookSecret": ""
+}
+
+config_path.write_text(json.dumps(cfg, indent=2))
+print("openclaw.json updated.")
+EOF`}</CodeBlock>
+                  <p className="text-xs text-muted-foreground">
+                    Restart the Gateway: <code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    The plugin registers an inbound route at: <code className="font-mono text-primary/70 text-[11px]">http://{resolvedChannelHost || 'localhost'}:{channelPort || '18789'}/channels/conduit/inbound</code>
+                  </p>
                 </div>
-                {testState === 'success' && (
-                  <div className="pl-8">
-                    <button onClick={() => navigate('/ai')} className="btn-primary">
-                      <Bot className="w-4 h-4" /> Open AI Chat
-                    </button>
-                  </div>
-                )}
               </div>
             </div>
           )}
@@ -5158,7 +5048,7 @@ function ObsidianVaultTab() {
   });
 
   const copyPublicKey = () => {
-    copyTextToClipboard(sshPublicKey).then(() => {
+    copyToClipboard(sshPublicKey).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }).catch(() => {});

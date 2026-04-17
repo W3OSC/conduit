@@ -855,7 +855,7 @@ export default function Chat() {
   // Message to scroll-to and highlight — set after messages load, consumed once
   const [scrollTarget, setScrollTarget] = useState<{ id: string; done: boolean } | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
-  const highlightTimer = useRef<NodeJS.Timeout | null>(null);
+  const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Data fetching ────────────────────────────────────────────────────────────
 

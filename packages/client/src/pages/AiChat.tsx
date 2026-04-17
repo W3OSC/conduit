@@ -6,13 +6,14 @@ import remarkGfm from 'remark-gfm';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import {
-  Plus, X, Bot, Send, Copy, Check, ChevronDown, ChevronRight,
+  Plus, X, Bot, Send, ChevronDown, ChevronRight,
   Loader2, AlertTriangle, Zap, Terminal, Trash2, ArrowRight, Settings2,
 } from 'lucide-react';
 import { api, type AiSession, type AiMessage, type AiToolCall, type AiConnection } from '@/lib/api';
 import { useAiChatStore } from '@/store';
 import { cn } from '@/lib/utils';
 import { toast } from '@/store';
+import { CopyButton } from '@/components/shared/CopyButton';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -31,22 +32,7 @@ function parseToolCalls(raw: string | null): AiToolCall[] {
   try { return JSON.parse(raw); } catch { return []; }
 }
 
-// ─── Copy button ──────────────────────────────────────────────────────────────
-
-function CopyButton({ text, className }: { text: string; className?: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = () => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  };
-  return (
-    <button onClick={copy} className={cn('btn-ghost px-1.5 py-1', className)}>
-      {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-    </button>
-  );
-}
+// ─── Copy button — re-exported from shared component ──────────────────────────
 
 // ─── Tool call panel ──────────────────────────────────────────────────────────
 

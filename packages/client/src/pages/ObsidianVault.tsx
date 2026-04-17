@@ -369,7 +369,7 @@ function MarkdownView({ content, onWikilinkClick }: MarkdownViewProps) {
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       components={{
-        a: ({ href, children, ...props }) => {
+        a: ({ href, children, ref: _ref, ...props }) => {
           if (href?.startsWith('wikilink://') && onWikilinkClick) {
             const target = decodeURIComponent(href.slice('wikilink://'.length));
             return (

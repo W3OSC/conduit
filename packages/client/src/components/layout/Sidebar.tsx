@@ -7,7 +7,7 @@ import {
   ArrowUpCircle, Copy, Check, RefreshCw,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
-import { cn } from '@/lib/utils';
+import { cn, copyToClipboard } from '@/lib/utils';
 import { useOutboxStore, useConnectionStore, useUnreadStore, useUpdateStore, useSyncStore, useThemeStore } from '@/store';
 import { api } from '@/lib/api';
 import { toast } from '@/store';
@@ -69,10 +69,10 @@ function SidebarVersionFooter() {
   const localCommand = 'git pull && npm run build';
 
   function copyCommand() {
-    navigator.clipboard.writeText(localCommand).then(() => {
+    copyToClipboard(localCommand).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    });
+    }).catch(() => {});
   }
 
   async function handleApply() {
