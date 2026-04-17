@@ -3914,6 +3914,8 @@ function AiConnectionTab() {
   const [testError, setTestError] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
   const [method, setMethod] = useState<AiSetupMethod>('channel');
+  const [callbackBaseUrl, setCallbackBaseUrl] = useState('');
+  const [callbackSaving, setCallbackSaving] = useState(false);
 
   const { data: conn, isLoading } = useQuery<AiConnection>({
     queryKey: ['ai-connection'],
@@ -3934,6 +3936,11 @@ function AiConnectionTab() {
       // not a valid URL — leave defaults
     }
   }, [conn?.webhookUrl]);
+
+  // Pre-populate callbackBaseUrl from saved setting
+  useEffect(() => {
+    setCallbackBaseUrl(conn?.callbackBaseUrl ?? '');
+  }, [conn?.callbackBaseUrl]);
 
   const setupMutation = useMutation({
     mutationFn: (url: string) => api.setupAiConnection(url),
@@ -3976,6 +3983,19 @@ function AiConnectionTab() {
       toast({ title: 'Failed to disconnect', description: String(e), variant: 'destructive' });
     } finally {
       setDisconnecting(false);
+    }
+  };
+
+  const handleSaveCallbackBase = async () => {
+    setCallbackSaving(true);
+    try {
+      await api.updateAiCallbackBase(callbackBaseUrl.trim() || null);
+      qc.invalidateQueries({ queryKey: ['ai-connection'] });
+      toast({ title: 'Callback base URL saved', variant: 'success' });
+    } catch (e) {
+      toast({ title: 'Failed to save', description: String(e), variant: 'destructive' });
+    } finally {
+      setCallbackSaving(false);
     }
   };
 
@@ -4133,21 +4153,23 @@ EOF`}</CodeBlock>
                   <p className="text-xs text-muted-foreground">
                     Enter the host and port where your OpenClaw Gateway is running. Conduit will POST AI chat messages to <code className="font-mono text-primary/70 text-[11px]">/channels/conduit/inbound</code> on that address.
                   </p>
-                  <div className="flex items-center gap-2">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', maxWidth: '360px' }}>
                     <input
                       type="text"
                       value={channelHost}
                       onChange={(e) => setChannelHost(e.target.value)}
                       placeholder="localhost"
-                      className="input-warm flex-1"
+                      className="input-warm"
+                      style={{ flex: '1 1 auto', width: 0 }}
                     />
-                    <span className="text-muted-foreground text-sm">:</span>
+                    <span className="text-muted-foreground text-sm" style={{ flexShrink: 0 }}>:</span>
                     <input
                       type="text"
                       value={channelPort}
                       onChange={(e) => setChannelPort(e.target.value.replace(/\D/g, ''))}
                       placeholder="18789"
-                      className="input-warm w-24"
+                      className="input-warm"
+                      style={{ flex: '0 0 80px', width: '80px' }}
                     />
                   </div>
                   <p className="text-[11px] text-muted-foreground font-mono">
@@ -4581,6 +4603,32 @@ X-API-Key: <your-key>
                 {conn?.keyPrefix}<span className="text-muted-foreground">••••••••••••••••••••••••••••••••••••</span>
               </p>
               <p className="text-[11px] text-muted-foreground">To rotate, disconnect and reconnect.</p>
+            </div>
+            <div className="p-4 space-y-2">
+              <div className="space-y-1">
+                <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Callback Base URL</p>
+                <p className="text-[11px] text-muted-foreground">
+                  The URL Conduit sends to the AI agent as <code className="font-mono text-[11px]">conduitBaseUrl</code> and uses to build <code className="font-mono text-[11px]">streamUrl</code>.
+                  Set this when the AI agent cannot reach <code className="font-mono text-[11px]">localhost</code> (e.g. running in a separate container).
+                  Leave blank to use the auto-detected server URL.
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  value={callbackBaseUrl}
+                  onChange={(e) => setCallbackBaseUrl(e.target.value)}
+                  placeholder={`http://your-server:${conn?.baseUrl ? new URL(conn.baseUrl).port || '3101' : '3101'}`}
+                  className="input flex-1 font-mono text-sm"
+                />
+                <button
+                  onClick={handleSaveCallbackBase}
+                  disabled={callbackSaving}
+                  className="btn-secondary flex-shrink-0"
+                >
+                  {callbackSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save'}
+                </button>
+              </div>
             </div>
             <div className="p-4 flex items-center gap-3 flex-wrap">
               <button

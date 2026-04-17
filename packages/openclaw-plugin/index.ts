@@ -64,8 +64,10 @@ export default defineChannelPluginEntry({
     // into the OpenClaw agent session, and stream the reply back.
     api.registerHttpRoute({
       path: '/channels/conduit/inbound',
-      // 'plugin' auth = plugin-managed; we verify the webhook secret ourselves.
-      auth: 'plugin',
+      // 'gateway' auth gives the route an operator.write runtime scope, which is
+      // required for api.runtime.subagent.run() (sessions.create / agent methods).
+      // We still verify the optional webhook secret ourselves inside the handler.
+      auth: 'gateway',
       handler: async (req: IncomingMessage, res: ServerResponse) => {
         // Resolve the current account config to get the webhook secret and apiKey.
         let account: Awaited<ReturnType<typeof conduitPlugin['config']['resolveAccount']>>;

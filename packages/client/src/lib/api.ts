@@ -369,6 +369,8 @@ export const api = {
   aiConnection: () => request<AiConnection>('/ai/connection'),
   setupAiConnection: (webhookUrl: string) =>
     request<AiConnection & { apiKey: string }>('/ai/connection', { method: 'POST', body: JSON.stringify({ webhookUrl }) }),
+  updateAiCallbackBase: (callbackBaseUrl: string | null) =>
+    request<AiConnection>('/ai/connection', { method: 'PATCH', body: JSON.stringify({ callbackBaseUrl }) }),
   testAiConnection: () =>
     request<{ success: boolean; latencyMs?: number; error?: string }>('/ai/connection/test', { method: 'POST' }),
   disconnectAi: () =>
@@ -1085,6 +1087,12 @@ export interface AiConnection {
   verified: boolean;
   webhookUrl: string | null;
   keyPrefix: string | null;
+  /**
+   * Optional override for the base URL sent to the AI agent as `conduitBaseUrl` and used to
+   * build `streamUrl` in webhook payloads. Set this when the AI agent runs in a separate
+   * container or machine and cannot reach `localhost`.
+   */
+  callbackBaseUrl: string | null;
   baseUrl: string;
   streamUrlTemplate: string;
   openApiUrl: string;

@@ -10,11 +10,12 @@ import { getConnectionManager } from '../connections/manager.js';
 const router = Router();
 
 // ── Settings keys ─────────────────────────────────────────────────────────────
-const KEY_WEBHOOK_URL    = 'ai.webhookUrl';
-const KEY_API_KEY_ID     = 'ai.apiKeyId';
-const KEY_API_KEY_PREFIX = 'ai.apiKeyPrefix';
-const KEY_PERMISSIONS    = 'ai.permissions';
-const KEY_VERIFIED       = 'ai.verified'; // '1' once a connection test has passed
+const KEY_WEBHOOK_URL       = 'ai.webhookUrl';
+const KEY_API_KEY_ID        = 'ai.apiKeyId';
+const KEY_API_KEY_PREFIX    = 'ai.apiKeyPrefix';
+const KEY_PERMISSIONS       = 'ai.permissions';
+const KEY_VERIFIED          = 'ai.verified'; // '1' once a connection test has passed
+const KEY_CALLBACK_BASE_URL = 'ai.callbackBaseUrl'; // override for streamUrl/conduitBaseUrl sent to the AI agent
 
 // ── Permission defaults ───────────────────────────────────────────────────────
 
@@ -83,6 +84,20 @@ function getBaseUrl(req: import('express').Request): string {
   const proto = req.headers['x-forwarded-proto'] || req.protocol;
   const host  = req.headers['x-forwarded-host']  || req.get('host');
   return `${proto}://${host}`;
+}
+
+/**
+ * Returns the base URL that external services (e.g. OpenClaw running in a
+ * separate Docker container) should use to reach Conduit's API.
+ *
+ * When the `ai.callbackBaseUrl` setting is configured it takes priority over
+ * the request-derived host, because `localhost` is unreachable from another
+ * container or machine.
+ */
+function getCallbackBase(req: import('express').Request): string {
+  const saved = getSetting(KEY_CALLBACK_BASE_URL);
+  if (saved) return saved.replace(/\/$/, '');
+  return getBaseUrl(req);
 }
 
 function buildSystemPrompt(baseUrl: string, apiKey: string | undefined, sessionId: string, perms: AiPermissions): string {
@@ -200,18 +215,20 @@ Send \`"done": true\` on the final chunk. Always pass the \`messageId\` returned
 // Returns the global AI connection status and config (no secret key exposed).
 
 router.get('/connection', optionalAuth, (req, res) => {
-  const webhookUrl  = getSetting(KEY_WEBHOOK_URL);
-  const keyId       = getSetting(KEY_API_KEY_ID);
-  const keyPrefix   = getSetting(KEY_API_KEY_PREFIX);
-  const baseUrl     = getBaseUrl(req);
-  const configured  = !!(webhookUrl && keyId);
-  const verified    = configured && getSetting(KEY_VERIFIED) === '1';
+  const webhookUrl      = getSetting(KEY_WEBHOOK_URL);
+  const keyId           = getSetting(KEY_API_KEY_ID);
+  const keyPrefix       = getSetting(KEY_API_KEY_PREFIX);
+  const callbackBaseUrl = getSetting(KEY_CALLBACK_BASE_URL);
+  const baseUrl         = getBaseUrl(req);
+  const configured      = !!(webhookUrl && keyId);
+  const verified        = configured && getSetting(KEY_VERIFIED) === '1';
 
   res.json({
     configured,
     verified,
-    webhookUrl: webhookUrl ?? null,
-    keyPrefix:  keyPrefix  ?? null,
+    webhookUrl:      webhookUrl      ?? null,
+    keyPrefix:       keyPrefix       ?? null,
+    callbackBaseUrl: callbackBaseUrl ?? null,
     baseUrl,
     streamUrlTemplate: `${baseUrl}/api/ai/sessions/{sessionId}/stream`,
     openApiUrl: `${baseUrl}/api/openapi.json`,
@@ -224,7 +241,7 @@ router.get('/connection', optionalAuth, (req, res) => {
 
 router.post('/connection', optionalAuth, (req, res) => {
   const db = getDb();
-  const { webhookUrl } = req.body as { webhookUrl: string };
+  const { webhookUrl, callbackBaseUrl } = req.body as { webhookUrl: string; callbackBaseUrl?: string };
   if (!webhookUrl?.trim()) {
     res.status(400).json({ error: 'webhookUrl is required' });
     return;
@@ -254,18 +271,56 @@ router.post('/connection', optionalAuth, (req, res) => {
   setSetting(KEY_WEBHOOK_URL,    webhookUrl.trim());
   setSetting(KEY_API_KEY_ID,     String(key.id));
   setSetting(KEY_API_KEY_PREFIX, prefix);
+  if (callbackBaseUrl?.trim()) {
+    setSetting(KEY_CALLBACK_BASE_URL, callbackBaseUrl.trim().replace(/\/$/, ''));
+  }
   // Clear any previous verification — the new URL must pass a test before being marked connected
   deleteSetting(KEY_VERIFIED);
 
   getConnectionManager().checkAiStatus();
 
-  const baseUrl = getBaseUrl(req);
+  const baseUrl         = getBaseUrl(req);
+  const savedCallback   = getSetting(KEY_CALLBACK_BASE_URL);
   res.json({
     configured:        true,
     verified:          false,
     webhookUrl:        webhookUrl.trim(),
     keyPrefix:         prefix,
     apiKey:            rawKey,          // returned ONCE
+    callbackBaseUrl:   savedCallback ?? null,
+    baseUrl,
+    streamUrlTemplate: `${baseUrl}/api/ai/sessions/{sessionId}/stream`,
+    openApiUrl:        `${baseUrl}/api/openapi.json`,
+  });
+});
+
+// ── PATCH /ai/connection ──────────────────────────────────────────────────────
+// Update mutable connection settings (currently: callbackBaseUrl) without
+// re-generating the API key or re-saving the webhook URL.
+
+router.patch('/connection', optionalAuth, (req, res) => {
+  const { callbackBaseUrl } = req.body as { callbackBaseUrl?: string | null };
+
+  if (callbackBaseUrl === null || callbackBaseUrl === '') {
+    deleteSetting(KEY_CALLBACK_BASE_URL);
+  } else if (callbackBaseUrl !== undefined) {
+    setSetting(KEY_CALLBACK_BASE_URL, callbackBaseUrl.trim().replace(/\/$/, ''));
+  }
+
+  const webhookUrl      = getSetting(KEY_WEBHOOK_URL);
+  const keyPrefix       = getSetting(KEY_API_KEY_PREFIX);
+  const keyId           = getSetting(KEY_API_KEY_ID);
+  const savedCallback   = getSetting(KEY_CALLBACK_BASE_URL);
+  const baseUrl         = getBaseUrl(req);
+  const configured      = !!(webhookUrl && keyId);
+  const verified        = configured && getSetting(KEY_VERIFIED) === '1';
+
+  res.json({
+    configured,
+    verified,
+    webhookUrl:      webhookUrl  ?? null,
+    keyPrefix:       keyPrefix   ?? null,
+    callbackBaseUrl: savedCallback ?? null,
     baseUrl,
     streamUrlTemplate: `${baseUrl}/api/ai/sessions/{sessionId}/stream`,
     openApiUrl:        `${baseUrl}/api/openapi.json`,
@@ -285,7 +340,7 @@ router.post('/connection/test', optionalAuth, async (req, res) => {
     return;
   }
 
-  const baseUrl  = getBaseUrl(req);
+  const callbackBase = getCallbackBase(req);
   const testSessionId = `test-${nanoid(8)}`;
   const start    = Date.now();
 
@@ -305,8 +360,8 @@ router.post('/connection/test', optionalAuth, async (req, res) => {
         messageId:     nanoid(),
         role:          'user',
         content:       'Conduit connection test — please respond with a single word: "connected"',
-        conduitBaseUrl: baseUrl,
-        streamUrl:     `${baseUrl}/api/ai/sessions/${testSessionId}/stream`,
+        conduitBaseUrl: callbackBase,
+        streamUrl:     `${callbackBase}/api/ai/sessions/${testSessionId}/stream`,
         isTest:        true,
       }),
       signal: AbortSignal.timeout(10000),
@@ -361,6 +416,7 @@ router.delete('/connection', optionalAuth, (req, res) => {
   deleteSetting(KEY_API_KEY_ID);
   deleteSetting(KEY_API_KEY_PREFIX);
   deleteSetting(KEY_VERIFIED);
+  deleteSetting(KEY_CALLBACK_BASE_URL);
   getConnectionManager().disconnectAi();
   res.json({ success: true });
 });
@@ -485,9 +541,10 @@ router.post('/sessions/:id/messages', optionalAuth, async (req, res) => {
   if (!content?.trim()) { res.status(400).json({ error: 'content is required' }); return; }
 
   // Load global connection config
-  const webhookUrl = getSetting(KEY_WEBHOOK_URL);
-  const keyIdStr   = getSetting(KEY_API_KEY_ID);
-  const baseUrl    = getBaseUrl(req);
+  const webhookUrl   = getSetting(KEY_WEBHOOK_URL);
+  const keyIdStr     = getSetting(KEY_API_KEY_ID);
+  const baseUrl      = getBaseUrl(req);
+  const callbackBase = getCallbackBase(req);
 
   // Store user message
   const msgId = nanoid();
@@ -527,7 +584,7 @@ router.post('/sessions/:id/messages', optionalAuth, async (req, res) => {
     }
     // deliveryApiKey is only set when a keyIdStr is present; undefined is intentional here
     // and will cause buildSystemPrompt to omit the key from the prompt.
-    systemPrompt = buildSystemPrompt(baseUrl, deliveryApiKey, id, getPermissions());
+    systemPrompt = buildSystemPrompt(callbackBase, deliveryApiKey, id, getPermissions());
     db.update(aiSessions)
       .set({ systemPromptSent: true, updatedAt: new Date().toISOString() })
       .where(eq(aiSessions.id, id))
@@ -543,8 +600,8 @@ router.post('/sessions/:id/messages', optionalAuth, async (req, res) => {
           messageId:     msgId,
           role:          'user',
           content:       content.trim(),
-          conduitBaseUrl: baseUrl,
-          streamUrl:     `${baseUrl}/api/ai/sessions/${id}/stream`,
+          conduitBaseUrl: callbackBase,
+          streamUrl:     `${callbackBase}/api/ai/sessions/${id}/stream`,
         };
         if (systemPrompt) payload['systemPrompt'] = systemPrompt;
 
