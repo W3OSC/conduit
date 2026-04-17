@@ -1241,6 +1241,381 @@ Returns engagement metrics for the authenticated user's recent tweets, aggregate
 
 ### Notion
 
+Notion endpoints are read-only passthroughs to the Notion API. Write operations (`create_page`, `update_page`, `append_blocks`, `archive_page`) go through `POST /outbox` and require human approval.
+
+All Notion endpoints require the `readEnabled` permission to be set for the `notion` service.
+
+---
+
+#### `GET /notion/pages/{pageId}`
+
+Retrieves a Notion page by its ID. Returns raw Notion API page object including all properties.
+
+**Path parameters**
+
+| Parameter | Description |
+|---|---|
+| `pageId` | Notion page UUID (dashes optional) |
+
+**Response**: Raw Notion API page object.
+
+```json
+{
+  "id": "page-uuid",
+  "object": "page",
+  "properties": { ... },
+  "url": "https://www.notion.so/page-uuid"
+}
+```
+
+Use `GET /notion/blocks/{pageId}/children` to read the page body.
+
+---
+
+#### `GET /notion/databases`
+
+Lists all Notion databases accessible to the configured integration token.
+
+**Response**: Raw Notion API list response.
+
+```json
+{
+  "results": [
+    {
+      "id": "db-uuid",
+      "object": "database",
+      "title": [ { "plain_text": "Tasks" } ],
+      "properties": { ... }
+    }
+  ],
+  "has_more": false
+}
+```
+
+---
+
+#### `POST /notion/databases/{databaseId}/query`
+
+Queries a Notion database. Supports Notion filter and sort syntax.
+
+**Path parameters**
+
+| Parameter | Description |
+|---|---|
+| `databaseId` | Notion database UUID |
+
+**Request body**
+
+```json
+{
+  "filter": {
+    "property": "Status",
+    "select": { "equals": "In Progress" }
+  },
+  "sorts": [
+    { "property": "Due Date", "direction": "ascending" }
+  ],
+  "page_size": 50
+}
+```
+
+All fields are optional. Use `start_cursor` from a previous response for pagination.
+
+**Response**: Raw Notion API paginated results.
+
+```json
+{
+  "results": [ NotionPage ],
+  "has_more": true,
+  "next_cursor": "..."
+}
+```
+
+---
+
+#### `POST /notion/search`
+
+Searches across all pages and databases in the Notion workspace accessible to the integration.
+
+**Request body**
+
+```json
+{
+  "query": "project roadmap",
+  "filter": { "value": "page", "property": "object" },
+  "sort": { "direction": "descending", "timestamp": "last_edited_time" },
+  "page_size": 20
+}
+```
+
+All fields optional. Omit `query` to list all accessible objects.
+
+**Response**: Raw Notion API search results.
+
+---
+
+#### `GET /notion/blocks/{blockId}`
+
+Retrieves a single Notion block by its ID.
+
+**Path parameters**
+
+| Parameter | Description |
+|---|---|
+| `blockId` | Notion block UUID |
+
+**Response**: Raw Notion block object.
+
+---
+
+#### `GET /notion/blocks/{blockId}/children`
+
+Retrieves all child blocks of a given block. For pages, pass the page ID as `blockId` — this returns the full page body.
+
+**Path parameters**
+
+| Parameter | Description |
+|---|---|
+| `blockId` | Block ID (use page ID to get page content) |
+
+**Query parameters**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `page_size` | integer | Max children per page. Default/max 100. |
+| `start_cursor` | string | Pagination cursor from a previous response. |
+
+**Response**: Raw Notion block list with pagination.
+
+```json
+{
+  "results": [
+    { "id": "block-uuid", "type": "paragraph", "paragraph": { "rich_text": [ ... ] } }
+  ],
+  "has_more": false
+}
+```
+
+---
+
+### Obsidian Vault
+
+The Obsidian vault integration syncs a git-hosted vault to the server and exposes file read operations. Write operations (`create_file`, `write_file`, `rename_file`, `delete_file`) go through the outbox.
+
+File reads bypass the outbox and execute immediately. The vault auto-syncs every 5 minutes via `git pull`.
+
+**Setup sequence**: save config → test connection → generate SSH key (if using SSH) → clone → read files.
+
+---
+
+#### `GET /obsidian/config`
+
+Returns the current vault configuration. Secrets (tokens, private keys) are excluded.
+
+**Response**
+
+```json
+{
+  "configured": true,
+  "vault": {
+    "id": 1,
+    "name": "my-vault",
+    "remoteUrl": "git@github.com:user/vault.git",
+    "authType": "ssh",
+    "branch": "main",
+    "localPath": "/data/vault/my-vault",
+    "syncStatus": "idle",
+    "lastSyncedAt": "2026-04-13T10:00:00Z",
+    "lastCommitHash": "abc1234",
+    "syncError": null,
+    "hasHttpsToken": false,
+    "hasSshPrivateKey": true
+  }
+}
+```
+
+When no vault is configured: `{ "configured": false }`.
+
+---
+
+#### `POST /obsidian/config`
+
+Creates or updates the vault configuration. Does not clone — call `POST /obsidian/config/clone` after saving.
+
+**Request body**
+
+```json
+{
+  "name": "my-vault",
+  "remote_url": "git@github.com:user/vault.git",
+  "auth_type": "ssh",
+  "branch": "main"
+}
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `name` | yes | Vault name (alphanumeric and hyphens, used as directory name) |
+| `remote_url` | yes | Git remote URL (HTTPS or SSH) |
+| `auth_type` | no | `https` or `ssh`. Default `https`. |
+| `https_token` | no | Personal access token (for HTTPS auth) |
+| `ssh_private_key` | no | SSH private key (omit to use a generated key) |
+| `branch` | no | Branch to track. Default `main`. |
+
+---
+
+#### `DELETE /obsidian/config`
+
+Removes the vault configuration and disconnects the sync. Optionally deletes the local clone.
+
+**Request body**
+
+```json
+{ "delete_local": true }
+```
+
+---
+
+#### `POST /obsidian/config/test`
+
+Verifies git remote access by running `git ls-remote` without cloning. Call this after saving config to confirm credentials work before cloning.
+
+**Response**
+
+```json
+{ "success": true, "error": null }
+```
+
+---
+
+#### `POST /obsidian/config/generate-ssh-key`
+
+Generates a new ed25519 SSH key pair and stores it in the vault config. Add the returned public key as a **read-only deploy key** in your git hosting provider (GitHub → Settings → Deploy keys).
+
+**Response**
+
+```json
+{
+  "publicKey": "ssh-ed25519 AAAA... conduit-obsidian",
+  "fingerprint": "SHA256:abc..."
+}
+```
+
+---
+
+#### `GET /obsidian/config/ssh-key`
+
+Returns the SSH public key that was previously generated.
+
+**Response**
+
+```json
+{ "publicKey": "ssh-ed25519 AAAA... conduit-obsidian" }
+```
+
+Returns `404` if no key has been generated.
+
+---
+
+#### `POST /obsidian/config/clone`
+
+Triggers an initial `git clone` of the configured remote. This is a one-time setup step. The clone runs **asynchronously** — monitor progress with `GET /obsidian/sync/status`.
+
+**Response**
+
+```json
+{ "success": true, "message": "Clone started" }
+```
+
+---
+
+#### `GET /obsidian/sync/status`
+
+Returns the current sync state.
+
+**Response**
+
+```json
+{
+  "configured": true,
+  "syncStatus": "idle",
+  "lastSyncedAt": "2026-04-13T10:00:00Z",
+  "lastCommitHash": "abc1234",
+  "error": null
+}
+```
+
+`syncStatus` values: `idle`, `syncing`, `error`.
+
+---
+
+#### `POST /obsidian/sync`
+
+Triggers a manual `git fetch` + `git pull --ff-only`. Runs asynchronously.
+
+**Response**
+
+```json
+{ "success": true, "message": "Sync started" }
+```
+
+---
+
+#### `GET /obsidian/files`
+
+Returns the full file tree of the vault. Hidden directories (`.git`, `.obsidian`, `.trash`) are excluded.
+
+**Response**
+
+```json
+{
+  "files": [
+    {
+      "name": "Daily Notes",
+      "path": "Daily Notes",
+      "type": "directory",
+      "children": [
+        { "name": "2026-04-13.md", "path": "Daily Notes/2026-04-13.md", "type": "file" }
+      ]
+    },
+    { "name": "README.md", "path": "README.md", "type": "file" }
+  ]
+}
+```
+
+---
+
+#### `GET /obsidian/files/{path}`
+
+Reads the raw content of a file in the vault. The vault is auto-synced before reading if the last sync was more than 4 minutes ago.
+
+**Path parameters**
+
+| Parameter | Description |
+|---|---|
+| `path` | Relative path from the vault root (URL-encode special characters and spaces) |
+
+**Example**
+
+```
+GET /api/obsidian/files/Daily%20Notes%2F2026-04-13.md
+```
+
+**Response**
+
+```json
+{
+  "path": "Daily Notes/2026-04-13.md",
+  "content": "# April 13\n\n- Reviewed PR #42\n- Called Alice\n"
+}
+```
+
+Returns `404` if the file does not exist.
+
+---
+
+## Common Patterns
+
 Notion endpoints are direct passthroughs to the Notion API. Read endpoints are gated by the `readEnabled` permission; direct write endpoints (`PATCH /notion/pages/:id`, `POST /notion/pages`) are gated by the `sendEnabled` permission and execute immediately with no outbox or approval step.
 
 Outbox-based write operations (`append_blocks`, `archive_page`, and batch workflows) still go through `POST /outbox`.

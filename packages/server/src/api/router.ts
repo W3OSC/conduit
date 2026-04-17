@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import { getConnectionManager, type ServiceName } from '../connections/manager.js';
-import { getConnectedCount } from '../websocket/hub.js';
 import { optionalAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
 import { computeAllUnreads, markChatRead } from '../sync/unread.js';
 import messagesRouter from './messages.js';
@@ -30,7 +29,7 @@ const router = Router();
 
 // Health
 router.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString(), wsClients: getConnectedCount() });
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
 // Connection status

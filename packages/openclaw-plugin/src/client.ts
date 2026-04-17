@@ -55,19 +55,26 @@ export async function postStreamChunk(
 /**
  * Send the full agent reply to Conduit as a stream of chunks.
  *
- * Splits `text` into ~200-character chunks so the Conduit UI renders
- * streaming output progressively. A final `{ done: true }` chunk closes
- * the stream.
+ * Splits `text` into small word-boundary chunks and introduces a short
+ * delay between each POST so the Conduit UI renders the reply progressively,
+ * mimicking real token-level streaming.
  */
 export async function streamReplyToConduit(
   streamUrl: string,
   apiKey: string,
   text: string,
 ): Promise<void> {
-  const CHUNK_SIZE = 200;
+  // Target ~5–10 characters per chunk (roughly one short word) so the
+  // streaming animation looks natural.  We split on word boundaries to
+  // avoid cutting inside a word.
+  const CHUNK_SIZE = 8;
+  // Delay between chunks in ms — tuned so a typical 500-char reply
+  // takes ~1–2 s to stream in, similar to a fast LLM.
+  const DELAY_MS = 16;
+
   let messageId: string | undefined;
 
-  // Split into chunks; keep at least one iteration for empty/done responses.
+  // Split into chunks; keep at least one iteration for empty responses.
   const chunks: string[] = [];
   for (let i = 0; i < text.length; i += CHUNK_SIZE) {
     chunks.push(text.slice(i, i + CHUNK_SIZE));
@@ -83,6 +90,12 @@ export async function streamReplyToConduit(
     };
     const result = await postStreamChunk(streamUrl, apiKey, body);
     if (!messageId) messageId = result.messageId;
+
+    // Pause between chunks so the browser can render each delta before
+    // the next one arrives.  Skip the delay after the final chunk.
+    if (!isLast) {
+      await new Promise<void>((resolve) => setTimeout(resolve, DELAY_MS));
+    }
   }
 }
 

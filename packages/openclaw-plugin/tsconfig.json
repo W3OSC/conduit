@@ -4,6 +4,7 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "lib": ["ES2022"],
+    "types": ["node"],
     "outDir": "./dist",
     "rootDir": "./",
     "strict": true,
@@ -13,9 +14,7 @@
     "sourceMap": true,
     "esModuleInterop": false,
     "allowSyntheticDefaultImports": false,
-    "ignoreDeprecations": "6.0",
-    "declaration": false,
-    "declarationMap": false
+    "ignoreDeprecations": "6.0"
   },
   "include": ["index.ts", "setup-entry.ts", "src/**/*.ts"],
   "exclude": ["node_modules", "dist"]

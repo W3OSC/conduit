@@ -7,6 +7,8 @@
   "configSchema": { "type": "object" },
   "channelConfigs": {
     "conduit": {
+      "label": "Conduit",
+      "description": "Conduit personal communications hub",
       "schema": {
         "type": "object",
         "additionalProperties": false,
@@ -29,6 +31,15 @@
             "type": "string",
             "description": "Optional secret Conduit sends as Authorization: Bearer <secret> on each inbound message for request verification."
           }
+        }
+      },
+      "uiHints": {
+        "apiKey": {
+          "label": "API key",
+          "placeholder": "sk-arb-..."
+        },
+        "webhookSecret": {
+          "label": "Webhook secret"
         }
       }
     }

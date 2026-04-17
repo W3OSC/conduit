@@ -1,6 +1,6 @@
 {
   "name": "@w3osc/openclaw-conduit",
-  "version": "1.0.5",
+  "version": "1.0.13",
   "description": "OpenClaw channel plugin that connects Conduit as a native messaging channel",
   "type": "module",
   "exports": {
@@ -27,7 +27,11 @@
     "channel": {
       "id": "conduit",
       "label": "Conduit",
-      "blurb": "Connect OpenClaw to Conduit — a self-hosted personal communications hub."
+      "blurb": "Connect OpenClaw to Conduit — a self-hosted personal communications hub.",
+      "exposure": {
+        "configured": true,
+        "setup": true
+      }
     },
     "compat": {
       "pluginApi": ">=2026.3.24-beta.2",

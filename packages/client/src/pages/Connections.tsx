@@ -1993,8 +1993,9 @@ function SecurityTab() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [currentPassword, setCurrentPassword] = useState('');
   const [showPw, setShowPw] = useState(false);
-  const [totpSetupData, setTotpSetupData] = useState<{ secret: string; otpauthUrl: string } | null>(null);
+  const [totpSetupData, setTotpSetupData] = useState<{ secret: string; otpauthUrl: string; setupNonce: string } | null>(null);
   const [totpCode, setTotpCode] = useState('');
+  const [disableTotpPassword, setDisableTotpPassword] = useState('');
   const [loginEnabled, setLoginEnabled] = useState(false);
 
   useEffect(() => {
@@ -2013,7 +2014,7 @@ function SecurityTab() {
   });
 
   const verifyTotp = useMutation({
-    mutationFn: () => uiAuth.totpVerify(totpCode),
+    mutationFn: () => uiAuth.totpVerify(totpCode, totpSetupData?.setupNonce ?? ''),
     onSuccess: () => {
       toast({ title: '2FA enabled', variant: 'success' });
       setTotpSetupData(null); setTotpCode('');
@@ -2023,8 +2024,13 @@ function SecurityTab() {
   });
 
   const disableTotp = useMutation({
-    mutationFn: uiAuth.totpDisable,
-    onSuccess: () => { toast({ title: '2FA disabled' }); qc.invalidateQueries({ queryKey: ['ui-auth-config'] }); },
+    mutationFn: () => uiAuth.totpDisable(disableTotpPassword),
+    onSuccess: () => {
+      toast({ title: '2FA disabled' });
+      setDisableTotpPassword('');
+      qc.invalidateQueries({ queryKey: ['ui-auth-config'] });
+    },
+    onError: (e: Error) => toast({ title: 'Failed to disable 2FA', description: e.message, variant: 'destructive' }),
   });
 
   const handleSavePassword = () => {
@@ -2127,8 +2133,25 @@ function SecurityTab() {
             </p>
           </div>
           {authConfig?.totpEnabled ? (
-            <button onClick={() => disableTotp.mutate()} disabled={disableTotp.isPending}
-              className="btn-danger text-xs py-1.5 px-3">Disable</button>
+            <div className="flex flex-col items-end gap-1.5">
+              <div className="flex gap-1.5 items-center">
+                <input
+                  type="password"
+                  value={disableTotpPassword}
+                  onChange={(e) => setDisableTotpPassword(e.target.value)}
+                  placeholder="Confirm password"
+                  className="input-warm text-xs py-1.5 px-2 w-36"
+                />
+                <button
+                  onClick={() => disableTotp.mutate()}
+                  disabled={disableTotp.isPending || !disableTotpPassword}
+                  className="btn-danger text-xs py-1.5 px-3"
+                >
+                  {disableTotp.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Disable'}
+                </button>
+              </div>
+              <p className="text-[10px] text-muted-foreground">Enter your password to confirm</p>
+            </div>
           ) : !totpSetupData ? (
             <button onClick={() => setupTotp.mutate()} disabled={setupTotp.isPending || !authConfig?.hasPassword}
               className="btn-secondary text-xs py-1.5 px-3 gap-1.5">
@@ -3723,28 +3746,29 @@ function copyTextToClipboard(text: string): Promise<void> {
   });
 }
 
-function CopyField({ label, value, mono = true }: { label: string; value: string; mono?: boolean }) {
+function CodeBlock({ children, className }: { children: string; className?: string }) {
   const [copied, setCopied] = useState(false);
   const copy = () => {
-    copyTextToClipboard(value).then(() => {
+    copyTextToClipboard(children).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }).catch(() => {});
   };
   return (
-    <div className="space-y-1.5">
-      <label className="block text-xs font-medium text-muted-foreground">{label}</label>
-      <div className="flex items-center gap-2">
-        <div className={cn(
-          'flex-1 rounded-xl border border-border bg-secondary px-3 py-2.5 text-sm overflow-x-auto whitespace-nowrap',
-          mono ? 'font-mono text-primary/80' : 'text-foreground',
-        )}>
-          {value}
-        </div>
-        <button onClick={copy} className="btn-ghost p-2 flex-shrink-0" title="Copy">
-          {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-        </button>
-      </div>
+    <div className="relative group">
+      <pre className={cn(
+        'text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80',
+        className,
+      )}>
+        {children}
+      </pre>
+      <button
+        onClick={copy}
+        title="Copy"
+        className="absolute top-2 right-2 btn-ghost px-1.5 py-1 opacity-0 group-hover:opacity-100 transition-opacity"
+      >
+        {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+      </button>
     </div>
   );
 }
@@ -3907,11 +3931,22 @@ function AiConnectionTab() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const [webhookUrl, setWebhookUrl] = useState('');
-  const [shownApiKey, setShownApiKey] = useState<string | null>(null);
+  // Where is the AI agent running? drives the host used in webhook URL + callback base URL
+  const [agentLocation, setAgentLocation] = useState<'localhost' | 'docker' | 'custom'>('localhost');
+  const [customAgentHost, setCustomAgentHost] = useState('');
+  const [channelPort, setChannelPort] = useState('18789');
   const [testState, setTestState] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [testError, setTestError] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
   const [method, setMethod] = useState<AiSetupMethod>('channel');
+  // Gateway token — sent as Authorization: Bearer <token> to the webhook
+  const [gatewayToken, setGatewayToken] = useState('');
+  const [gatewayTokenSaving, setGatewayTokenSaving] = useState(false);
+  // Callback base URL panel (connected state)
+  const [cbLocation, setCbLocation] = useState<'auto' | 'localhost' | 'docker' | 'custom'>('auto');
+  const [customCbHost, setCustomCbHost] = useState('');
+  const [cbPort, setCbPort] = useState(window.location.port || '3101');
+  const [callbackSaving, setCallbackSaving] = useState(false);
 
   const { data: conn, isLoading } = useQuery<AiConnection>({
     queryKey: ['ai-connection'],
@@ -3919,15 +3954,66 @@ function AiConnectionTab() {
     staleTime: 10000,
   });
 
+  // Pre-populate gateway token from saved setting
+  useEffect(() => {
+    setGatewayToken(conn?.gatewayToken ?? '');
+  }, [conn?.gatewayToken]);
+
+  // Pre-populate agent location + port from the saved webhook URL
+  useEffect(() => {
+    if (!conn?.webhookUrl) return;
+    try {
+      const u = new URL(conn.webhookUrl);
+      if (u.pathname === '/channels/conduit/inbound') {
+        const host = u.hostname;
+        if (host === 'localhost' || host === '127.0.0.1') setAgentLocation('localhost');
+        else if (host === '172.17.0.1') setAgentLocation('docker');
+        else { setAgentLocation('custom'); setCustomAgentHost(host); }
+        setChannelPort(u.port || '18789');
+      }
+    } catch {
+      // not a valid URL — leave defaults
+    }
+  }, [conn?.webhookUrl]);
+
+  // Pre-populate callback base URL selector from saved setting
+  useEffect(() => {
+    const saved = conn?.callbackBaseUrl;
+    if (!saved) { setCbLocation('auto'); return; }
+    try {
+      const u = new URL(saved);
+      const h = u.hostname;
+      const p = u.port || '3101';
+      setCbPort(p);
+      if (h === 'localhost' || h === '127.0.0.1') setCbLocation('localhost');
+      else if (h === '172.17.0.1') setCbLocation('docker');
+      else { setCbLocation('custom'); setCustomCbHost(h); }
+    } catch {
+      setCbLocation('custom'); setCustomCbHost(saved);
+    }
+  }, [conn?.callbackBaseUrl]);
+
   const setupMutation = useMutation({
-    mutationFn: (url: string) => api.setupAiConnection(url),
-    onSuccess: (data) => {
-      if (data.apiKey) setShownApiKey(data.apiKey);
+    mutationFn: (url: string) => api.setupAiConnection(url, gatewayToken || undefined),
+    onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['ai-connection'] });
       toast({ title: 'AI connection saved', variant: 'success' });
     },
     onError: (err) => toast({ title: 'Setup failed', description: String(err), variant: 'destructive' }),
   });
+
+  const handleSaveGatewayToken = async () => {
+    setGatewayTokenSaving(true);
+    try {
+      await api.updateAiConnection({ gatewayToken: gatewayToken.trim() || null });
+      qc.invalidateQueries({ queryKey: ['ai-connection'] });
+      toast({ title: 'Gateway token saved', variant: 'success' });
+    } catch (e) {
+      toast({ title: 'Failed to save', description: String(e), variant: 'destructive' });
+    } finally {
+      setGatewayTokenSaving(false);
+    }
+  };
 
   const handleTest = async () => {
     setTestState('testing');
@@ -3936,6 +4022,7 @@ function AiConnectionTab() {
       const result = await api.testAiConnection();
       if (result.success) {
         setTestState('success');
+        qc.invalidateQueries({ queryKey: ['ai-connection'] });
         toast({ title: `Connection verified (${result.latencyMs}ms)`, variant: 'success' });
       } else {
         setTestState('error');
@@ -3951,7 +4038,6 @@ function AiConnectionTab() {
     setDisconnecting(true);
     try {
       await api.disconnectAi();
-      setShownApiKey(null);
       setTestState('idle');
       qc.invalidateQueries({ queryKey: ['ai-connection'] });
       toast({ title: 'AI connection removed' });
@@ -3962,11 +4048,40 @@ function AiConnectionTab() {
     }
   };
 
+  const resolvedCbUrl = (() => {
+    const port = cbPort || window.location.port || '3101';
+    if (cbLocation === 'auto') return null;
+    if (cbLocation === 'localhost') return `http://localhost:${port}`;
+    if (cbLocation === 'docker')    return `http://172.17.0.1:${port}`;
+    return customCbHost.trim() ? `http://${customCbHost.trim()}:${port}` : null;
+  })();
+
+  const handleSaveCallbackBase = async () => {
+    setCallbackSaving(true);
+    try {
+      await api.updateAiCallbackBase(resolvedCbUrl);
+      qc.invalidateQueries({ queryKey: ['ai-connection'] });
+      toast({ title: 'Callback base URL saved', variant: 'success' });
+    } catch (e) {
+      toast({ title: 'Failed to save', description: String(e), variant: 'destructive' });
+    } finally {
+      setCallbackSaving(false);
+    }
+  };
+
   if (isLoading) {
     return <div className="flex justify-center py-10"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground" /></div>;
   }
 
   const configured = conn?.configured ?? false;
+  const verified   = conn?.verified   ?? false;
+
+  // Derive the host for the OpenClaw webhook URL from the agent location selector
+  const resolvedChannelHost =
+    agentLocation === 'localhost' ? 'localhost' :
+    agentLocation === 'docker'    ? '172.17.0.1' :
+    customAgentHost.trim();
+  const resolvedChannelUrl = `http://${resolvedChannelHost || 'localhost'}:${channelPort || '18789'}/channels/conduit/inbound`;
 
   const methods: { id: AiSetupMethod; label: string; sub: string }[] = [
     { id: 'channel', label: 'OpenClaw Channel', sub: '@w3osc/openclaw-conduit plugin' },
@@ -3985,16 +4100,21 @@ function AiConnectionTab() {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2.5 flex-wrap">
             <h2 className="text-sm font-semibold">AI Connection</h2>
-            {configured ? (
+            {verified ? (
               <span className="chip chip-emerald text-[10px]">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block" />
                 Connected
+              </span>
+            ) : configured ? (
+              <span className="chip chip-amber text-[10px]">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block" />
+                Needs test
               </span>
             ) : (
               <span className="chip chip-zinc text-[10px]">Not configured</span>
             )}
           </div>
-          {configured && (
+          {verified && (
             <button onClick={() => navigate('/ai')} className="mt-2 inline-flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 transition-colors">
               Open AI Chat <ArrowRight className="w-3 h-3" />
             </button>
@@ -4104,28 +4224,107 @@ EOF`}</CodeBlock>
               <div className="p-4 space-y-3">
                 <div className="flex items-center gap-2.5">
                   <StepNumber n={4} />
-                  <h3 className="text-sm font-semibold">Enter the inbound URL and connect</h3>
+                  <h3 className="text-sm font-semibold">Enter the Gateway address and connect</h3>
                 </div>
                 <div className="pl-8 space-y-3">
                   <p className="text-xs text-muted-foreground">
-                    Conduit will POST AI chat messages to this URL. If you set a <code className="font-mono text-primary/70 text-[11px]">webhookSecret</code> above, Conduit sends it as <code className="font-mono text-primary/70 text-[11px]">Authorization: Bearer &lt;secret&gt;</code>.
+                    Enter the host and port where your OpenClaw Gateway is running. Conduit will POST AI chat messages to <code className="font-mono text-primary/70 text-[11px]">/channels/conduit/inbound</code> on that address.
                   </p>
-                  <input
-                    type="url"
-                    value={webhookUrl}
-                    onChange={(e) => setWebhookUrl(e.target.value)}
-                    placeholder="http://localhost:18789/channels/conduit/inbound"
-                    className="input-warm"
-                  />
+                  {/* Agent location selector */}
+                  <div className="flex gap-2">
+                    {(['localhost', 'docker', 'custom'] as const).map((loc) => (
+                      <button
+                        key={loc}
+                        onClick={() => setAgentLocation(loc)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                          agentLocation === loc
+                            ? 'bg-primary/15 border-primary/40 text-primary'
+                            : 'bg-secondary/40 border-border text-muted-foreground hover:text-foreground'
+                        }`}
+                      >
+                        {loc === 'localhost' ? 'Localhost' : loc === 'docker' ? 'Docker' : 'Custom'}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', maxWidth: '360px' }}>
+                    {agentLocation === 'custom' ? (
+                      <input
+                        type="text"
+                        value={customAgentHost}
+                        onChange={(e) => setCustomAgentHost(e.target.value)}
+                        placeholder="e.g. 192.168.1.10"
+                        className="input-warm"
+                        style={{ flex: '1 1 auto', width: 0 }}
+                      />
+                    ) : (
+                      <div
+                        className="input-warm text-muted-foreground select-none"
+                        style={{ flex: '1 1 auto', width: 0 }}
+                      >
+                        {agentLocation === 'docker' ? '172.17.0.1' : 'localhost'}
+                      </div>
+                    )}
+                    <span className="text-muted-foreground text-sm" style={{ flexShrink: 0 }}>:</span>
+                    <input
+                      type="text"
+                      value={channelPort}
+                      onChange={(e) => setChannelPort(e.target.value.replace(/\D/g, ''))}
+                      placeholder="18789"
+                      className="input-warm"
+                      style={{ flex: '0 0 80px', width: '80px' }}
+                    />
+                  </div>
+                  <p className="text-[11px] text-muted-foreground font-mono">
+                    → {resolvedChannelUrl}
+                  </p>
                   <button
-                    onClick={() => setupMutation.mutate(webhookUrl)}
-                    disabled={!webhookUrl.trim() || setupMutation.isPending}
+                    onClick={() => setupMutation.mutate(resolvedChannelUrl)}
+                    disabled={(agentLocation === 'custom' && !customAgentHost.trim()) || !channelPort.trim() || setupMutation.isPending}
                     className="btn-primary"
                   >
                     {setupMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlugZap className="w-4 h-4" />}
                     Connect
                   </button>
                 </div>
+              </div>
+
+              <div className="p-4 space-y-3">
+                <div className="flex items-center gap-2.5">
+                  <StepNumber n={5} />
+                  <h3 className="text-sm font-semibold">Test the connection</h3>
+                </div>
+                <p className="text-xs text-muted-foreground pl-8">
+                  Ensure your Gateway is running (<code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>), then send a test ping.
+                </p>
+                <div className="pl-8 flex items-center gap-3 flex-wrap">
+                  <button
+                    onClick={handleTest}
+                    disabled={testState === 'testing'}
+                    className="btn-secondary"
+                  >
+                    {testState === 'testing'
+                      ? <Loader2 className="w-4 h-4 animate-spin" />
+                      : <RefreshCw className="w-4 h-4" />}
+                    {testState === 'testing' ? 'Testing…' : 'Test connection'}
+                  </button>
+                  {testState === 'success' && (
+                    <span className="flex items-center gap-1.5 text-xs text-emerald-400">
+                      <CircleCheck className="w-4 h-4" /> Round-trip confirmed
+                    </span>
+                  )}
+                  {testState === 'error' && (
+                    <span className="flex items-center gap-1.5 text-xs text-red-400">
+                      <CircleX className="w-4 h-4" /> {testError}
+                    </span>
+                  )}
+                </div>
+                {testState === 'success' && (
+                  <div className="pl-8">
+                    <button onClick={() => navigate('/ai')} className="btn-primary">
+                      <Bot className="w-4 h-4" /> Open AI Chat
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -4135,6 +4334,18 @@ EOF`}</CodeBlock>
               <div className="p-4 space-y-2">
                 <div className="flex items-center gap-2.5">
                   <StepNumber n={1} />
+                  <h3 className="text-sm font-semibold">Generate a Conduit API key</h3>
+                </div>
+                <div className="pl-8 space-y-2">
+                  <p className="text-xs text-muted-foreground">
+                    Go to <button onClick={() => navigate('/settings/permissions')} className="text-primary hover:underline font-semibold cursor-pointer">Settings → Permissions</button> and generate an API key. Configure your OpenClaw agent with it so it can authenticate against the Conduit API.
+                  </p>
+                </div>
+              </div>
+
+              <div className="p-4 space-y-2">
+                <div className="flex items-center gap-2.5">
+                  <StepNumber n={2} />
                   <h3 className="text-sm font-semibold">Enable the Webhooks plugin</h3>
                 </div>
                 <div className="pl-8 space-y-2">
@@ -4174,13 +4385,10 @@ EOF`}</CodeBlock>
 
               <div className="p-4 space-y-3">
                 <div className="flex items-center gap-2.5">
-                  <StepNumber n={2} />
+                  <StepNumber n={3} />
                   <h3 className="text-sm font-semibold">Enter the webhook URL and connect</h3>
                 </div>
                 <div className="pl-8 space-y-3">
-                  <p className="text-xs text-muted-foreground">
-                    Conduit will send <code className="font-mono text-primary/70 text-[11px]">Authorization: Bearer &lt;secret&gt;</code> on every request.
-                  </p>
                   <input
                     type="url"
                     value={webhookUrl}
@@ -4188,6 +4396,19 @@ EOF`}</CodeBlock>
                     placeholder="http://192.168.1.x:18789/plugins/webhooks/conduit"
                     className="input-warm"
                   />
+                  <div className="space-y-1.5">
+                    <label className="text-xs text-muted-foreground font-medium">Gateway token (if required)</label>
+                    <input
+                      type="password"
+                      value={gatewayToken}
+                      onChange={(e) => setGatewayToken(e.target.value)}
+                      placeholder="Bearer token your gateway requires"
+                      className="input-warm font-mono"
+                    />
+                    <p className="text-[11px] text-muted-foreground">
+                      Sent as <code className="font-mono text-[11px]">Authorization: Bearer &lt;token&gt;</code> on every outbound request. Leave blank if not required.
+                    </p>
+                  </div>
                   <button
                     onClick={() => setupMutation.mutate(webhookUrl)}
                     disabled={!webhookUrl.trim() || setupMutation.isPending}
@@ -4197,6 +4418,45 @@ EOF`}</CodeBlock>
                     Connect
                   </button>
                 </div>
+              </div>
+
+              <div className="p-4 space-y-3">
+                <div className="flex items-center gap-2.5">
+                  <StepNumber n={4} />
+                  <h3 className="text-sm font-semibold">Test the connection</h3>
+                </div>
+                <p className="text-xs text-muted-foreground pl-8">
+                  Ensure your Gateway is running (<code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>), then send a test ping.
+                </p>
+                <div className="pl-8 flex items-center gap-3 flex-wrap">
+                  <button
+                    onClick={handleTest}
+                    disabled={testState === 'testing'}
+                    className="btn-secondary"
+                  >
+                    {testState === 'testing'
+                      ? <Loader2 className="w-4 h-4 animate-spin" />
+                      : <RefreshCw className="w-4 h-4" />}
+                    {testState === 'testing' ? 'Testing…' : 'Test connection'}
+                  </button>
+                  {testState === 'success' && (
+                    <span className="flex items-center gap-1.5 text-xs text-emerald-400">
+                      <CircleCheck className="w-4 h-4" /> Round-trip confirmed
+                    </span>
+                  )}
+                  {testState === 'error' && (
+                    <span className="flex items-center gap-1.5 text-xs text-red-400">
+                      <CircleX className="w-4 h-4" /> {testError}
+                    </span>
+                  )}
+                </div>
+                {testState === 'success' && (
+                  <div className="pl-8">
+                    <button onClick={() => navigate('/ai')} className="btn-primary">
+                      <Bot className="w-4 h-4" /> Open AI Chat
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -4272,6 +4532,45 @@ X-API-Key: <your-key>
 # Final chunk
 { "delta": "", "done": true, "messageId": "<returned-id>" }`}</CodeBlock>
                 </div>
+              </div>
+
+              <div className="p-4 space-y-3">
+                <div className="flex items-center gap-2.5">
+                  <StepNumber n={4} />
+                  <h3 className="text-sm font-semibold">Test the connection</h3>
+                </div>
+                <p className="text-xs text-muted-foreground pl-8">
+                  Ensure your endpoint is running, then send a test ping.
+                </p>
+                <div className="pl-8 flex items-center gap-3 flex-wrap">
+                  <button
+                    onClick={handleTest}
+                    disabled={testState === 'testing'}
+                    className="btn-secondary"
+                  >
+                    {testState === 'testing'
+                      ? <Loader2 className="w-4 h-4 animate-spin" />
+                      : <RefreshCw className="w-4 h-4" />}
+                    {testState === 'testing' ? 'Testing…' : 'Test connection'}
+                  </button>
+                  {testState === 'success' && (
+                    <span className="flex items-center gap-1.5 text-xs text-emerald-400">
+                      <CircleCheck className="w-4 h-4" /> Round-trip confirmed
+                    </span>
+                  )}
+                  {testState === 'error' && (
+                    <span className="flex items-center gap-1.5 text-xs text-red-400">
+                      <CircleX className="w-4 h-4" /> {testError}
+                    </span>
+                  )}
+                </div>
+                {testState === 'success' && (
+                  <div className="pl-8">
+                    <button onClick={() => navigate('/ai')} className="btn-primary">
+                      <Bot className="w-4 h-4" /> Open AI Chat
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -4357,25 +4656,50 @@ X-API-Key: <your-key>
 { "delta": "", "done": true,  "messageId": "<id>" }    // final`}</CodeBlock>
                 </div>
               </div>
+
+              <div className="p-4 space-y-3">
+                <div className="flex items-center gap-2.5">
+                  <StepNumber n={5} />
+                  <h3 className="text-sm font-semibold">Test the connection</h3>
+                </div>
+                <p className="text-xs text-muted-foreground pl-8">
+                  Ensure your tool is running, then send a test ping.
+                </p>
+                <div className="pl-8 flex items-center gap-3 flex-wrap">
+                  <button
+                    onClick={handleTest}
+                    disabled={testState === 'testing'}
+                    className="btn-secondary"
+                  >
+                    {testState === 'testing'
+                      ? <Loader2 className="w-4 h-4 animate-spin" />
+                      : <RefreshCw className="w-4 h-4" />}
+                    {testState === 'testing' ? 'Testing…' : 'Test connection'}
+                  </button>
+                  {testState === 'success' && (
+                    <span className="flex items-center gap-1.5 text-xs text-emerald-400">
+                      <CircleCheck className="w-4 h-4" /> Round-trip confirmed
+                    </span>
+                  )}
+                  {testState === 'error' && (
+                    <span className="flex items-center gap-1.5 text-xs text-red-400">
+                      <CircleX className="w-4 h-4" /> {testError}
+                    </span>
+                  )}
+                </div>
+                {testState === 'success' && (
+                  <div className="pl-8">
+                    <button onClick={() => navigate('/ai')} className="btn-primary">
+                      <Bot className="w-4 h-4" /> Open AI Chat
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
       ) : (
         <div className="space-y-5">
-
-          {/* Shown-once API key banner */}
-          {shownApiKey && (
-            <div className="rounded-xl border border-primary/30 bg-primary/8 p-4 space-y-3">
-              <div className="flex items-start gap-2.5">
-                <Key className="w-4 h-4 text-primary flex-shrink-0 mt-0.5" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-primary/90">Conduit API key — save it now</p>
-                  <p className="text-xs text-primary/70 mt-0.5">Shown once. Add it to your agent or tool as <code className="font-mono text-[11px]">X-API-Key</code>.</p>
-                </div>
-              </div>
-              <CopyField label="Conduit API Key" value={shownApiKey} />
-            </div>
-          )}
 
           {/* Connection details */}
           <div className="rounded-xl border border-border bg-secondary/30 divide-y divide-border">
@@ -4383,84 +4707,94 @@ X-API-Key: <your-key>
               <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Webhook URL</p>
               <p className="text-sm text-foreground font-mono break-all">{conn?.webhookUrl}</p>
             </div>
-            <div className="p-4 space-y-1.5">
-              <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Conduit API Key</p>
-              <p className="text-sm text-foreground font-mono">
-                {conn?.keyPrefix}<span className="text-muted-foreground">••••••••••••••••••••••••••••••••••••</span>
-              </p>
-              <p className="text-[11px] text-muted-foreground">To rotate, disconnect and reconnect.</p>
-            </div>
-          </div>
-
-          {/* Add Conduit skill to OpenClaw workspace */}
-          {conn && (
-            <div className="rounded-xl border border-border bg-secondary/30 divide-y divide-border">
-              <div className="p-4 space-y-2">
-                <div className="flex items-center gap-2.5">
-                  <StepNumber n={3} />
-                  <h3 className="text-sm font-semibold">Add the Conduit skill to your OpenClaw workspace</h3>
-                </div>
-                <div className="pl-8 space-y-2">
-                  <p className="text-xs text-muted-foreground">
-                    Create <code className="font-mono text-primary/70 text-[11px]">~/.openclaw/workspace/skills/conduit/SKILL.md</code>:
-                  </p>
-                   <CodeBlock className="leading-relaxed whitespace-pre-wrap break-all">{`---
-name: conduit
-description: Read the user's messages, emails, and calendar via Conduit, and stream responses back to the Conduit AI chat interface.
----
-
-You have access to the Conduit API — a personal communications hub.
-
-Base URL: ${conn.baseUrl}
-API Key: <the key shown above>
-OpenAPI spec: ${conn.openApiUrl}
-
-Include X-API-Key: <key> on every request.
-
-Key endpoints:
-- GET /api/activity
-- GET /api/messages?source=<platform>&chat_id=<id>
-- GET /api/contacts
-- GET /api/gmail/messages
-- GET /api/calendar/events
-- POST /api/outbox
-
-Streaming responses back to Conduit:
-POST chunks to: ${conn.streamUrlTemplate.replace('{sessionId}', '<sessionId from payload>')}
-
-Body: { "delta": "text chunk", "done": false, "messageId": "<id>" }
-- Omit messageId on the first chunk; use the returned ID on all subsequent chunks.
-- Send { "done": true } on the final chunk.
-- Always include X-API-Key: <key>.`}</CodeBlock>
-                  <p className="text-xs text-muted-foreground">
-                    Restart the Gateway: <code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>
-                  </p>
-                </div>
+            <div className="p-4 space-y-3">
+              <div className="space-y-1">
+                <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Gateway Token</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Sent as <code className="font-mono text-[11px]">Authorization: Bearer &lt;token&gt;</code> on every outbound webhook request.
+                  Required when the webhook endpoint enforces gateway authentication.
+                </p>
               </div>
+              <input
+                type="password"
+                value={gatewayToken}
+                onChange={(e) => setGatewayToken(e.target.value)}
+                placeholder="Leave blank if not required"
+                className="input font-mono text-sm w-full"
+              />
+              <button
+                onClick={handleSaveGatewayToken}
+                disabled={gatewayTokenSaving}
+                className="btn-secondary"
+              >
+                {gatewayTokenSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save'}
+              </button>
             </div>
-          )}
-
-          {/* Conduit endpoints */}
-          {conn && (
-            <div className="rounded-xl border border-border bg-secondary/30 divide-y divide-border">
-              <div className="p-4 space-y-3">
-                <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Conduit endpoints</p>
-                <CopyField label="Stream endpoint template" value={conn.streamUrlTemplate} />
-                <CopyField label="OpenAPI spec URL" value={conn.openApiUrl} />
+            <div className="p-4 space-y-3">
+              <div className="space-y-1">
+                <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Callback Base URL</p>
+                <p className="text-[11px] text-muted-foreground">
+                  The URL Conduit sends to the AI agent as <code className="font-mono text-[11px]">conduitBaseUrl</code> / <code className="font-mono text-[11px]">streamUrl</code>.
+                  Use <strong>Docker</strong> when the agent runs in a separate container and can't reach localhost.
+                </p>
               </div>
+              {/* Location selector */}
+              <div className="flex gap-2 flex-wrap">
+                {(['auto', 'localhost', 'docker', 'custom'] as const).map((loc) => (
+                  <button
+                    key={loc}
+                    onClick={() => setCbLocation(loc)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                      cbLocation === loc
+                        ? 'bg-primary/15 border-primary/40 text-primary'
+                        : 'bg-secondary/40 border-border text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    {loc === 'auto' ? 'Auto' : loc === 'localhost' ? 'Localhost' : loc === 'docker' ? 'Docker' : 'Custom'}
+                  </button>
+                ))}
+              </div>
+              {cbLocation !== 'auto' && (
+                <div className="flex items-center gap-2">
+                  {cbLocation === 'custom' ? (
+                    <input
+                      type="text"
+                      value={customCbHost}
+                      onChange={(e) => setCustomCbHost(e.target.value)}
+                      placeholder="e.g. 192.168.1.10"
+                      className="input flex-1 font-mono text-sm"
+                    />
+                  ) : (
+                    <div className="input flex-1 font-mono text-sm text-muted-foreground select-none">
+                      {cbLocation === 'docker' ? '172.17.0.1' : 'localhost'}
+                    </div>
+                  )}
+                  <span className="text-muted-foreground text-sm flex-shrink-0">:</span>
+                  <input
+                    type="text"
+                    value={cbPort}
+                    onChange={(e) => setCbPort(e.target.value.replace(/\D/g, ''))}
+                    placeholder={window.location.port || '3101'}
+                    className="input font-mono text-sm flex-shrink-0"
+                    style={{ width: '80px' }}
+                  />
+                </div>
+              )}
+              {resolvedCbUrl && (
+                <p className="text-[11px] text-muted-foreground font-mono">→ {resolvedCbUrl}</p>
+              )}
+              {cbLocation === 'auto' && (
+                <p className="text-[11px] text-muted-foreground">Uses the auto-detected server URL from the incoming request.</p>
+              )}
+              <button
+                onClick={handleSaveCallbackBase}
+                disabled={callbackSaving || (cbLocation === 'custom' && !customCbHost.trim())}
+                className="btn-secondary"
+              >
+                {callbackSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save'}
+              </button>
             </div>
-          )}
-
-          {/* Test */}
-          <div className="rounded-xl border border-border bg-secondary/30 p-4 space-y-3">
-            <div className="flex items-center gap-2.5">
-              <StepNumber n={4} />
-              <h3 className="text-sm font-semibold">Test the connection</h3>
-            </div>
-            <p className="text-xs text-muted-foreground pl-8">
-              Ensure your Gateway is running (<code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>), then send a test ping.
-            </p>
-            <div className="pl-8 flex items-center gap-3 flex-wrap">
+            <div className="p-4 flex items-center gap-3 flex-wrap">
               <button
                 onClick={handleTest}
                 disabled={testState === 'testing'}
@@ -4481,21 +4815,19 @@ Body: { "delta": "text chunk", "done": false, "messageId": "<id>" }
                   <CircleX className="w-4 h-4" /> {testError}
                 </span>
               )}
-            </div>
-            {testState === 'success' && (
-              <div className="pl-8">
+              {testState === 'success' && (
                 <button onClick={() => navigate('/ai')} className="btn-primary">
                   <Bot className="w-4 h-4" /> Open AI Chat
                 </button>
-              </div>
-            )}
+              )}
+            </div>
           </div>
 
           {/* Danger zone */}
           <div className="rounded-xl border border-red-500/15 bg-red-500/5 p-4 flex items-center justify-between gap-4">
             <div>
               <p className="text-sm font-medium text-foreground">Disconnect AI</p>
-              <p className="text-xs text-muted-foreground mt-0.5">Revokes the API key and clears the webhook URL. Chat sessions and messages are preserved.</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Clears the webhook URL and connection settings. Chat sessions and messages are preserved.</p>
             </div>
             <button
               onClick={handleDisconnect}
