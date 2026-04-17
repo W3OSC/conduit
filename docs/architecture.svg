@@ -1,0 +1,225 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="580" viewBox="0 0 900 580">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0d0f12"/>
+      <stop offset="100%" style="stop-color:#141820"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#f59e0b"/>
+      <stop offset="100%" style="stop-color:#f97316"/>
+    </linearGradient>
+    <linearGradient id="blueAccent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#3b82f6"/>
+      <stop offset="100%" style="stop-color:#6366f1"/>
+    </linearGradient>
+    <linearGradient id="greenAccent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#10b981"/>
+      <stop offset="100%" style="stop-color:#06b6d4"/>
+    </linearGradient>
+    <linearGradient id="purpleAccent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#8b5cf6"/>
+      <stop offset="100%" style="stop-color:#ec4899"/>
+    </linearGradient>
+    <filter id="cardShadow">
+      <feDropShadow dx="0" dy="2" stdDeviation="6" flood-color="#000000" flood-opacity="0.4"/>
+    </filter>
+    <filter id="accentGlow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <marker id="arrowOrange" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#f97316" opacity="0.7"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#3b82f6" opacity="0.7"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#10b981" opacity="0.7"/>
+    </marker>
+    <marker id="arrowPurple" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#8b5cf6" opacity="0.7"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="580" fill="url(#bg)" rx="12"/>
+
+  <!-- Subtle grid -->
+  <pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse">
+    <path d="M 30 0 L 0 0 0 30" fill="none" stroke="#ffffff" stroke-width="0.2" opacity="0.06"/>
+  </pattern>
+  <rect width="900" height="580" fill="url(#grid)" rx="12"/>
+
+  <!-- Title -->
+  <text x="450" y="36" font-family="system-ui, sans-serif" font-size="15" font-weight="600" fill="#f8f8f8" text-anchor="middle" opacity="0.9">Conduit — Architecture</text>
+  <rect x="360" y="42" width="180" height="1" fill="url(#accent)" opacity="0.5" rx="0.5"/>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- BROWSER / USER -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <rect x="360" y="62" width="180" height="52" rx="10" fill="#1a1e2a" stroke="#f59e0b" stroke-width="1.2" filter="url(#cardShadow)"/>
+  <text x="450" y="82" font-family="system-ui, sans-serif" font-size="11" font-weight="600" fill="#f59e0b" text-anchor="middle">Browser</text>
+  <text x="450" y="98" font-family="system-ui, sans-serif" font-size="10" fill="#a0a8b8" text-anchor="middle">React SPA + WebSocket</text>
+  <text x="450" y="110" font-family="system-ui, sans-serif" font-size="9.5" fill="#6b7280" text-anchor="middle">Password + TOTP login (optional)</text>
+
+  <!-- Arrow: Browser → Server -->
+  <line x1="450" y1="114" x2="450" y2="148" stroke="#f97316" stroke-width="1.5" stroke-dasharray="4,3" opacity="0.6" marker-end="url(#arrowOrange)"/>
+  <text x="466" y="135" font-family="system-ui, sans-serif" font-size="9" fill="#6b7280">HTTP/WS</text>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- EXPRESS SERVER (centre) -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <rect x="300" y="152" width="300" height="90" rx="10" fill="#1e2330" stroke="#f97316" stroke-width="1.5" filter="url(#cardShadow)"/>
+  <rect x="300" y="152" width="300" height="4" rx="2" fill="url(#accent)"/>
+  <text x="450" y="174" font-family="system-ui, sans-serif" font-size="12" font-weight="700" fill="#f8f8f8" text-anchor="middle">Express Server (Node.js)</text>
+
+  <!-- Server internals -->
+  <rect x="314" y="183" width="80" height="22" rx="5" fill="#252b3b" stroke="#374151" stroke-width="0.8"/>
+  <text x="354" y="197" font-family="system-ui, sans-serif" font-size="9" fill="#a0a8b8" text-anchor="middle">REST API</text>
+
+  <rect x="405" y="183" width="80" height="22" rx="5" fill="#252b3b" stroke="#374151" stroke-width="0.8"/>
+  <text x="445" y="197" font-family="system-ui, sans-serif" font-size="9" fill="#a0a8b8" text-anchor="middle">WebSocket</text>
+
+  <rect x="496" y="183" width="90" height="22" rx="5" fill="#252b3b" stroke="#374151" stroke-width="0.8"/>
+  <text x="541" y="197" font-family="system-ui, sans-serif" font-size="9" fill="#a0a8b8" text-anchor="middle">CSRF + Auth</text>
+
+  <text x="450" y="233" font-family="system-ui, sans-serif" font-size="9.5" fill="#6b7280" text-anchor="middle">Static file serving · Outbox approval · Audit log</text>
+
+  <!-- Arrow: Server → SQLite -->
+  <line x1="450" y1="242" x2="450" y2="278" stroke="#3b82f6" stroke-width="1.5" opacity="0.7" marker-end="url(#arrowBlue)"/>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- SQLITE DATABASE -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <rect x="340" y="282" width="220" height="52" rx="10" fill="#1a1e2a" stroke="#3b82f6" stroke-width="1.2" filter="url(#cardShadow)"/>
+  <text x="450" y="302" font-family="system-ui, sans-serif" font-size="11" font-weight="600" fill="#3b82f6" text-anchor="middle">SQLite (data/conduit.db)</text>
+  <text x="450" y="318" font-family="system-ui, sans-serif" font-size="9.5" fill="#a0a8b8" text-anchor="middle">Messages · Contacts · Outbox · Credentials</text>
+  <text x="450" y="330" font-family="system-ui, sans-serif" font-size="9" fill="#6b7280" text-anchor="middle">Drizzle ORM · WAL mode · Local file</text>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- PLATFORM CONNECTIONS (left column) -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+
+  <!-- Left connection group header -->
+  <text x="132" y="175" font-family="system-ui, sans-serif" font-size="10" font-weight="600" fill="#6b7280" text-anchor="middle" letter-spacing="1">PLATFORMS</text>
+
+  <!-- Slack -->
+  <rect x="40" y="192" width="184" height="32" rx="7" fill="#1a1e2a" stroke="#4a5568" stroke-width="0.8"/>
+  <rect x="40" y="192" width="4" height="32" rx="2" fill="#4f46e5"/>
+  <text x="132" y="207" font-family="system-ui, sans-serif" font-size="10" font-weight="600" fill="#e2e8f0" text-anchor="middle">Slack</text>
+  <text x="132" y="219" font-family="system-ui, sans-serif" font-size="9" fill="#6b7280" text-anchor="middle">OAuth user token · Socket Mode</text>
+
+  <!-- Discord -->
+  <rect x="40" y="232" width="184" height="32" rx="7" fill="#1a1e2a" stroke="#4a5568" stroke-width="0.8"/>
+  <rect x="40" y="232" width="4" height="32" rx="2" fill="#5865f2"/>
+  <text x="132" y="247" font-family="system-ui, sans-serif" font-size="10" font-weight="600" fill="#e2e8f0" text-anchor="middle">Discord</text>
+  <text x="132" y="259" font-family="system-ui, sans-serif" font-size="9" fill="#6b7280" text-anchor="middle">User token · selfbot (ToS risk)</text>
+
+  <!-- Telegram -->
+  <rect x="40" y="272" width="184" height="32" rx="7" fill="#1a1e2a" stroke="#4a5568" stroke-width="0.8"/>
+  <rect x="40" y="272" width="4" height="32" rx="2" fill="#26a5e4"/>
+  <text x="132" y="287" font-family="system-ui, sans-serif" font-size="10" font-weight="600" fill="#e2e8f0" text-anchor="middle">Telegram</text>
+  <text x="132" y="299" font-family="system-ui, sans-serif" font-size="9" fill="#6b7280" text-anchor="middle">MTProto · GramJS client</text>
+
+  <!-- Gmail / Calendar -->
+  <rect x="40" y="312" width="184" height="32" rx="7" fill="#1a1e2a" stroke="#4a5568" stroke-width="0.8"/>
+  <rect x="40" y="312" width="4" height="32" rx="2" fill="#ea4335"/>
+  <text x="132" y="327" font-family="system-ui, sans-serif" font-size="10" font-weight="600" fill="#e2e8f0" text-anchor="middle">Gmail · Calendar</text>
+  <text x="132" y="339" font-family="system-ui, sans-serif" font-size="9" fill="#6b7280" text-anchor="middle">OAuth2 · multi-account</text>
+
+  <!-- Twitter -->
+  <rect x="40" y="352" width="184" height="32" rx="7" fill="#1a1e2a" stroke="#4a5568" stroke-width="0.8"/>
+  <rect x="40" y="352" width="4" height="32" rx="2" fill="#1d9bf0"/>
+  <text x="132" y="367" font-family="system-ui, sans-serif" font-size="10" font-weight="600" fill="#e2e8f0" text-anchor="middle">Twitter / X</text>
+  <text x="132" y="379" font-family="system-ui, sans-serif" font-size="9" fill="#6b7280" text-anchor="middle">Cookie auth (ToS risk)</text>
+
+  <!-- Notion + Obsidian -->
+  <rect x="40" y="392" width="184" height="32" rx="7" fill="#1a1e2a" stroke="#4a5568" stroke-width="0.8"/>
+  <rect x="40" y="392" width="4" height="32" rx="2" fill="#10b981"/>
+  <text x="132" y="407" font-family="system-ui, sans-serif" font-size="10" font-weight="600" fill="#e2e8f0" text-anchor="middle">Notion · Obsidian</text>
+  <text x="132" y="419" font-family="system-ui, sans-serif" font-size="9" fill="#6b7280" text-anchor="middle">API token · git SSH/HTTPS</text>
+
+  <!-- Arrows from platforms → server -->
+  <line x1="224" y1="208" x2="298" y2="208" stroke="#4a5568" stroke-width="1" opacity="0.5" marker-end="url(#arrowBlue)"/>
+  <line x1="224" y1="248" x2="298" y2="220" stroke="#4a5568" stroke-width="1" opacity="0.4" marker-end="url(#arrowBlue)"/>
+  <line x1="224" y1="288" x2="298" y2="232" stroke="#4a5568" stroke-width="1" opacity="0.4" marker-end="url(#arrowBlue)"/>
+  <line x1="224" y1="328" x2="298" y2="242" stroke="#4a5568" stroke-width="1" opacity="0.4" marker-end="url(#arrowBlue)"/>
+  <line x1="224" y1="368" x2="298" y2="240" stroke="#4a5568" stroke-width="1" opacity="0.35" marker-end="url(#arrowBlue)"/>
+  <line x1="224" y1="408" x2="298" y2="238" stroke="#4a5568" stroke-width="1" opacity="0.35" marker-end="url(#arrowBlue)"/>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- AI AGENT (right side) -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+
+  <!-- AI agent header -->
+  <text x="768" y="175" font-family="system-ui, sans-serif" font-size="10" font-weight="600" fill="#6b7280" text-anchor="middle" letter-spacing="1">AI AGENT</text>
+
+  <!-- OpenClaw / AI webhook -->
+  <rect x="676" y="192" width="184" height="52" rx="7" fill="#1a1e2a" stroke="#8b5cf6" stroke-width="1.2" filter="url(#cardShadow)"/>
+  <rect x="676" y="192" width="184" height="4" rx="2" fill="url(#purpleAccent)"/>
+  <text x="768" y="213" font-family="system-ui, sans-serif" font-size="10.5" font-weight="600" fill="#c4b5fd" text-anchor="middle">External AI Agent</text>
+  <text x="768" y="228" font-family="system-ui, sans-serif" font-size="9.5" fill="#a0a8b8" text-anchor="middle">Webhook receiver (e.g. OpenClaw)</text>
+  <text x="768" y="240" font-family="system-ui, sans-serif" font-size="9" fill="#6b7280" text-anchor="middle">Claude · GPT · any LLM</text>
+
+  <!-- Arrow: Server → AI (webhook delivery) -->
+  <line x1="600" y1="200" x2="674" y2="215" stroke="#8b5cf6" stroke-width="1.5" stroke-dasharray="5,3" opacity="0.6" marker-end="url(#arrowPurple)"/>
+  <text x="634" y="203" font-family="system-ui, sans-serif" font-size="9" fill="#6b7280">webhook</text>
+
+  <!-- Arrow: AI → Server (stream back) -->
+  <line x1="676" y1="232" x2="602" y2="220" stroke="#10b981" stroke-width="1.5" stroke-dasharray="5,3" opacity="0.6" marker-end="url(#arrowGreen)"/>
+  <text x="628" y="244" font-family="system-ui, sans-serif" font-size="9" fill="#6b7280">stream tokens</text>
+
+  <!-- AI reads Conduit API -->
+  <rect x="676" y="262" width="184" height="42" rx="7" fill="#1a1e2a" stroke="#374151" stroke-width="0.8"/>
+  <text x="768" y="280" font-family="system-ui, sans-serif" font-size="10" font-weight="600" fill="#e2e8f0" text-anchor="middle">AI reads Conduit API</text>
+  <text x="768" y="294" font-family="system-ui, sans-serif" font-size="9.5" fill="#a0a8b8" text-anchor="middle">X-API-Key · per-key permissions</text>
+  <text x="768" y="306" font-family="system-ui, sans-serif" font-size="9" fill="#6b7280" text-anchor="middle">messages · emails · contacts · vault</text>
+
+  <!-- Arrow from AI → Conduit API reads -->
+  <line x1="768" y1="244" x2="768" y2="260" stroke="#374151" stroke-width="1" opacity="0.5" marker-end="url(#arrowBlue)"/>
+  <!-- Conduit API reads → server -->
+  <line x1="676" y1="283" x2="602" y2="255" stroke="#3b82f6" stroke-width="1" stroke-dasharray="4,3" opacity="0.4" marker-end="url(#arrowBlue)"/>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- OUTBOX APPROVAL FLOW -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <rect x="280" y="362" width="340" height="54" rx="10" fill="#1a1e2a" stroke="#10b981" stroke-width="1.2" filter="url(#cardShadow)"/>
+  <rect x="280" y="362" width="340" height="4" rx="2" fill="url(#greenAccent)"/>
+  <text x="450" y="383" font-family="system-ui, sans-serif" font-size="11" font-weight="600" fill="#34d399" text-anchor="middle">Outbox — Human Approval Gate</text>
+  <text x="450" y="398" font-family="system-ui, sans-serif" font-size="9.5" fill="#a0a8b8" text-anchor="middle">AI queues actions · Human approves/rejects · Platform dispatched</text>
+  <text x="450" y="412" font-family="system-ui, sans-serif" font-size="9" fill="#6b7280" text-anchor="middle">send message · reply email · RSVP · tweet · vault write</text>
+
+  <!-- Server → Outbox -->
+  <line x1="450" y1="334" x2="450" y2="360" stroke="#10b981" stroke-width="1.5" opacity="0.5" marker-end="url(#arrowGreen)"/>
+
+  <!-- Outbox → Platforms -->
+  <line x1="280" y1="389" x2="226" y2="350" stroke="#10b981" stroke-width="1" stroke-dasharray="4,3" opacity="0.4" marker-end="url(#arrowGreen)"/>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- SECURITY LAYER NOTE -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <rect x="280" y="432" width="340" height="50" rx="8" fill="#1e2330" stroke="#f59e0b" stroke-width="0.8" opacity="0.8"/>
+  <text x="450" y="452" font-family="system-ui, sans-serif" font-size="10" font-weight="600" fill="#fbbf24" text-anchor="middle">Security Controls</text>
+  <text x="450" y="467" font-family="system-ui, sans-serif" font-size="9" fill="#a0a8b8" text-anchor="middle">CSRF · Rate limiting · SSRF validation · SSH known_hosts</text>
+  <text x="450" y="479" font-family="system-ui, sans-serif" font-size="9" fill="#6b7280" text-anchor="middle">Security headers · Session management · Audit log</text>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- LEGEND -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <rect x="40" y="492" width="820" height="72" rx="8" fill="#1a1e2a" stroke="#2d3340" stroke-width="0.8"/>
+  <text x="60" y="510" font-family="system-ui, sans-serif" font-size="9.5" font-weight="600" fill="#6b7280" letter-spacing="1">LEGEND</text>
+
+  <line x1="60" y1="528" x2="100" y2="528" stroke="#f97316" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <text x="108" y="531" font-family="system-ui, sans-serif" font-size="9" fill="#a0a8b8">HTTP / WebSocket</text>
+
+  <line x1="200" y1="528" x2="240" y2="528" stroke="#8b5cf6" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <text x="248" y="531" font-family="system-ui, sans-serif" font-size="9" fill="#a0a8b8">Webhook (AI)</text>
+
+  <line x1="340" y1="528" x2="380" y2="528" stroke="#10b981" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <text x="388" y="531" font-family="system-ui, sans-serif" font-size="9" fill="#a0a8b8">Token stream / approval</text>
+
+  <line x1="500" y1="528" x2="540" y2="528" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="548" y="531" font-family="system-ui, sans-serif" font-size="9" fill="#a0a8b8">Platform sync (realtime + polling)</text>
+
+  <text x="60" y="552" font-family="system-ui, sans-serif" font-size="9" fill="#6b7280">All data stored locally · No cloud telemetry · Single user · Self-hosted</text>
+</svg>

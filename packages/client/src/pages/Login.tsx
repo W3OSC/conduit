@@ -13,7 +13,6 @@ export default function Login({ onAuthenticated }: LoginProps) {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [totpCode, setTotpCode] = useState('');
-  const [intermediateToken, setIntermediateToken] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -31,8 +30,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
     setError('');
     try {
       const res = await uiAuth.login(password);
-      if (res.totpRequired && res.intermediateToken) {
-        setIntermediateToken(res.intermediateToken);
+      if (res.totpRequired) {
         setStep('totp');
       } else {
         onAuthenticated();
@@ -49,7 +47,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
     setLoading(true);
     setError('');
     try {
-      await uiAuth.loginTotp(totpCode, intermediateToken);
+      await uiAuth.loginTotp(totpCode);
       onAuthenticated();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Invalid code');

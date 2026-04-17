@@ -5,6 +5,7 @@ import {
   getLastKnownStatus,
   getAppVersion,
 } from '../update/checker.js';
+import { optionalAuth } from '../auth/middleware.js';
 
 const router = Router();
 
@@ -14,7 +15,7 @@ const router = Router();
  * Uses the cached last-known status to avoid a git fetch on every page load.
  * The background poller keeps this fresh hourly.
  */
-router.get('/status', async (_req, res) => {
+router.get('/status', optionalAuth, async (_req, res) => {
   try {
     // Return cached status immediately if available (no blocking git fetch)
     const cached = getLastKnownStatus();
@@ -41,7 +42,7 @@ router.get('/status', async (_req, res) => {
  * For Docker: code is pulled but the image must be rebuilt to take effect.
  * For local: code is pulled and the user should restart the server.
  */
-router.post('/apply', async (_req, res) => {
+router.post('/apply', optionalAuth, async (_req, res) => {
   try {
     const result = await applyUpdate();
     const isDocker = process.env.DOCKER === 'true';

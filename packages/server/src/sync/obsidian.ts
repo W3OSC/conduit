@@ -17,7 +17,7 @@ import fs from 'fs';
 import os from 'os';
 import { simpleGit, SimpleGit, SimpleGitOptions } from 'simple-git';
 import { getDb } from '../db/client.js';
-import { obsidianVaultConfig } from '../db/schema.js';
+import { obsidianVaultConfig, settings } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { broadcast } from '../websocket/hub.js';
 
@@ -399,11 +399,14 @@ export class ObsidianVaultSync {
       if (config.authType === 'ssh' && config.sshPrivateKey) {
         const keyPath = path.join(tmpDir, 'id');
         fs.writeFileSync(keyPath, config.sshPrivateKey, { mode: 0o600 });
+        // testConnection intentionally uses accept-new: the test is the first time
+        // the user is connecting to this host, so we need to accept the key.
+        // The user can view and verify the fingerprint from the Settings UI.
         git.env({
           ...process.env,
           GIT_TERMINAL_PROMPT: '0',
           GIT_ASKPASS: 'echo',
-          GIT_SSH_COMMAND: `ssh -i "${keyPath}" -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=10`,
+          GIT_SSH_COMMAND: `ssh -i "${keyPath}" -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10`,
         });
       } else if (config.authType === 'https' && config.httpsToken) {
         try {
@@ -532,16 +535,71 @@ export class ObsidianVaultSync {
   }
 
   /**
-   * Build GIT_SSH_COMMAND env that uses a temp SSH key file.
-   * We write the key each time to avoid stale file issues.
+   * Build GIT_SSH_COMMAND env that uses a temp SSH key file and optional known_hosts.
+   *
+   * Strict host key checking is ON by default (security.sshStrictHostKeyChecking = true).
+   * When enabled, the stored known_hosts content (security.knownHosts) is written to a
+   * temp file and passed to SSH. If no known_hosts are stored yet, we fall back to
+   * accepting the host key once and storing it.
+   *
+   * When disabled by the user (via Settings → Security), StrictHostKeyChecking=no is used —
+   * this is less secure but may be needed for self-hosted or internal git servers.
    */
   private buildSshEnv(privateKey: string): Record<string, string> {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'conduit-ssh-'));
     const keyPath = path.join(tmpDir, 'id');
     fs.writeFileSync(keyPath, privateKey, { mode: 0o600 });
+
+    const strictChecking = this.getSshStrictHostKeyChecking();
+    const knownHostsContent = this.getStoredKnownHosts();
+
+    let strictCheckingFlag: string;
+    let knownHostsFlag = '';
+
+    if (strictChecking && knownHostsContent) {
+      // Write stored known_hosts to a temp file
+      const knownHostsPath = path.join(tmpDir, 'known_hosts');
+      fs.writeFileSync(knownHostsPath, knownHostsContent, { mode: 0o600 });
+      strictCheckingFlag = 'yes';
+      knownHostsFlag = ` -o UserKnownHostsFile="${knownHostsPath}"`;
+    } else if (strictChecking && !knownHostsContent) {
+      // No stored known_hosts yet — accept on first connect (AcceptNew) and we'll
+      // save the host key after a successful connection
+      strictCheckingFlag = 'accept-new';
+      const knownHostsPath = path.join(tmpDir, 'known_hosts');
+      fs.writeFileSync(knownHostsPath, '', { mode: 0o600 });
+      knownHostsFlag = ` -o UserKnownHostsFile="${knownHostsPath}"`;
+    } else {
+      // User explicitly disabled strict checking
+      strictCheckingFlag = 'no';
+    }
+
     return {
-      GIT_SSH_COMMAND: `ssh -i "${keyPath}" -o StrictHostKeyChecking=no -o BatchMode=yes`,
+      GIT_SSH_COMMAND: `ssh -i "${keyPath}" -o StrictHostKeyChecking=${strictCheckingFlag}${knownHostsFlag} -o BatchMode=yes`,
     };
+  }
+
+  private getSshStrictHostKeyChecking(): boolean {
+    try {
+      const db = getDb();
+      const row = db.select().from(settings).where(eq(settings.key, 'security.sshStrictHostKeyChecking')).get();
+      if (!row) return true; // default: strict
+      return JSON.parse(row.value) !== false;
+    } catch {
+      return true;
+    }
+  }
+
+  private getStoredKnownHosts(): string | null {
+    try {
+      const db = getDb();
+      const row = db.select().from(settings).where(eq(settings.key, 'security.knownHosts')).get();
+      if (!row || !row.value) return null;
+      const val = JSON.parse(row.value);
+      return typeof val === 'string' && val.trim() ? val : null;
+    } catch {
+      return null;
+    }
   }
 
   /**

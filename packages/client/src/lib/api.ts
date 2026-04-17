@@ -1,8 +1,39 @@
 const BASE = '/api';
 
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * Read the CSRF token from the `conduit-csrf` cookie.
+ * This cookie is set by the server on every response (non-httpOnly so JS can read it).
+ * Returns null if the cookie is not present (e.g. when using API key auth, which is exempt).
+ */
+function getCsrfToken(): string | null {
+  const match = document.cookie.match(/(?:^|;\s*)conduit-csrf=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+/**
+ * Check if the current session uses a UI session cookie (not an API key).
+ * If so, we must attach the CSRF token header on state-changing requests.
+ */
+function hasUiSession(): boolean {
+  return document.cookie.includes('conduit-session=');
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const method = options?.method?.toUpperCase() ?? 'GET';
+  const extraHeaders: Record<string, string> = {};
+
+  // Attach X-CSRF-Token on state-changing requests when using a UI session
+  if (!SAFE_METHODS.has(method) && hasUiSession()) {
+    const csrfToken = getCsrfToken();
+    if (csrfToken) {
+      extraHeaders['X-CSRF-Token'] = csrfToken;
+    }
+  }
+
   const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    headers: { 'Content-Type': 'application/json', ...extraHeaders, ...options?.headers },
     credentials: 'include',
     ...options,
   });
@@ -22,6 +53,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 // UI Auth uses a separate base URL since these routes are outside /api
+// These routes are exempt from CSRF (they are the login/logout flow itself).
 async function uiAuthRequest<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`/api/ui-auth${path}`, {
     headers: { 'Content-Type': 'application/json', ...options?.headers },
@@ -41,13 +73,13 @@ export const uiAuth = {
   updateConfig: (body: { enabled?: boolean; password?: string; currentPassword?: string }) =>
     uiAuthRequest<{ success: boolean; enabled: boolean; totpEnabled: boolean }>('/config', { method: 'PUT', body: JSON.stringify(body) }),
   login: (password: string) =>
-    uiAuthRequest<{ success: boolean; totpRequired: boolean; intermediateToken?: string; token?: string }>('/login', { method: 'POST', body: JSON.stringify({ password }) }),
-  loginTotp: (code: string, intermediateToken: string) =>
-    uiAuthRequest<{ success: boolean; token?: string }>('/login/totp', { method: 'POST', body: JSON.stringify({ code, intermediateToken }) }),
+    uiAuthRequest<{ success: boolean; totpRequired: boolean }>('/login', { method: 'POST', body: JSON.stringify({ password }) }),
+  loginTotp: (code: string) =>
+    uiAuthRequest<{ success: boolean }>('/login/totp', { method: 'POST', body: JSON.stringify({ code }) }),
   logout: () => uiAuthRequest<{ success: boolean }>('/logout', { method: 'POST' }),
-  totpSetup: () => uiAuthRequest<{ secret: string; otpauthUrl: string }>('/totp/setup', { method: 'POST' }),
-  totpVerify: (code: string) => uiAuthRequest<{ success: boolean }>('/totp/verify', { method: 'POST', body: JSON.stringify({ code }) }),
-  totpDisable: () => uiAuthRequest<{ success: boolean }>('/totp', { method: 'DELETE' }),
+  totpSetup: () => uiAuthRequest<{ secret: string; otpauthUrl: string; setupNonce: string }>('/totp/setup', { method: 'POST' }),
+  totpVerify: (code: string, setupNonce: string) => uiAuthRequest<{ success: boolean }>('/totp/verify', { method: 'POST', body: JSON.stringify({ code, setupNonce }) }),
+  totpDisable: (password: string) => uiAuthRequest<{ success: boolean }>('/totp', { method: 'DELETE', body: JSON.stringify({ password }) }),
 };
 
 export const api = {
@@ -1095,10 +1127,10 @@ export interface AiConnection {
    */
   callbackBaseUrl: string | null;
   /**
-   * Optional Bearer token sent as `Authorization: Bearer <token>` on every outbound webhook
-   * request. Required when the webhook endpoint is protected by gateway authentication.
+   * Whether a gateway token is stored. The raw token is never returned by the API —
+   * use PATCH /api/ai/connection to update it.
    */
-  gatewayToken: string | null;
+  hasGatewayToken: boolean;
   baseUrl: string;
   streamUrlTemplate: string;
   openApiUrl: string;

@@ -28,6 +28,7 @@ import { eq } from 'drizzle-orm';
 import { optionalAuth } from '../auth/middleware.js';
 import { getConnectionManager } from '../connections/manager.js';
 import { ObsidianVaultSync } from '../sync/obsidian.js';
+import { validateGitRemoteUrl } from '../auth/ssrf.js';
 
 const router = Router();
 
@@ -94,6 +95,13 @@ router.post('/config', optionalAuth, async (req, res) => {
 
   if (!name || !remote_url) {
     res.status(400).json({ error: 'name and remote_url are required' });
+    return;
+  }
+
+  // SSRF protection: validate the git remote URL before persisting it
+  const ssrfCheck = validateGitRemoteUrl(remote_url);
+  if (!ssrfCheck.ok) {
+    res.status(400).json({ error: ssrfCheck.error });
     return;
   }
 

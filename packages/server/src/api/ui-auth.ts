@@ -13,11 +13,15 @@
  * {
  *   enabled: boolean,
  *   passwordHash: string,      // bcrypt hash
- *   totpSecret?: string,       // base32 TOTP secret (set when 2FA is enabled)
  *   totpEnabled: boolean,
  *   sessionToken?: string,     // sha256 of the active session token (single session)
  *   sessionExpiry?: string,    // ISO date
  * }
+ *
+ * TOTP secret is held in an in-memory Map keyed by a setup nonce during
+ * the setup flow and only written to DB after the user successfully verifies
+ * a TOTP code. This prevents the secret from leaking if an attacker reads
+ * the DB between /setup and /verify.
  *
  * Routes:
  *   GET  /api/ui-auth/status     → { enabled, totpEnabled, authenticated }
@@ -28,7 +32,7 @@
  *   PUT  /api/ui-auth/config     → update password / enable / disable
  *   POST /api/ui-auth/totp/setup → generates a new TOTP secret, returns QR data
  *   POST /api/ui-auth/totp/verify → verifies a code and enables 2FA
- *   DELETE /api/ui-auth/totp    → disables 2FA
+ *   DELETE /api/ui-auth/totp    → disables 2FA (requires password)
  */
 
 import { Router } from 'express';
@@ -44,16 +48,56 @@ const router = Router();
 const otp = new OTP({ strategy: 'totp' });
 const SETTINGS_KEY = 'ui.auth';
 const SESSION_COOKIE_NAME = 'conduit-session';
+const TOTP_INTERMEDIATE_COOKIE = 'conduit-totp-step';
 const SESSION_DURATION_HOURS = 24 * 7; // 1 week
+const TOTP_STEP_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+
+// ── In-memory TOTP setup store ────────────────────────────────────────────────
+// Holds pending TOTP secrets during setup — never written to DB until verified.
+// Key: setup nonce (sent to client), Value: { secret, expiresAt }
+
+interface PendingTotpSetup {
+  secret: string;
+  expiresAt: number;
+}
+
+const pendingTotpSetups = new Map<string, PendingTotpSetup>();
+
+function cleanupExpiredSetups(): void {
+  const now = Date.now();
+  for (const [nonce, entry] of pendingTotpSetups.entries()) {
+    if (entry.expiresAt < now) pendingTotpSetups.delete(nonce);
+  }
+}
+
+// ── In-memory login rate limiter ──────────────────────────────────────────────
+// Simple per-IP sliding window — max 10 login attempts per minute.
+
+interface RateEntry { count: number; resetAt: number }
+const loginAttempts = new Map<string, RateEntry>();
+const RATE_WINDOW_MS = 60_000;
+const RATE_MAX = 10;
+
+function checkRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const entry = loginAttempts.get(ip);
+  if (!entry || entry.resetAt < now) {
+    loginAttempts.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
+    return true; // allowed
+  }
+  entry.count++;
+  if (entry.count > RATE_MAX) return false; // blocked
+  return true;
+}
 
 // ── Config helpers ─────────────────────────────────────────────────────────────
 
 interface UiAuthConfig {
   enabled: boolean;
   passwordHash: string;
-  totpSecret?: string;
+  totpSecret?: string;   // only present once fully enabled (not during setup)
   totpEnabled: boolean;
-  sessionTokenHash?: string;  // sha256 of the active session token
+  sessionTokenHash?: string;  // sha256 of the active session token (single session)
   sessionExpiry?: string;
 }
 
@@ -140,7 +184,7 @@ router.get('/config', (req, res) => {
 });
 
 // PUT /api/ui-auth/config — update password, enable/disable login
-router.put('/config', (req, res) => {
+router.put('/config', async (req, res) => {
   const { enabled, password, currentPassword } = req.body as {
     enabled?: boolean;
     password?: string;
@@ -151,13 +195,17 @@ router.put('/config', (req, res) => {
 
   // If login is already enabled, require current password to make changes
   if (cfg.enabled && cfg.passwordHash && currentPassword !== undefined) {
-    if (!bcrypt.compareSync(currentPassword, cfg.passwordHash)) {
+    const valid = await bcrypt.compare(currentPassword, cfg.passwordHash);
+    if (!valid) {
       return res.status(403).json({ error: 'Current password is incorrect' });
     }
   }
 
   if (password !== undefined && password.length > 0) {
-    cfg.passwordHash = bcrypt.hashSync(password, 12);
+    cfg.passwordHash = await bcrypt.hash(password, 12);
+    // Invalidate any existing session when the password changes
+    cfg.sessionTokenHash = undefined;
+    cfg.sessionExpiry = undefined;
   }
 
   if (enabled !== undefined) {
@@ -173,6 +221,12 @@ router.put('/config', (req, res) => {
   }
 
   saveConfig(cfg);
+
+  // Clear the session cookie if we invalidated the session
+  if (password !== undefined && password.length > 0) {
+    res.clearCookie(SESSION_COOKIE_NAME, { path: '/' });
+  }
+
   res.json({ success: true, enabled: cfg.enabled, totpEnabled: cfg.totpEnabled });
 });
 
@@ -189,19 +243,34 @@ router.post('/login', async (req, res) => {
     return res.status(400).json({ error: 'Password required' });
   }
 
-  const valid = bcrypt.compareSync(password, cfg.passwordHash);
+  // Rate limiting per IP
+  const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
+  if (!checkRateLimit(ip)) {
+    res.setHeader('Retry-After', '60');
+    return res.status(429).json({ error: 'Too many login attempts. Please wait a minute before trying again.' });
+  }
+
+  const valid = await bcrypt.compare(password, cfg.passwordHash);
   if (!valid) {
     return res.status(401).json({ error: 'Incorrect password' });
   }
 
   if (cfg.totpEnabled) {
-    // Password correct but 2FA required — signal client to ask for TOTP code
-    // Generate a short-lived intermediate token so the TOTP step is stateless
+    // Password correct but 2FA required — issue a short-lived intermediate token
+    // as an httpOnly cookie (not in the response body) to avoid it appearing in logs.
     const intermediate = randomBytes(24).toString('hex');
     cfg.sessionTokenHash = `pending:${hashToken(intermediate)}`;
-    cfg.sessionExpiry = new Date(Date.now() + 5 * 60 * 1000).toISOString(); // 5 min for TOTP step
+    cfg.sessionExpiry = new Date(Date.now() + TOTP_STEP_DURATION_MS).toISOString();
     saveConfig(cfg);
-    return res.json({ success: true, totpRequired: true, intermediateToken: intermediate });
+
+    res.cookie(TOTP_INTERMEDIATE_COOKIE, intermediate, {
+      httpOnly: true,
+      sameSite: 'lax',
+      maxAge: TOTP_STEP_DURATION_MS,
+      path: '/',
+    });
+
+    return res.json({ success: true, totpRequired: true });
   }
 
   // Full login — issue session token
@@ -217,12 +286,16 @@ router.post('/login', async (req, res) => {
     path: '/',
   });
 
-  res.json({ success: true, totpRequired: false, token });
+  res.json({ success: true, totpRequired: false });
 });
 
 // POST /api/ui-auth/login/totp — complete 2FA
 router.post('/login/totp', (req, res) => {
-  const { code, intermediateToken } = req.body as { code?: string; intermediateToken?: string };
+  // Read the intermediate token from the httpOnly cookie (not the request body)
+  const cookies = (req as Request & { cookies?: Record<string, string> }).cookies;
+  const intermediateToken = cookies?.[TOTP_INTERMEDIATE_COOKIE];
+
+  const { code } = req.body as { code?: string };
   const cfg = getConfig();
 
   if (!cfg.totpEnabled || !cfg.totpSecret) {
@@ -231,7 +304,7 @@ router.post('/login/totp', (req, res) => {
 
   // Verify the intermediate token is valid and pending
   if (!intermediateToken || cfg.sessionTokenHash !== `pending:${hashToken(intermediateToken)}`) {
-    return res.status(401).json({ error: 'Invalid or expired intermediate token' });
+    return res.status(401).json({ error: 'Invalid or expired login session. Please start the login process again.' });
   }
 
   const verifyResult = otp.verifySync({ token: code || '', secret: cfg.totpSecret });
@@ -239,19 +312,20 @@ router.post('/login/totp', (req, res) => {
     return res.status(401).json({ error: 'Invalid 2FA code' });
   }
 
-  // Issue full session
+  // Issue full session — clear the intermediate cookie
   const token = randomBytes(32).toString('hex');
   cfg.sessionTokenHash = hashToken(token);
   cfg.sessionExpiry = new Date(Date.now() + SESSION_DURATION_HOURS * 60 * 60 * 1000).toISOString();
   saveConfig(cfg);
 
+  res.clearCookie(TOTP_INTERMEDIATE_COOKIE, { path: '/' });
   res.cookie(SESSION_COOKIE_NAME, token, {
     httpOnly: true, sameSite: 'lax',
     maxAge: SESSION_DURATION_HOURS * 60 * 60 * 1000,
     path: '/',
   });
 
-  res.json({ success: true, token });
+  res.json({ success: true });
 });
 
 // POST /api/ui-auth/logout
@@ -261,43 +335,74 @@ router.post('/logout', (req, res) => {
   cfg.sessionExpiry = undefined;
   saveConfig(cfg);
   res.clearCookie(SESSION_COOKIE_NAME, { path: '/' });
+  res.clearCookie(TOTP_INTERMEDIATE_COOKIE, { path: '/' });
   res.json({ success: true });
 });
 
 // POST /api/ui-auth/totp/setup — generate a new secret (not yet enabled)
+// The secret is stored in memory only — written to DB only on successful verify.
 router.post('/totp/setup', (req, res) => {
-  const cfg = getConfig();
+  cleanupExpiredSetups();
+
   const secret = otp.generateSecret();
+  const nonce = randomBytes(16).toString('hex');
   const otpauthUrl = otp.generateURI({ issuer: 'Conduit', label: 'Conduit', secret });
-  // Store the new secret before the user verifies it — totpEnabled stays false until /totp/verify succeeds.
-  cfg.totpSecret = secret;
-  cfg.totpEnabled = false;
-  saveConfig(cfg);
-  res.json({ secret, otpauthUrl });
+
+  pendingTotpSetups.set(nonce, {
+    secret,
+    expiresAt: Date.now() + 15 * 60 * 1000, // 15-minute setup window
+  });
+
+  res.json({ secret, otpauthUrl, setupNonce: nonce });
 });
 
 // POST /api/ui-auth/totp/verify — verify and enable 2FA
 router.post('/totp/verify', (req, res) => {
-  const { code } = req.body as { code?: string };
-  const cfg = getConfig();
+  const { code, setupNonce } = req.body as { code?: string; setupNonce?: string };
 
-  if (!cfg.totpSecret) {
-    return res.status(400).json({ error: 'Run /setup first' });
+  if (!setupNonce) {
+    return res.status(400).json({ error: 'setupNonce is required — run /setup first' });
   }
 
-  const verifyResult2 = otp.verifySync({ token: code || '', secret: cfg.totpSecret });
-  if (!code || !verifyResult2.valid) {
+  const pending = pendingTotpSetups.get(setupNonce);
+  if (!pending || pending.expiresAt < Date.now()) {
+    pendingTotpSetups.delete(setupNonce);
+    return res.status(400).json({ error: 'Setup session expired — run /setup again' });
+  }
+
+  const verifyResult = otp.verifySync({ token: code || '', secret: pending.secret });
+  if (!code || !verifyResult.valid) {
     return res.status(401).json({ error: 'Invalid code — check your authenticator app' });
   }
 
+  // Code verified — now persist the TOTP secret to DB and enable 2FA
+  const cfg = getConfig();
+  cfg.totpSecret = pending.secret;
   cfg.totpEnabled = true;
   saveConfig(cfg);
+
+  pendingTotpSetups.delete(setupNonce);
+
   res.json({ success: true });
 });
 
-// DELETE /api/ui-auth/totp — disable 2FA
-router.delete('/totp', (req, res) => {
+// DELETE /api/ui-auth/totp — disable 2FA (requires current password)
+router.delete('/totp', async (req, res) => {
+  const { password } = req.body as { password?: string };
   const cfg = getConfig();
+
+  // Require password confirmation to disable 2FA
+  if (!password) {
+    return res.status(400).json({ error: 'Current password is required to disable 2FA' });
+  }
+  if (!cfg.passwordHash) {
+    return res.status(400).json({ error: 'No password configured' });
+  }
+  const valid = await bcrypt.compare(password, cfg.passwordHash);
+  if (!valid) {
+    return res.status(403).json({ error: 'Incorrect password' });
+  }
+
   cfg.totpSecret = undefined;
   cfg.totpEnabled = false;
   saveConfig(cfg);

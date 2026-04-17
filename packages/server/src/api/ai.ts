@@ -5,6 +5,7 @@ import { getDb } from '../db/client.js';
 import { aiSessions, aiMessages, settings } from '../db/schema.js';
 import { optionalAuth, apiKeyAuth, type AuthedRequest } from '../auth/middleware.js';
 import { broadcast, onNextBroadcast, collectBroadcast } from '../websocket/hub.js';
+import { validateWebhookUrl } from '../auth/ssrf.js';
 import { getConnectionManager } from '../connections/manager.js';
 
 const router = Router();
@@ -80,8 +81,17 @@ function deleteSetting(key: string): void {
 }
 
 function getBaseUrl(req: import('express').Request): string {
-  const proto = req.headers['x-forwarded-proto'] || req.protocol;
-  const host  = req.headers['x-forwarded-host']  || req.get('host');
+  // Only trust x-forwarded-* headers when TRUST_PROXY env var is set.
+  // Without this guard, a caller could spoof the base URL by sending
+  // arbitrary x-forwarded-proto/host headers, causing the AI callback
+  // URL in the system prompt to point to an attacker-controlled host.
+  const trustProxy = process.env.TRUST_PROXY === 'true';
+  const proto = trustProxy
+    ? (req.headers['x-forwarded-proto'] || req.protocol)
+    : req.protocol;
+  const host = trustProxy
+    ? (req.headers['x-forwarded-host'] || req.get('host'))
+    : req.get('host');
   return `${proto}://${host}`;
 }
 
@@ -223,9 +233,9 @@ router.get('/connection', optionalAuth, (req, res) => {
   res.json({
     configured,
     verified,
-    webhookUrl:      webhookUrl      ?? null,
-    callbackBaseUrl: callbackBaseUrl ?? null,
-    gatewayToken:    gatewayToken    ?? null,
+    webhookUrl:        webhookUrl      ?? null,
+    callbackBaseUrl:   callbackBaseUrl ?? null,
+    hasGatewayToken:   !!gatewayToken,   // never return the raw token — use dedicated PATCH to update it
     baseUrl,
     streamUrlTemplate: `${baseUrl}/api/ai/sessions/{sessionId}/stream`,
     openApiUrl: `${baseUrl}/api/openapi.json`,
@@ -239,6 +249,13 @@ router.post('/connection', optionalAuth, (req, res) => {
   const { webhookUrl, callbackBaseUrl, gatewayToken } = req.body as { webhookUrl: string; callbackBaseUrl?: string; gatewayToken?: string };
   if (!webhookUrl?.trim()) {
     res.status(400).json({ error: 'webhookUrl is required' });
+    return;
+  }
+
+  // SSRF protection: validate the webhook URL before persisting it
+  const ssrfCheck = validateWebhookUrl(webhookUrl.trim());
+  if (!ssrfCheck.ok) {
+    res.status(400).json({ error: ssrfCheck.error });
     return;
   }
 
@@ -264,7 +281,7 @@ router.post('/connection', optionalAuth, (req, res) => {
     verified:          false,
     webhookUrl:        webhookUrl.trim(),
     callbackBaseUrl:   savedCallback ?? null,
-    gatewayToken:      savedToken    ?? null,
+    hasGatewayToken:   !!savedToken,
     baseUrl,
     streamUrlTemplate: `${baseUrl}/api/ai/sessions/{sessionId}/stream`,
     openApiUrl:        `${baseUrl}/api/openapi.json`,
@@ -300,9 +317,9 @@ router.patch('/connection', optionalAuth, (req, res) => {
   res.json({
     configured,
     verified,
-    webhookUrl:      webhookUrl    ?? null,
-    callbackBaseUrl: savedCallback ?? null,
-    gatewayToken:    savedToken    ?? null,
+    webhookUrl:        webhookUrl    ?? null,
+    callbackBaseUrl:   savedCallback ?? null,
+    hasGatewayToken:   !!savedToken,
     baseUrl,
     streamUrlTemplate: `${baseUrl}/api/ai/sessions/{sessionId}/stream`,
     openApiUrl:        `${baseUrl}/api/openapi.json`,

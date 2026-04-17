@@ -9,6 +9,7 @@ import { initWebSocketServer } from './websocket/hub.js';
 import { getConnectionManager } from './connections/manager.js';
 import apiRouter from './api/router.js';
 import uiAuthRouter, { uiAuthMiddleware } from './api/ui-auth.js';
+import { csrfMiddleware } from './auth/csrf.js';
 import { startUpdatePoller } from './update/checker.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -48,6 +49,22 @@ async function main() {
   const app = express();
   const server = createServer(app);
 
+  // Security headers — applied to every response
+  app.use((_req, res, next) => {
+    // Prevent MIME-type sniffing
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    // Prevent embedding in iframes (clickjacking)
+    res.setHeader('X-Frame-Options', 'DENY');
+    // Don't send referrer to external origins
+    res.setHeader('Referrer-Policy', 'same-origin');
+    // Minimal CSP: block plugins/objects and restrict base tag hijacking
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'self'; object-src 'none'; base-uri 'self'; img-src 'self' data: https:; connect-src 'self' ws: wss:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline';",
+    );
+    next();
+  });
+
   // Middleware
   app.use(cors({ origin: true, credentials: true }));
   app.use(express.json({ limit: '10mb' }));
@@ -58,6 +75,9 @@ async function main() {
 
   // UI auth gate — returns 401 when login is enabled and user is not authenticated
   app.use(uiAuthMiddleware);
+
+  // CSRF protection — double-submit cookie pattern for UI session requests
+  app.use(csrfMiddleware);
 
   // API routes
   app.use('/api', apiRouter);

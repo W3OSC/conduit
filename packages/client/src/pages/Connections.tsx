@@ -1993,8 +1993,9 @@ function SecurityTab() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [currentPassword, setCurrentPassword] = useState('');
   const [showPw, setShowPw] = useState(false);
-  const [totpSetupData, setTotpSetupData] = useState<{ secret: string; otpauthUrl: string } | null>(null);
+  const [totpSetupData, setTotpSetupData] = useState<{ secret: string; otpauthUrl: string; setupNonce: string } | null>(null);
   const [totpCode, setTotpCode] = useState('');
+  const [disableTotpPassword, setDisableTotpPassword] = useState('');
   const [loginEnabled, setLoginEnabled] = useState(false);
 
   useEffect(() => {
@@ -2013,7 +2014,7 @@ function SecurityTab() {
   });
 
   const verifyTotp = useMutation({
-    mutationFn: () => uiAuth.totpVerify(totpCode),
+    mutationFn: () => uiAuth.totpVerify(totpCode, totpSetupData?.setupNonce ?? ''),
     onSuccess: () => {
       toast({ title: '2FA enabled', variant: 'success' });
       setTotpSetupData(null); setTotpCode('');
@@ -2023,8 +2024,13 @@ function SecurityTab() {
   });
 
   const disableTotp = useMutation({
-    mutationFn: uiAuth.totpDisable,
-    onSuccess: () => { toast({ title: '2FA disabled' }); qc.invalidateQueries({ queryKey: ['ui-auth-config'] }); },
+    mutationFn: () => uiAuth.totpDisable(disableTotpPassword),
+    onSuccess: () => {
+      toast({ title: '2FA disabled' });
+      setDisableTotpPassword('');
+      qc.invalidateQueries({ queryKey: ['ui-auth-config'] });
+    },
+    onError: (e: Error) => toast({ title: 'Failed to disable 2FA', description: e.message, variant: 'destructive' }),
   });
 
   const handleSavePassword = () => {
@@ -2127,8 +2133,25 @@ function SecurityTab() {
             </p>
           </div>
           {authConfig?.totpEnabled ? (
-            <button onClick={() => disableTotp.mutate()} disabled={disableTotp.isPending}
-              className="btn-danger text-xs py-1.5 px-3">Disable</button>
+            <div className="flex flex-col items-end gap-1.5">
+              <div className="flex gap-1.5 items-center">
+                <input
+                  type="password"
+                  value={disableTotpPassword}
+                  onChange={(e) => setDisableTotpPassword(e.target.value)}
+                  placeholder="Confirm password"
+                  className="input-warm text-xs py-1.5 px-2 w-36"
+                />
+                <button
+                  onClick={() => disableTotp.mutate()}
+                  disabled={disableTotp.isPending || !disableTotpPassword}
+                  className="btn-danger text-xs py-1.5 px-3"
+                >
+                  {disableTotp.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Disable'}
+                </button>
+              </div>
+              <p className="text-[10px] text-muted-foreground">Enter your password to confirm</p>
+            </div>
           ) : !totpSetupData ? (
             <button onClick={() => setupTotp.mutate()} disabled={setupTotp.isPending || !authConfig?.hasPassword}
               className="btn-secondary text-xs py-1.5 px-3 gap-1.5">
