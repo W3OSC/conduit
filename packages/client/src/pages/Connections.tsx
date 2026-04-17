@@ -4120,7 +4120,7 @@ def prompt(msg):
 config_path = pathlib.Path.home() / ".openclaw" / "openclaw.json"
 config_path.parent.mkdir(parents=True, exist_ok=True)
 
-default_url = "${window.location.origin}"
+default_url = "http://172.17.0.1:${window.location.port || '3101'}"
 base_url = prompt(f"Conduit base URL [{default_url}]: ").strip() or default_url
 api_key = prompt("API key (from Step 2): ").strip()
 
