@@ -187,6 +187,45 @@ export class NotionSync {
     }
   }
 
+  // ── Direct write operations (bypass outbox, executed immediately) ─────────
+
+  /**
+   * Execute a write action directly against the Notion API, bypassing the
+   * outbox. Returns the raw Notion API response (not a stringified result like
+   * executeAction). Used by the direct write endpoints (PATCH /pages/:id,
+   * POST /pages).
+   */
+  async executeDirectWrite(action: Extract<NotionWriteAction, { action: 'create_page' | 'update_page' }>): Promise<unknown> {
+    const client = this.assertConnected();
+
+    switch (action.action) {
+      case 'create_page': {
+        const parent = action.parentType === 'data_source'
+          ? { database_id: action.parentId }
+          : { page_id: action.parentId };
+        const params: CreatePageParameters = {
+          parent: parent as CreatePageParameters['parent'],
+          properties: action.properties as CreatePageParameters['properties'],
+        };
+        if (action.children) {
+          params.children = action.children as CreatePageParameters['children'];
+        }
+        return client.pages.create(params);
+      }
+
+      case 'update_page': {
+        const params: UpdatePageParameters = {
+          page_id: action.pageId,
+          properties: action.properties as UpdatePageParameters['properties'],
+        };
+        if (action.in_trash !== undefined) {
+          params.in_trash = action.in_trash;
+        }
+        return client.pages.update(params);
+      }
+    }
+  }
+
   // ── Read operations (direct, bypass outbox) ───────────────────────────────
 
   async executeRead(action: NotionReadAction): Promise<unknown> {

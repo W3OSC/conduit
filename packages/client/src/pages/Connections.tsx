@@ -3773,6 +3773,33 @@ function CodeBlock({ children, className }: { children: string; className?: stri
   );
 }
 
+function CodeBlock({ children, className }: { children: string; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    copyTextToClipboard(children).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {});
+  };
+  return (
+    <div className="relative group">
+      <pre className={cn(
+        'text-[11px] font-mono bg-background border border-border rounded-xl p-3 overflow-x-auto text-foreground/80',
+        className,
+      )}>
+        {children}
+      </pre>
+      <button
+        onClick={copy}
+        title="Copy"
+        className="absolute top-2 right-2 btn-ghost px-1.5 py-1 opacity-0 group-hover:opacity-100 transition-opacity"
+      >
+        {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+      </button>
+    </div>
+  );
+}
+
 function StepNumber({ n }: { n: number }) {
   return (
     <div className="flex-shrink-0 w-6 h-6 rounded-full bg-primary/15 border border-primary/25 flex items-center justify-center">
@@ -4170,7 +4197,7 @@ def prompt(msg):
 config_path = pathlib.Path.home() / ".openclaw" / "openclaw.json"
 config_path.parent.mkdir(parents=True, exist_ok=True)
 
-default_url = "http://172.17.0.1:${window.location.port || '3101'}"
+default_url = "${window.location.origin}"
 base_url = prompt(f"Conduit base URL [{default_url}]: ").strip() or default_url
 api_key = prompt("API key (from Step 2): ").strip()
 

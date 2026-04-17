@@ -1,12 +1,17 @@
 /**
- * Notion API router — direct read-only passthrough endpoints.
+ * Notion API router — direct passthrough endpoints.
  *
- * These endpoints execute immediately against the Notion API (no outbox). They
- * are always written to the audit log.
+ * Read endpoints execute immediately against the Notion API (no outbox) and
+ * are gated by the `readEnabled` permission. They are always written to the
+ * audit log.
  *
- * Write operations (create page, update page, append blocks, archive) are NOT
- * served here — they go through POST /api/outbox or POST /api/outbox/batch/multi
- * and are only executed after approval (unless directSendFromUi is enabled).
+ * Direct write endpoints (PATCH /pages/:id, POST /pages) also execute
+ * immediately and are gated by the `sendEnabled` permission. They proxy the
+ * request body straight to the Notion API with no transformation — no outbox,
+ * no approval queue.
+ *
+ * Outbox-based write operations (append blocks, archive, batch approvals) still
+ * go through POST /api/outbox or POST /api/outbox/batch/multi.
  */
 
 import { Router } from 'express';
@@ -15,7 +20,7 @@ import { permissions } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { optionalAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
 import { getConnectionManager } from '../connections/manager.js';
-import type { NotionReadAction } from '../sync/notion.js';
+import type { NotionReadAction, NotionWriteAction } from '../sync/notion.js';
 
 const router = Router();
 
@@ -36,6 +41,17 @@ function checkReadPermission(res: Parameters<Parameters<Router['get']>[1]>[1]): 
   const perm = db.select().from(permissions).where(eq(permissions.service, 'notion')).get();
   if (!perm?.readEnabled) {
     res.status(403).json({ error: 'Notion read access is not enabled' });
+    return false;
+  }
+  return true;
+}
+
+/** Check sendEnabled permission for the notion service. */
+function checkWritePermission(res: Parameters<Parameters<Router['get']>[1]>[1]): boolean {
+  const db = getDb();
+  const perm = db.select().from(permissions).where(eq(permissions.service, 'notion')).get();
+  if (!perm?.sendEnabled) {
+    res.status(403).json({ error: 'Notion write access is not enabled' });
     return false;
   }
   return true;
@@ -228,6 +244,80 @@ router.get('/blocks/:blockId/children', optionalAuth, async (req, res) => {
     };
     const result = await notion.executeRead(action);
     res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ── PATCH /api/notion/pages/:pageId ──────────────────────────────────────────
+//   Update an existing Notion page. Body passes through as-is to Notion PATCH
+//   /v1/pages/:id. Requires sendEnabled permission.
+
+router.patch('/pages/:pageId', optionalAuth, async (req, res) => {
+  const authedReq = req as AuthedRequest;
+  if (!checkWritePermission(res)) return;
+  const notion = getNotion(res);
+  if (!notion) return;
+
+  const { pageId } = req.params as { pageId: string };
+
+  writeAuditLog('notion_write', authedReq.actor, {
+    service: 'notion',
+    apiKeyId: authedReq.apiKey?.id,
+    targetId: pageId,
+    detail: { action: 'update_page' },
+  });
+
+  try {
+    const action: Extract<NotionWriteAction, { action: 'update_page' }> = {
+      action: 'update_page',
+      pageId,
+      properties: (req.body as { properties?: Record<string, unknown> }).properties ?? {},
+      in_trash: (req.body as { in_trash?: boolean }).in_trash,
+    };
+    const result = await notion.executeDirectWrite(action);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ── POST /api/notion/pages ────────────────────────────────────────────────────
+//   Create a new Notion page. Body passes through as-is to Notion POST
+//   /v1/pages. Requires sendEnabled permission.
+
+router.post('/pages', optionalAuth, async (req, res) => {
+  const authedReq = req as AuthedRequest;
+  if (!checkWritePermission(res)) return;
+  const notion = getNotion(res);
+  if (!notion) return;
+
+  const body = req.body as {
+    parent?: { database_id?: string; page_id?: string };
+    properties?: Record<string, unknown>;
+    children?: unknown[];
+  };
+
+  const rawParent = body.parent ?? {};
+  const parentId = rawParent.database_id ?? rawParent.page_id ?? '';
+  const parentType: 'data_source' | 'page' = rawParent.database_id ? 'data_source' : 'page';
+
+  writeAuditLog('notion_write', authedReq.actor, {
+    service: 'notion',
+    apiKeyId: authedReq.apiKey?.id,
+    detail: { action: 'create_page', parentType },
+  });
+
+  try {
+    const action: Extract<NotionWriteAction, { action: 'create_page' }> = {
+      action: 'create_page',
+      parentId,
+      parentType,
+      properties: body.properties ?? {},
+      children: body.children,
+    };
+    const result = await notion.executeDirectWrite(action);
+    res.status(201).json(result);
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   }

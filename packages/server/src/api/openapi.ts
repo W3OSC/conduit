@@ -703,6 +703,44 @@ router.get('/openapi.json', (req, res) => {
         },
       },
 
+      '/contacts/{source}/{platformId}/dm-channel': {
+        get: {
+          operationId: 'getContactDmChannel',
+          summary: 'Look up the DM channel ID for a contact',
+          description: 'Returns the platform-native DM channel ID for a contact on Slack, Discord, or Telegram. Use this to get the channelId needed for POST /outbox when you want to send a DM and only have the contact\'s platformId.',
+          parameters: [
+            {
+              name: 'source', in: 'path', required: true,
+              schema: { type: 'string', enum: ['slack', 'discord', 'telegram'] },
+              description: 'Platform (only slack, discord, and telegram support DM channel lookup)',
+            },
+            {
+              name: 'platformId', in: 'path', required: true,
+              schema: { type: 'string' },
+              description: 'The contact\'s platform-native user ID',
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'DM channel ID for this contact',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      channelId:   { type: 'string', description: 'Use this as recipient_id in POST /outbox' },
+                      channelName: { type: 'string' },
+                    },
+                  },
+                },
+              },
+            },
+            '404': { description: 'No DM channel found for this contact' },
+            '503': { description: 'The platform is not connected' },
+          },
+        },
+      },
+
       // ── Outbox ────────────────────────────────────────────────────────────────
 
       '/outbox': {
@@ -763,6 +801,161 @@ router.get('/openapi.json', (req, res) => {
               description: 'Outbox item created',
               content: { 'application/json': { schema: { $ref: '#/components/schemas/OutboxItem' } } },
             },
+          },
+        },
+      },
+
+      '/outbox/{id}': {
+        get: {
+          operationId: 'getOutboxItem',
+          summary: 'Get a single outbox item by ID',
+          description: 'Returns the current state of a single outbox item. Use this to poll for status changes after creating an item (e.g. check whether a pending message has been approved and sent).',
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'integer' }, description: 'Outbox item ID' },
+          ],
+          responses: {
+            '200': { description: 'Outbox item', content: { 'application/json': { schema: { $ref: '#/components/schemas/OutboxItem' } } } },
+            '404': { description: 'Outbox item not found' },
+          },
+        },
+        patch: {
+          operationId: 'updateOutboxItem',
+          summary: 'Approve, reject, or edit a pending outbox item',
+          description: 'Acts on a pending outbox item. Use action=approve to send the message immediately, action=reject to discard it, or action=edit to change the content before approval (pass the updated text as content).',
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'integer' }, description: 'Outbox item ID' },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['action'],
+                  properties: {
+                    action:  { type: 'string', enum: ['approve', 'reject', 'edit'], description: 'approve → send now; reject → discard; edit → update content (supply new content field)' },
+                    content: { type: 'string', description: 'Updated message text (only used with action=edit)' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': { description: 'Updated outbox item or action result', content: { 'application/json': { schema: { type: 'object' } } } },
+            '400': { description: 'Item is not in a state that allows this action' },
+            '404': { description: 'Outbox item not found' },
+          },
+        },
+        delete: {
+          operationId: 'deleteOutboxItem',
+          summary: 'Delete an outbox item',
+          description: 'Permanently removes an outbox item from the queue. This does not send the message — use PATCH with action=approve to send.',
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'integer' }, description: 'Outbox item ID' },
+          ],
+          responses: {
+            '200': { description: 'Item deleted', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' } } } } } },
+          },
+        },
+      },
+
+      '/outbox/batch': {
+        post: {
+          operationId: 'createOutboxBatch',
+          summary: 'Queue the same message to multiple recipients on the same platform',
+          description: 'Creates one outbox item per recipient, all sharing the same batchId. Useful for sending the same announcement or update to several people at once. All items are pending until approved.',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['source', 'recipient_ids', 'content'],
+                  properties: {
+                    source:        { type: 'string', enum: ['slack', 'discord', 'telegram', 'twitter'], description: 'Platform to send on' },
+                    recipient_ids: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        required: ['id'],
+                        properties: {
+                          id:   { type: 'string', description: 'Platform-native channel or user ID' },
+                          name: { type: 'string', description: 'Human-readable label for the outbox UI' },
+                        },
+                      },
+                    },
+                    content: { type: 'string', description: 'Message text to send to all recipients' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Batch created',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      batchId: { type: 'string', format: 'uuid' },
+                      items:   { type: 'array', items: { $ref: '#/components/schemas/OutboxItem' } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      '/outbox/batch/multi': {
+        post: {
+          operationId: 'createOutboxBatchMulti',
+          summary: 'Queue a heterogeneous batch of messages across multiple platforms',
+          description: 'Creates multiple outbox items across different services and recipients in a single request. All items share a batchId for coordinated review and approval. Each operation is permission-checked independently. Use this to queue related messages that should be reviewed and sent together (e.g. notifying the same person on Slack and sending them an email).',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['operations'],
+                  properties: {
+                    operations: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        required: ['source', 'recipient_id', 'content'],
+                        properties: {
+                          source:         { type: 'string', enum: ['slack', 'discord', 'telegram', 'twitter', 'gmail', 'calendar', 'notion'] },
+                          recipient_id:   { type: 'string', description: 'Platform-native channel, user, or resource ID' },
+                          recipient_name: { type: 'string', description: 'Human-readable label for the outbox UI' },
+                          content:        { type: 'string', description: 'Message text for messaging services; JSON payload string for structured services (gmail, calendar, notion)' },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Batch created — all items pending approval',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      batchId: { type: 'string', format: 'uuid' },
+                      items:   { type: 'array', items: { $ref: '#/components/schemas/OutboxItem' } },
+                    },
+                  },
+                },
+              },
+            },
+            '403': { description: 'Sending is not enabled for one of the specified services' },
           },
         },
       },
@@ -830,6 +1023,22 @@ router.get('/openapi.json', (req, res) => {
                 },
               },
             },
+          },
+        },
+      },
+
+      '/gmail/messages/{id}': {
+        get: {
+          operationId: 'getGmailMessage',
+          summary: 'Get a single Gmail message by ID',
+          description: 'Returns the full metadata for a single Gmail message — sender, recipients, subject, labels, read/starred state, and snippet. Use GET /gmail/messages/{id}/body to fetch the full email body.',
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Gmail message ID (gmailId from list response)' },
+          ],
+          responses: {
+            '200': { description: 'Gmail message metadata', content: { 'application/json': { schema: { type: 'object' } } } },
+            '404': { description: 'Message not found in local database' },
+            '503': { description: 'Gmail not connected' },
           },
         },
       },
@@ -952,7 +1161,78 @@ router.get('/openapi.json', (req, res) => {
         },
       },
 
+      '/gmail/labels': {
+        get: {
+          operationId: 'listGmailLabels',
+          summary: 'List all Gmail labels',
+          description: 'Returns all Gmail labels available on the account, including system labels (INBOX, SENT, TRASH, etc.) and any custom labels. Use label names/IDs with GET /gmail/messages?label= to filter messages.',
+          responses: {
+            '200': {
+              description: 'Gmail labels',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      labels: {
+                        type: 'array',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            id:   { type: 'string', description: 'Label ID (use this with the label query param)' },
+                            name: { type: 'string', description: 'Human-readable label name' },
+                            type: { type: 'string', enum: ['system', 'user'], description: 'System labels are built-in; user labels are custom' },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            '503': { description: 'Gmail not connected' },
+          },
+        },
+      },
+
       // ── Calendar ──────────────────────────────────────────────────────────────
+
+      '/calendar/calendars': {
+        get: {
+          operationId: 'listCalendars',
+          summary: 'List all Google Calendars on the account',
+          description: 'Returns all calendars the user has access to, including their primary calendar and any shared or subscribed calendars. Use the returned calendar IDs with GET /calendar/events?calendarId= to filter events to a specific calendar.',
+          responses: {
+            '200': {
+              description: 'List of calendars',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      calendars: {
+                        type: 'array',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            id:          { type: 'string', description: 'Calendar ID — use "primary" for the user\'s main calendar' },
+                            summary:     { type: 'string', description: 'Calendar display name' },
+                            description: { type: 'string', nullable: true },
+                            primary:     { type: 'boolean', description: 'True for the user\'s main calendar' },
+                            accessRole:  { type: 'string', description: 'Access level: owner, writer, reader, freeBusyReader' },
+                            color:       { type: 'string', nullable: true, description: 'Hex color code used in the UI' },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            '503': { description: 'Calendar not connected' },
+          },
+        },
+      },
 
       '/calendar/events': {
         get: {
@@ -1022,6 +1302,21 @@ router.get('/openapi.json', (req, res) => {
                 },
               },
             },
+          },
+        },
+      },
+
+      '/calendar/events/{id}': {
+        get: {
+          operationId: 'getCalendarEvent',
+          summary: 'Get a single calendar event by ID',
+          description: 'Returns the full details of a specific calendar event including all attendees, RSVP statuses, Google Meet link, description, and recurrence info. Use this when you have an eventId from GET /calendar/events and need the complete event data.',
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Google Calendar event ID (eventId from list response)' },
+          ],
+          responses: {
+            '200': { description: 'Calendar event', content: { 'application/json': { schema: { type: 'object' } } } },
+            '404': { description: 'Event not found in local database' },
           },
         },
       },
@@ -1479,6 +1774,173 @@ router.get('/openapi.json', (req, res) => {
 
       '/twitter/analytics': {
         get: {
+          operationId: 'getTwitterTrends',
+          summary: 'Get current Twitter/X trending topics',
+          description: 'Returns the current list of trending topics on Twitter/X. Results are cached 15 minutes server-side.',
+          responses: {
+            '200': {
+              description: 'List of trending topics',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      trends: {
+                        type: 'array',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            name:       { type: 'string', description: 'Trend name or hashtag' },
+                            tweetCount: { type: 'string', nullable: true, description: 'Approximate tweet volume (e.g. "12.4K")' },
+                            url:        { type: 'string', nullable: true, description: 'Twitter search URL for this trend' },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      '/twitter/tweet/{id}': {
+        get: {
+          operationId: 'getTwitterTweet',
+          summary: 'Get a single tweet by ID',
+          description: 'Fetches a specific tweet by its ID. Results are cached 15 minutes. Returns 404 if the tweet is not found or has been deleted.',
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Tweet ID' },
+          ],
+          responses: {
+            '200': { description: 'Tweet object', content: { 'application/json': { schema: { $ref: '#/components/schemas/Tweet' } } } },
+            '404': { description: 'Tweet not found' },
+          },
+        },
+      },
+
+      '/twitter/tweet/{id}/thread': {
+        get: {
+          operationId: 'getTwitterTweetThread',
+          summary: 'Get a tweet thread (tweet + all replies in the chain)',
+          description: 'Returns the full thread for a given tweet ID — the tweet itself plus all upstream and downstream replies in conversation order.',
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Tweet ID to fetch the thread for' },
+          ],
+          responses: {
+            '200': {
+              description: 'Ordered list of tweets forming the thread',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      tweets: { type: 'array', items: { $ref: '#/components/schemas/Tweet' } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      '/twitter/me': {
+        get: {
+          operationId: 'getTwitterMe',
+          summary: 'Get the authenticated user\'s own Twitter profile',
+          description: 'Returns the full profile of the currently authenticated Twitter/X account. Results are cached 15 minutes.',
+          responses: {
+            '200': { description: 'Authenticated user\'s profile', content: { 'application/json': { schema: { $ref: '#/components/schemas/TwitterProfile' } } } },
+            '503': { description: 'Twitter not connected' },
+          },
+        },
+      },
+
+      '/twitter/user/{handle}': {
+        get: {
+          operationId: 'getTwitterUserProfile',
+          summary: 'Get a Twitter user\'s profile by handle',
+          description: 'Returns the full public profile for any Twitter/X user by their @handle. Results are cached 15 minutes. Returns 404 if the account does not exist or is private.',
+          parameters: [
+            { name: 'handle', in: 'path', required: true, schema: { type: 'string' }, description: 'Twitter @handle without the @ (e.g. "alice")' },
+          ],
+          responses: {
+            '200': { description: 'User profile', content: { 'application/json': { schema: { $ref: '#/components/schemas/TwitterProfile' } } } },
+            '404': { description: 'User not found' },
+          },
+        },
+      },
+
+      '/twitter/user/{handle}/tweets': {
+        get: {
+          operationId: 'getTwitterUserTweets',
+          summary: 'Get recent tweets from a specific user',
+          description: 'Returns the most recent tweets posted by the given @handle. Results are cached 15 minutes.',
+          parameters: [
+            { name: 'handle', in: 'path', required: true, schema: { type: 'string' }, description: 'Twitter @handle without the @' },
+            { name: 'count', in: 'query', schema: { type: 'integer', default: 20 }, description: 'Number of tweets to return' },
+          ],
+          responses: {
+            '200': {
+              description: 'The user\'s recent tweets',
+              content: {
+                'application/json': {
+                  schema: { type: 'object', properties: { tweets: { type: 'array', items: { $ref: '#/components/schemas/Tweet' } } } },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      '/twitter/user/{handle}/followers': {
+        get: {
+          operationId: 'getTwitterUserFollowers',
+          summary: 'Get a user\'s followers',
+          description: 'Returns a list of Twitter/X profiles that follow the given @handle. Results are cached 15 minutes.',
+          parameters: [
+            { name: 'handle', in: 'path', required: true, schema: { type: 'string' }, description: 'Twitter @handle without the @' },
+            { name: 'count', in: 'query', schema: { type: 'integer', default: 50 }, description: 'Number of followers to return' },
+          ],
+          responses: {
+            '200': {
+              description: 'Follower profiles',
+              content: {
+                'application/json': {
+                  schema: { type: 'object', properties: { profiles: { type: 'array', items: { $ref: '#/components/schemas/TwitterProfile' } } } },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      '/twitter/user/{handle}/following': {
+        get: {
+          operationId: 'getTwitterUserFollowing',
+          summary: 'Get accounts a user follows',
+          description: 'Returns a list of Twitter/X profiles that the given @handle is following. Results are cached 15 minutes.',
+          parameters: [
+            { name: 'handle', in: 'path', required: true, schema: { type: 'string' }, description: 'Twitter @handle without the @' },
+            { name: 'count', in: 'query', schema: { type: 'integer', default: 50 }, description: 'Number of following accounts to return' },
+          ],
+          responses: {
+            '200': {
+              description: 'Following profiles',
+              content: {
+                'application/json': {
+                  schema: { type: 'object', properties: { profiles: { type: 'array', items: { $ref: '#/components/schemas/TwitterProfile' } } } },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      '/twitter/analytics': {
+        get: {
           operationId: 'getTwitterAnalytics',
           summary: 'Get tweet performance analytics for the authenticated user',
           description: 'Returns engagement metrics (likes, retweets, replies) for the user\'s recent tweets, aggregated by day and sorted by performance. Includes summary statistics (totals, averages, best tweet). Cached for 15 minutes.',
@@ -1539,6 +2001,461 @@ router.get('/openapi.json', (req, res) => {
                 },
               },
             },
+          },
+        },
+      },
+
+      // ── Notion ────────────────────────────────────────────────────────────────
+
+      '/notion/pages': {
+        post: {
+          operationId: 'createNotionPage',
+          summary: 'Create a new Notion page',
+          description: 'Creates a new Notion page by proxying the request body directly to the Notion POST /v1/pages API. The body is passed through as-is — supply a Notion-compatible parent, properties, and optional children blocks. Requires sendEnabled permission for the notion service.',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['parent', 'properties'],
+                  properties: {
+                    parent: {
+                      type: 'object',
+                      description: 'Parent container — either a database or a page',
+                      properties: {
+                        database_id: { type: 'string', description: 'ID of the parent database (use this to create a database row)' },
+                        page_id:     { type: 'string', description: 'ID of the parent page (use this to create a sub-page)' },
+                      },
+                    },
+                    properties: { type: 'object', description: 'Page properties matching the parent database schema (or { title } for a plain page)' },
+                    children:   { type: 'array', items: { type: 'object' }, description: 'Optional array of block objects to add as page content' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '201': { description: 'Created Notion page object (raw Notion API response)', content: { 'application/json': { schema: { type: 'object' } } } },
+            '403': { description: 'Notion write access is not enabled' },
+            '503': { description: 'Notion not connected' },
+          },
+        },
+      },
+
+      '/notion/pages/{pageId}': {
+        get: {
+          operationId: 'getNotionPage',
+          summary: 'Retrieve a Notion page by ID',
+          description: 'Fetches a Notion page object by its page ID using the Notion API. Returns the page metadata and properties. Use GET /notion/blocks/{blockId}/children to get the page content. Requires readEnabled permission for the notion service.',
+          parameters: [
+            { name: 'pageId', in: 'path', required: true, schema: { type: 'string' }, description: 'Notion page ID (UUID format, dashes optional)' },
+          ],
+          responses: {
+            '200': { description: 'Notion page object (raw Notion API response)', content: { 'application/json': { schema: { type: 'object' } } } },
+            '403': { description: 'Notion read access is not enabled' },
+            '503': { description: 'Notion not connected' },
+          },
+        },
+        patch: {
+          operationId: 'updateNotionPage',
+          summary: 'Update an existing Notion page',
+          description: 'Updates a Notion page by proxying the request body directly to the Notion PATCH /v1/pages/:id API. The body is passed through as-is — supply properties to update and optionally in_trash to archive the page. Requires sendEnabled permission for the notion service.',
+          parameters: [
+            { name: 'pageId', in: 'path', required: true, schema: { type: 'string' }, description: 'Notion page ID (UUID format, dashes optional)' },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    properties: { type: 'object', description: 'Page properties to update (only include fields you want to change)' },
+                    in_trash:   { type: 'boolean', description: 'Set to true to move the page to trash (archive it)' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': { description: 'Updated Notion page object (raw Notion API response)', content: { 'application/json': { schema: { type: 'object' } } } },
+            '403': { description: 'Notion write access is not enabled' },
+            '503': { description: 'Notion not connected' },
+          },
+        },
+      },
+
+      '/notion/databases': {
+        get: {
+          operationId: 'listNotionDatabases',
+          summary: 'List all Notion databases accessible to the integration',
+          description: 'Returns all Notion databases that have been shared with the Conduit integration token. Use the returned database IDs with POST /notion/databases/{databaseId}/query to read rows. Requires readEnabled permission.',
+          responses: {
+            '200': { description: 'List of accessible Notion databases (raw Notion API response)', content: { 'application/json': { schema: { type: 'object' } } } },
+            '403': { description: 'Notion read access is not enabled' },
+            '503': { description: 'Notion not connected' },
+          },
+        },
+      },
+
+      '/notion/databases/{databaseId}/query': {
+        post: {
+          operationId: 'queryNotionDatabase',
+          summary: 'Query a Notion database',
+          description: 'Queries a Notion database and returns matching pages (rows). Supports Notion filter and sort syntax. Use this to read structured data from Notion databases (e.g. task lists, CRMs, project trackers). Requires readEnabled permission.',
+          parameters: [
+            { name: 'databaseId', in: 'path', required: true, schema: { type: 'string' }, description: 'Notion database ID' },
+          ],
+          requestBody: {
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    filter:       { type: 'object', description: 'Notion filter object (see Notion API docs)' },
+                    sorts:        { type: 'array', items: { type: 'object' }, description: 'Notion sort objects' },
+                    page_size:    { type: 'integer', description: 'Max results per page (max 100)', default: 100 },
+                    start_cursor: { type: 'string', description: 'Pagination cursor from a previous response' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': { description: 'Database query results (raw Notion API response with results array and pagination)', content: { 'application/json': { schema: { type: 'object' } } } },
+            '403': { description: 'Notion read access is not enabled' },
+            '503': { description: 'Notion not connected' },
+          },
+        },
+      },
+
+      '/notion/search': {
+        post: {
+          operationId: 'searchNotion',
+          summary: 'Search the Notion workspace',
+          description: 'Searches across all pages and databases in the Notion workspace that are accessible to the integration. Use this to find a page by title when you don\'t know its ID. Requires readEnabled permission.',
+          requestBody: {
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    query:        { type: 'string', description: 'Text to search for in page/database titles' },
+                    filter: {
+                      type: 'object',
+                      description: 'Restrict to object type',
+                      properties: {
+                        value: { type: 'string', enum: ['page', 'database'] },
+                        property: { type: 'string', enum: ['object'] },
+                      },
+                    },
+                    sort: {
+                      type: 'object',
+                      description: 'Sort order for results',
+                      properties: {
+                        direction:  { type: 'string', enum: ['ascending', 'descending'] },
+                        timestamp:  { type: 'string', enum: ['last_edited_time'] },
+                      },
+                    },
+                    page_size:    { type: 'integer', default: 100 },
+                    start_cursor: { type: 'string', description: 'Pagination cursor' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': { description: 'Search results (raw Notion API response)', content: { 'application/json': { schema: { type: 'object' } } } },
+            '403': { description: 'Notion read access is not enabled' },
+            '503': { description: 'Notion not connected' },
+          },
+        },
+      },
+
+      '/notion/blocks/{blockId}': {
+        get: {
+          operationId: 'getNotionBlock',
+          summary: 'Retrieve a single Notion block',
+          description: 'Fetches a specific Notion block by its ID. Blocks are the building blocks of Notion pages (paragraphs, headings, lists, etc.). Use GET /notion/blocks/{blockId}/children to fetch a page\'s content. Requires readEnabled permission.',
+          parameters: [
+            { name: 'blockId', in: 'path', required: true, schema: { type: 'string' }, description: 'Notion block ID (same as page ID for page-level blocks)' },
+          ],
+          responses: {
+            '200': { description: 'Block object (raw Notion API response)', content: { 'application/json': { schema: { type: 'object' } } } },
+            '403': { description: 'Notion read access is not enabled' },
+            '503': { description: 'Notion not connected' },
+          },
+        },
+      },
+
+      '/notion/blocks/{blockId}/children': {
+        get: {
+          operationId: 'getNotionBlockChildren',
+          summary: 'Get the children of a Notion block (page content)',
+          description: 'Retrieves the child blocks of a given block ID. For a page, pass the page ID as blockId to get all content blocks. This is the primary way to read the body of a Notion page. Supports pagination. Requires readEnabled permission.',
+          parameters: [
+            { name: 'blockId', in: 'path', required: true, schema: { type: 'string' }, description: 'Block ID whose children to retrieve (use page ID to get page content)' },
+            { name: 'page_size', in: 'query', schema: { type: 'integer', default: 100 }, description: 'Max children to return (max 100)' },
+            { name: 'start_cursor', in: 'query', schema: { type: 'string' }, description: 'Pagination cursor from a previous response' },
+          ],
+          responses: {
+            '200': { description: 'Child block list (raw Notion API response with results and pagination)', content: { 'application/json': { schema: { type: 'object' } } } },
+            '403': { description: 'Notion read access is not enabled' },
+            '503': { description: 'Notion not connected' },
+          },
+        },
+      },
+
+      // ── Obsidian ──────────────────────────────────────────────────────────────
+
+      '/obsidian/config': {
+        get: {
+          operationId: 'getObsidianConfig',
+          summary: 'Get Obsidian vault configuration',
+          description: 'Returns the current vault configuration (secrets like tokens and private keys are excluded). Check `configured: true` before calling file or sync endpoints.',
+          responses: {
+            '200': {
+              description: 'Vault configuration or not-configured state',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      configured: { type: 'boolean', description: 'Whether a vault has been configured' },
+                      vault: { $ref: '#/components/schemas/ObsidianVaultConfig', nullable: true },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        post: {
+          operationId: 'setObsidianConfig',
+          summary: 'Create or update Obsidian vault configuration',
+          description: 'Saves vault connection details (remote URL, auth credentials, branch). After saving, call POST /obsidian/config/test to verify access, then POST /obsidian/config/clone to clone the repository. For SSH auth, first call POST /obsidian/config/generate-ssh-key to get a deploy key.',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['name', 'remote_url'],
+                  properties: {
+                    name:            { type: 'string', description: 'Friendly name for the vault (used as directory name; alphanumeric and hyphens only)' },
+                    remote_url:      { type: 'string', description: 'Git remote URL — HTTPS (e.g. https://github.com/user/vault.git) or SSH (git@github.com:user/vault.git)' },
+                    auth_type:       { type: 'string', enum: ['https', 'ssh'], default: 'https', description: 'Authentication method. Use https with a personal access token, or ssh with a generated deploy key.' },
+                    https_token:     { type: 'string', description: 'Personal access token for HTTPS auth (stored encrypted, not returned on GET)' },
+                    ssh_private_key: { type: 'string', description: 'SSH private key for SSH auth. Omit to use a previously generated key.' },
+                    branch:          { type: 'string', default: 'main', description: 'Git branch to track' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Saved vault configuration (secrets excluded)',
+              content: { 'application/json': { schema: { type: 'object', properties: { configured: { type: 'boolean' }, vault: { $ref: '#/components/schemas/ObsidianVaultConfig' } } } } },
+            },
+          },
+        },
+        delete: {
+          operationId: 'deleteObsidianConfig',
+          summary: 'Remove Obsidian vault configuration',
+          description: 'Deletes the vault configuration and disconnects the sync. Optionally deletes the local git clone from disk.',
+          requestBody: {
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    delete_local: { type: 'boolean', default: false, description: 'If true, deletes the local git clone from the server disk' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': { description: 'Config deleted', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' } } } } } },
+            '404': { description: 'No vault configured' },
+          },
+        },
+      },
+
+      '/obsidian/config/test': {
+        post: {
+          operationId: 'testObsidianConnection',
+          summary: 'Test vault git remote access without cloning',
+          description: 'Runs `git ls-remote` against the configured remote to verify credentials are valid. Use this after saving config and before triggering a clone.',
+          responses: {
+            '200': {
+              description: 'Connection test result',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      success: { type: 'boolean' },
+                      error:   { type: 'string', nullable: true, description: 'Error message if test failed' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      '/obsidian/config/generate-ssh-key': {
+        post: {
+          operationId: 'generateObsidianSshKey',
+          summary: 'Generate an SSH key pair for vault access',
+          description: 'Generates a new ed25519 SSH key pair and stores it in the vault config. Returns the public key — add this as a deploy key in your git hosting provider (GitHub, GitLab, etc.) before cloning with SSH auth.',
+          responses: {
+            '200': {
+              description: 'Generated SSH public key and fingerprint',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      publicKey:   { type: 'string', description: 'SSH public key to add as a deploy key in your git host' },
+                      fingerprint: { type: 'string', description: 'SHA256 fingerprint of the public key' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      '/obsidian/config/ssh-key': {
+        get: {
+          operationId: 'getObsidianSshKey',
+          summary: 'Get the current SSH public key',
+          description: 'Returns the SSH public key that was previously generated. Add this as a read-only deploy key in your git repository to enable SSH cloning.',
+          responses: {
+            '200': {
+              description: 'SSH public key',
+              content: { 'application/json': { schema: { type: 'object', properties: { publicKey: { type: 'string' } } } } },
+            },
+            '404': { description: 'No SSH key generated yet — call POST /obsidian/config/generate-ssh-key first' },
+          },
+        },
+      },
+
+      '/obsidian/config/clone': {
+        post: {
+          operationId: 'cloneObsidianVault',
+          summary: 'Clone the vault git repository',
+          description: 'Triggers an initial `git clone` of the configured remote repository into the server\'s local data directory. This is a one-time setup step — run it after saving config and verifying the connection. The clone runs asynchronously; monitor progress via GET /obsidian/sync/status.',
+          responses: {
+            '200': {
+              description: 'Clone started (runs asynchronously)',
+              content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, message: { type: 'string' } } } } },
+            },
+          },
+        },
+      },
+
+      '/obsidian/sync/status': {
+        get: {
+          operationId: 'getObsidianSyncStatus',
+          summary: 'Get the current vault sync status',
+          description: 'Returns the vault\'s current synchronisation state including last sync time, latest commit hash, and any error. Poll this to track clone and sync progress.',
+          responses: {
+            '200': {
+              description: 'Sync status',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      configured:     { type: 'boolean' },
+                      syncStatus:     { type: 'string', enum: ['idle', 'syncing', 'error'], nullable: true },
+                      lastSyncedAt:   { type: 'string', format: 'date-time', nullable: true },
+                      lastCommitHash: { type: 'string', nullable: true },
+                      error:          { type: 'string', nullable: true },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      '/obsidian/sync': {
+        post: {
+          operationId: 'syncObsidianVault',
+          summary: 'Trigger a manual vault sync (git fetch + pull)',
+          description: 'Runs `git fetch` followed by `git pull --ff-only` to pull the latest changes from the remote. The sync runs asynchronously — monitor progress via GET /obsidian/sync/status. The vault also auto-syncs every 5 minutes.',
+          responses: {
+            '200': {
+              description: 'Sync started (runs asynchronously)',
+              content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, message: { type: 'string' } } } } },
+            },
+            '400': { description: 'No vault configured or vault not cloned yet' },
+          },
+        },
+      },
+
+      '/obsidian/files': {
+        get: {
+          operationId: 'listObsidianFiles',
+          summary: 'List all files in the vault',
+          description: 'Returns the full file tree of the Obsidian vault as a recursive directory structure. Use the `path` field from any entry with GET /obsidian/files/{path} to read file contents. Hidden directories (.git, .obsidian, .trash) are excluded.',
+          responses: {
+            '200': {
+              description: 'Vault file tree',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      files: { type: 'array', items: { $ref: '#/components/schemas/ObsidianFileEntry' } },
+                    },
+                  },
+                },
+              },
+            },
+            '503': { description: 'Vault not connected (clone it first)' },
+          },
+        },
+      },
+
+      '/obsidian/files/{path}': {
+        get: {
+          operationId: 'readObsidianFile',
+          summary: 'Read a file from the vault',
+          description: 'Returns the raw text content of a file in the vault by its relative path. The vault is auto-synced before reading if the last sync was more than 4 minutes ago. Use GET /obsidian/files to list available paths.',
+          parameters: [
+            {
+              name: 'path', in: 'path', required: true,
+              schema: { type: 'string' },
+              description: 'Relative path from the vault root (e.g. "Daily Notes/2026-04-13.md"). URL-encode any special characters.',
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'File contents',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      path:    { type: 'string', description: 'Relative path that was read' },
+                      content: { type: 'string', description: 'Raw file content (UTF-8 text)' },
+                    },
+                  },
+                },
+              },
+            },
+            '404': { description: 'File not found in vault' },
+            '503': { description: 'Vault not connected' },
           },
         },
       },
