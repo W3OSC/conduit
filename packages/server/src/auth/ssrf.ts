@@ -6,10 +6,10 @@
  * could reach internal network services.
  *
  * Policy (configurable in Settings → Security):
- *  - `security.blockPrivateIpSsrf` (default: true)
+ *  - `security.blockPrivateIpSsrf` (default: false)
  *    Block URLs that resolve to known private/loopback IP ranges.
  *    Non-IP hostnames (e.g. Docker service names like "openclaw") are allowed
- *    by default since they're common in legitimate local setups.
+ *    since they're common in legitimate local setups.
  *
  * Note: This provides defence-in-depth, not a complete SSRF firewall — DNS
  * rebinding attacks are not mitigated here. For full protection, run Conduit
@@ -71,8 +71,8 @@ function getSetting(key: string): string | null {
 
 function isBlockPrivateIpEnabled(): boolean {
   const val = getSetting('security.blockPrivateIpSsrf');
-  if (val === null) return true; // default: on
-  try { return JSON.parse(val) !== false; } catch { return true; }
+  if (val === null) return false; // default: off
+  try { return JSON.parse(val) !== false; } catch { return false; }
 }
 
 // ── Validation ────────────────────────────────────────────────────────────────
