@@ -513,6 +513,20 @@ router.post('/rebuild', optionalAuth, async (req, res) => {
           total++;
         }
       }
+
+      // Also sync the following list as native contacts (with profile pictures)
+      if (criteria.nativeContacts || criteria.enabled) {
+        const manager = getConnectionManager();
+        const twitter = manager.getTwitter();
+        if (twitter) {
+          try {
+            const followingCount = await twitter.syncFollowingContacts();
+            total += followingCount;
+          } catch (e) {
+            console.error('[contacts] Twitter following sync failed during rebuild:', e);
+          }
+        }
+      }
     }
 
     if (src === 'gmail') {

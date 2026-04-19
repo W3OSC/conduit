@@ -989,6 +989,7 @@ export interface TwitterDm {
   senderId: string;
   senderHandle: string | null;
   senderName: string | null;
+  senderAvatarUrl?: string | null;
   recipientId: string | null;
   text: string | null;
   createdAt: string;
@@ -1001,6 +1002,9 @@ export interface TwitterConversation {
   participantIds: string[];
   lastMessage: TwitterDm;
   messageCount: number;
+  otherHandle: string;
+  otherName: string;
+  otherAvatarUrl: string | null;
 }
 
 // ─── Twitter Analytics ────────────────────────────────────────────────────────

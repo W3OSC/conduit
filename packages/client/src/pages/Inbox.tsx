@@ -61,10 +61,10 @@ function CardHeader({
   const hasCount = count != null && count > 0;
 
   return (
-    <div className="flex items-center gap-2 h-8 flex-shrink-0 mb-3">
-      <div className="flex items-center gap-2 flex-1 min-w-0">
+    <div className="flex items-center gap-2 h-8 flex-shrink-0 mb-3 overflow-hidden">
+      <div className="flex items-center gap-2 flex-1 min-w-0 overflow-hidden">
         <Icon className={cn('w-4 h-4 flex-shrink-0', iconClass ?? 'text-muted-foreground')} />
-        <h2 className="text-sm font-semibold leading-none">{title}</h2>
+        <h2 className="text-sm font-semibold leading-none truncate">{title}</h2>
         {/* Always render badge to reserve space; invisible when empty */}
         <span
           className={cn(
@@ -134,10 +134,12 @@ function ChatRow({
     <button
       onClick={onOpen}
       className={cn(
-        'w-full flex items-center gap-2.5 px-2 py-2 rounded-xl text-left transition-colors',
+        'w-full flex items-center gap-2.5 py-2 rounded-xl text-left transition-colors',
         'hover:bg-white/[0.04] group',
-        !muted && entry.count > 0 && 'border-l-2 border-primary/50',
-        muted && 'pl-2.5',
+        // Always reserve the border-l-2 space (2px) to prevent layout shift.
+        // Use border-transparent for non-unread rows so the column width is stable.
+        'border-l-2',
+        !muted && entry.count > 0 ? 'border-primary/50 pl-1.5 pr-2' : 'border-transparent px-2',
       )}
     >
       {/* Avatar */}
@@ -199,15 +201,19 @@ function ChatRow({
 
 function MessagesSkeleton() {
   return (
-    <div className="space-y-1">
+    <div className="space-y-1 overflow-hidden">
       {Array.from({ length: 5 }).map((_, i) => (
-        <div key={i} className="flex items-center gap-2.5 px-2 py-2">
+        /* border-l-2 border-transparent mirrors ChatRow's always-reserved border column */
+        <div key={i} className="flex items-center gap-2.5 border-l-2 border-transparent px-2 py-2">
           <Skeleton className="w-7 h-7 rounded-full flex-shrink-0" />
-          <div className="flex-1 space-y-1.5">
+          <div className="flex-1 min-w-0 space-y-1.5 overflow-hidden">
             <Skeleton className="h-2.5 w-3/5" />
             <Skeleton className="h-2 w-2/5" />
           </div>
-          <Skeleton className="w-4 h-4 rounded-full flex-shrink-0" />
+          {/* Fixed-width badge placeholder matches ChatRow's w-5 badge wrapper */}
+          <div className="w-5 flex-shrink-0 flex justify-end">
+            <Skeleton className="w-4 h-4 rounded-full" />
+          </div>
         </div>
       ))}
     </div>
@@ -292,7 +298,7 @@ function InboxMessagesSection() {
   };
 
   return (
-    <motion.div {...fade(0)} className="card-warm p-4 h-full flex flex-col min-h-0">
+    <motion.div {...fade(0)} className="card-warm p-4 h-full flex flex-col min-h-0 overflow-hidden">
       <CardHeader
         icon={MessageSquare}
         title="Messages"
@@ -303,7 +309,7 @@ function InboxMessagesSection() {
       />
 
       {/* Scrollable body */}
-      <div className="flex-1 overflow-y-auto min-h-0 -mx-1 px-1">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 -mx-1 px-1">
         {isLoading ? (
           <MessagesSkeleton />
         ) : !hasContent ? (
@@ -363,11 +369,11 @@ function InboxMessagesSection() {
 
 function EmailSkeleton() {
   return (
-    <div className="space-y-px">
+    <div className="space-y-px overflow-hidden">
       {Array.from({ length: 4 }).map((_, i) => (
         <div key={i} className="flex items-start gap-2.5 py-2.5 px-1">
           <Skeleton className="w-3.5 h-3.5 rounded flex-shrink-0 mt-0.5" />
-          <div className="flex-1 space-y-1.5">
+          <div className="flex-1 min-w-0 space-y-1.5 overflow-hidden">
             <div className="flex justify-between gap-2">
               <Skeleton className="h-2.5 w-2/5" />
               <Skeleton className="h-2 w-10 flex-shrink-0" />
@@ -397,7 +403,7 @@ function InboxEmailSection() {
   const unreadCount = data?.total ?? 0;
 
   return (
-    <motion.div {...fade(0.05)} className="card-warm p-4 h-full flex flex-col min-h-0">
+    <motion.div {...fade(0.05)} className="card-warm p-4 h-full flex flex-col min-h-0 overflow-hidden">
       <CardHeader
         icon={Mail}
         title="Email"
@@ -407,7 +413,7 @@ function InboxEmailSection() {
         linkTo={gmailConnected ? '/email' : undefined}
       />
 
-      <div className="flex-1 overflow-y-auto min-h-0">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0">
         {!gmailConnected ? (
           <NotConnected service="gmail" label="Gmail" />
         ) : isLoading ? (
@@ -496,14 +502,15 @@ function isSoon(event: CalendarEvent) {
 
 function CalendarSkeleton() {
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-0.5 overflow-hidden">
       {Array.from({ length: 3 }).map((_, i) => (
-        <div key={i} className="flex items-center gap-3 px-3 py-2.5">
-          <div className="flex-shrink-0 space-y-1 text-center w-8">
-            <Skeleton className="h-2 w-6 mx-auto" />
+        /* Mirrors the real event row: gap-3 px-3 py-2, w-8 date col, flex-1 min-w-0 content col */
+        <div key={i} className="flex items-start gap-3 px-3 py-2">
+          <div className="flex-shrink-0 w-8 space-y-1 text-center">
+            <Skeleton className="h-2 w-5 mx-auto" />
             <Skeleton className="h-3.5 w-5 mx-auto" />
           </div>
-          <div className="flex-1 space-y-1.5">
+          <div className="flex-1 min-w-0 space-y-1.5 overflow-hidden">
             <Skeleton className="h-2.5 w-3/4" />
             <Skeleton className="h-2 w-2/5" />
           </div>
@@ -548,7 +555,7 @@ function InboxCalendarSection() {
     .slice(0, 8);
 
   return (
-    <motion.div {...fade(0.08)} className="card-warm p-4 h-full flex flex-col min-h-0">
+    <motion.div {...fade(0.08)} className="card-warm p-4 h-full flex flex-col min-h-0 overflow-hidden">
       <CardHeader
         icon={CalendarDays}
         title="Calendar"
@@ -619,7 +626,7 @@ function InboxCalendarSection() {
           </div>
 
           {/* Upcoming events — scrollable */}
-          <div className="flex-1 overflow-y-auto min-h-0">
+          <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0">
             {isLoading ? (
               <CalendarSkeleton />
             ) : upcoming.length === 0 ? (
@@ -736,11 +743,11 @@ function TweetMicroRow({ tweet, onOpen }: { tweet: Tweet; onOpen: () => void }) 
 
 function TwitterColumnSkeleton() {
   return (
-    <div className="space-y-0.5">
+    <div className="space-y-0.5 overflow-hidden">
       {Array.from({ length: 3 }).map((_, i) => (
         <div key={i} className="flex items-start gap-2 py-2 px-2">
           <Skeleton className="w-6 h-6 rounded-full flex-shrink-0 mt-0.5" />
-          <div className="flex-1 space-y-1.5">
+          <div className="flex-1 min-w-0 space-y-1.5 overflow-hidden">
             <div className="flex gap-2">
               <Skeleton className="h-2.5 w-1/3" />
               <Skeleton className="h-2 w-1/4" />
@@ -780,7 +787,7 @@ function InboxTwitterSection() {
   const feed      = feedData?.tweets ?? [];
 
   return (
-    <motion.div {...fade(0.12)} className="card-warm p-4 h-full flex flex-col min-h-0">
+    <motion.div {...fade(0.12)} className="card-warm p-4 h-full flex flex-col min-h-0 overflow-hidden">
       <CardHeader
         icon={Twitter}
         title="Twitter / X"
@@ -798,14 +805,14 @@ function InboxTwitterSection() {
         <div className="flex-1 flex gap-0 min-h-0 overflow-hidden">
 
           {/* ── Mentions column ── */}
-          <div className="flex-1 flex flex-col min-w-0 min-h-0">
+          <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
             <div className="flex items-center gap-1.5 mb-2 px-2 flex-shrink-0">
               <AtSign className="w-3 h-3 text-sky-400" />
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
                 Mentions
               </span>
             </div>
-            <div className="flex-1 overflow-y-auto min-h-0">
+            <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0">
               {isLoading ? (
                 <TwitterColumnSkeleton />
               ) : mentions.length === 0 ? (
@@ -831,14 +838,14 @@ function InboxTwitterSection() {
           <div className="w-px bg-border/30 flex-shrink-0 mx-1" />
 
           {/* ── Latest feed column ── */}
-          <div className="flex-1 flex flex-col min-w-0 min-h-0">
+          <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
             <div className="flex items-center gap-1.5 mb-2 px-2 flex-shrink-0">
               <Twitter className="w-3 h-3 text-sky-400" />
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
                 Latest
               </span>
             </div>
-            <div className="flex-1 overflow-y-auto min-h-0">
+            <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0">
               {isLoading ? (
                 <TwitterColumnSkeleton />
               ) : feed.length === 0 ? (
@@ -870,7 +877,7 @@ function InboxTwitterSection() {
 export default function Inbox() {
   return (
     <div
-      className="grid gap-3 p-3 h-full"
+      className="grid gap-3 p-3 h-full min-h-0"
       style={{
         gridTemplateColumns: '1fr 1fr',
         gridTemplateRows: '45fr 30fr 25fr',
@@ -881,19 +888,21 @@ export default function Inbox() {
         `,
       }}
     >
-      <div style={{ gridArea: 'messages' }} className="min-h-0 flex flex-col">
+      {/* Each grid area wrapper uses overflow-hidden + min-h-0 so content loading
+          inside a card can never inflate the grid track height/width */}
+      <div style={{ gridArea: 'messages' }} className="min-h-0 min-w-0 overflow-hidden flex flex-col">
         <InboxMessagesSection />
       </div>
 
-      <div style={{ gridArea: 'email' }} className="min-h-0 flex flex-col">
+      <div style={{ gridArea: 'email' }} className="min-h-0 min-w-0 overflow-hidden flex flex-col">
         <InboxEmailSection />
       </div>
 
-      <div style={{ gridArea: 'calendar' }} className="min-h-0 flex flex-col">
+      <div style={{ gridArea: 'calendar' }} className="min-h-0 min-w-0 overflow-hidden flex flex-col">
         <InboxCalendarSection />
       </div>
 
-      <div style={{ gridArea: 'twitter' }} className="min-h-0 flex flex-col">
+      <div style={{ gridArea: 'twitter' }} className="min-h-0 min-w-0 overflow-hidden flex flex-col">
         <InboxTwitterSection />
       </div>
     </div>

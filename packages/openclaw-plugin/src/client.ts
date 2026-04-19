@@ -100,6 +100,31 @@ export async function streamReplyToConduit(
 }
 
 /**
+ * POST an error signal to Conduit's session stream endpoint so Conduit can
+ * surface it in the UI immediately rather than waiting for a timeout.
+ * Best-effort: errors here are silently swallowed.
+ */
+export async function postStreamError(
+  streamUrl: string,
+  apiKey: string,
+  error: string,
+): Promise<void> {
+  try {
+    await fetch(streamUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': apiKey,
+      },
+      body: JSON.stringify({ error }),
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    // Silently ignore — this is best-effort diagnostic reporting.
+  }
+}
+
+/**
  * Verify that Conduit is reachable and the API key is valid.
  * Returns `{ ok: true }` on success, `{ ok: false, error }` on failure.
  */

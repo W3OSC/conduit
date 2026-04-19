@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { getDb } from '../db/client.js';
 import {
   telegramMessages, discordMessages, slackMessages, twitterDms, gmailMessages,
-  syncState, syncRuns, errorLog, contacts, accounts,
+  syncState, syncRuns, errorLog, contacts, accounts, settings,
 } from '../db/schema.js';
 import { eq, and, desc, like, gte, lte, sql, isNull } from 'drizzle-orm';
 import { optionalAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
@@ -30,6 +30,21 @@ function buildContactCache(db: ReturnType<typeof getDb>, source: string): {
   const myAccounts = db.select({ accountId: accounts.accountId })
     .from(accounts).where(eq(accounts.source, source)).all();
   const myAccountIds = new Set(myAccounts.map((a) => a.accountId));
+
+  // For Twitter, also seed from the stored credentials (userId field) since the
+  // accounts table may be empty when only cookie-based auth is used.
+  if (source === 'twitter') {
+    try {
+      const credRow = db.select({ value: settings.value })
+        .from(settings).where(eq(settings.key, 'credentials.twitter')).get();
+      if (credRow?.value) {
+        const creds = JSON.parse(credRow.value) as { userId?: string };
+        if (creds.userId) myAccountIds.add(String(creds.userId));
+      }
+    } catch {
+      // ignore malformed credentials
+    }
+  }
 
   return { contacts: contactMap, myAccountIds };
 }
@@ -303,25 +318,43 @@ router.get('/chats', optionalAuth, async (req, res) => {
       const isDm = ch.channelId.startsWith('D') || ch.channelId.startsWith('G');
 
       if (isDm) {
-        // Try to find a contact whose userId matches a message sender in this channel
+        // Try to find contacts whose userId matches message senders in this channel
+        const isGroupDm = ch.channelId.startsWith('G');
         const senderRow = db.selectDistinct({ userId: slackMessages.userId })
           .from(slackMessages)
           .where(and(eq(slackMessages.channelId, ch.channelId)))
-          .limit(5).all();
+          .limit(isGroupDm ? 20 : 5).all();
 
-        let resolved = false;
-        for (const row of senderRow) {
-          if (!row.userId) continue;
-          const contact = slackCache.contacts.get(row.userId);
-          if (contact?.displayName && !slackCache.myAccountIds.has(row.userId)) {
-            entry.name = contact.displayName;
-            entry.avatarUrl = contact.avatarUrl;
-            resolved = true;
-            break;
+        if (isGroupDm) {
+          // For MPDM channels, collect all non-self participant names
+          const participantNames: string[] = [];
+          for (const row of senderRow) {
+            if (!row.userId || slackCache.myAccountIds.has(row.userId)) continue;
+            const contact = slackCache.contacts.get(row.userId);
+            if (contact?.displayName) {
+              participantNames.push(contact.displayName);
+            }
           }
+          if (participantNames.length > 0) {
+            entry.name = participantNames.join(', ');
+          } else {
+            entry.name = ch.channelName || ch.channelId;
+          }
+        } else {
+          // For 1:1 DMs, use the single other participant's name and avatar
+          let resolved = false;
+          for (const row of senderRow) {
+            if (!row.userId) continue;
+            const contact = slackCache.contacts.get(row.userId);
+            if (contact?.displayName && !slackCache.myAccountIds.has(row.userId)) {
+              entry.name = contact.displayName;
+              entry.avatarUrl = contact.avatarUrl;
+              resolved = true;
+              break;
+            }
+          }
+          if (!resolved) entry.name = ch.channelName || ch.channelId;
         }
-        // If we have multiple participants (group DM), keep the channel name
-        if (!resolved) entry.name = ch.channelName || ch.channelId;
         dmChats.push(entry);
       } else {
         channelChats.push(entry);
@@ -480,17 +513,33 @@ router.get('/chats', optionalAuth, async (req, res) => {
     const twConvs = db.selectDistinct({ conversationId: twitterDms.conversationId }).from(twitterDms).all();
     if (twConvs.length) {
       const dmChats: ChatEntry[] = twConvs.map((c) => {
-        const lastMsg = db.select().from(twitterDms)
+        const allMsgs = db.select().from(twitterDms)
           .where(eq(twitterDms.conversationId, c.conversationId))
-          .orderBy(desc(twitterDms.createdAt)).limit(1).get();
-        const otherId = lastMsg?.senderId;
+          .orderBy(desc(twitterDms.createdAt)).all();
+        const lastMsg = allMsgs[0];
+        // Find the other participant: first message not sent by me with a handle/name
+        const otherMsg = allMsgs.find((m) =>
+          !twCache.myAccountIds.has(m.senderId) && (m.senderHandle || m.senderName)
+        );
+        // If all messages are sent by me, try to find the recipient from any message
+        const otherIdFallback = allMsgs.find((m) =>
+          m.recipientId && !twCache.myAccountIds.has(m.recipientId)
+        )?.recipientId ?? allMsgs.find((m) =>
+          !twCache.myAccountIds.has(m.senderId)
+        )?.senderId;
+        const otherId = otherMsg?.senderId ?? otherIdFallback;
         const contact = otherId ? twCache.contacts.get(otherId) : null;
+        const otherHandle = otherMsg?.senderHandle || '';
+        const otherName = otherMsg?.senderName || '';
+        // Last-resort fallback: pick a senderHandle that isn't the logged-in user
+        const fallbackHandle = allMsgs.find((m) => !twCache.myAccountIds.has(m.senderId))?.senderHandle;
         return {
           id: c.conversationId,
-          name: contact?.displayName || lastMsg?.senderHandle || c.conversationId,
+          name: contact?.displayName || otherName || (otherHandle ? `@${otherHandle}` : (fallbackHandle ? `@${fallbackHandle}` : c.conversationId)),
           source: 'twitter',
           messageCount: 0,
           lastTs: lastMsg?.createdAt || undefined,
+          avatarUrl: contact?.avatarUrl || null,
         };
       });
       result['twitter'] = {
@@ -623,7 +672,7 @@ router.get('/messages', optionalAuth, (req, res) => {
       if (before)  q = q.where(lte(twitterDms.createdAt, before)) as typeof q;
       const msgs = q.orderBy(desc(twitterDms.createdAt)).limit(lim).all();
       results.push(...msgs.map((m) => {
-        const { senderName, avatarUrl, isMe } = enrichSender(m.senderId, m.senderHandle, cache);
+        const { senderName, avatarUrl, isMe } = enrichSender(m.senderId, m.senderName || m.senderHandle, cache);
         return {
           source: 'twitter', messageId: m.messageId,
           chatId: m.conversationId, chatName: m.conversationId,
@@ -873,6 +922,17 @@ router.get('/activity', optionalAuth, (req, res) => {
         .orderBy(desc(twitterDms.createdAt))
         .limit(lim)
         .all();
+      // Build a per-conversation map of the other participant's handle so chatName
+      // is always the person we are chatting with, not ourselves.
+      const twConvOtherHandle = new Map<string, string>();
+      const convIds = [...new Set(rows.map((r) => r.conversationId))];
+      for (const convId of convIds) {
+        const convMsgs = db.select().from(twitterDms)
+          .where(eq(twitterDms.conversationId, convId)).all();
+        const otherMsg = convMsgs.find((m) => !cache.myAccountIds.has(m.senderId) && m.senderHandle);
+        const fallback = convMsgs.find((m) => !cache.myAccountIds.has(m.senderId))?.senderId;
+        twConvOtherHandle.set(convId, otherMsg?.senderHandle || fallback || convId);
+      }
       for (const r of rows) {
         const { senderName, avatarUrl, isMe } = enrichSender(r.senderId, r.senderHandle, cache, 'twitter');
         items.push({
@@ -880,7 +940,7 @@ router.get('/activity', optionalAuth, (req, res) => {
           timestamp: r.createdAt,
           messageId: r.messageId,
           chatId: r.conversationId,
-          chatName: r.senderHandle || r.conversationId,
+          chatName: twConvOtherHandle.get(r.conversationId) || r.conversationId,
           content: r.text || '',
           senderName, senderAvatarUrl: avatarUrl, isMe,
           context: 'dm',

@@ -348,6 +348,19 @@ router.post('/connection/test', optionalAuth, async (req, res) => {
     (ev) => (ev.data as { done?: boolean }).done === true,
     15000,
   );
+  // Suppress unhandled-rejection noise: if the webhook fetch fails and we return
+  // early, the timeout inside collectBroadcast will still fire and reject the
+  // promise. Attaching a no-op catch here ensures that rejection is always
+  // observed, while the later `await roundTripPromise` still throws correctly.
+  roundTripPromise.catch(() => {});
+
+  // Also listen for an ai:error event for this test session so we can surface
+  // the actual error immediately rather than waiting for the full 15s timeout.
+  const errorPromise = onNextBroadcast(
+    (ev) => ev.type === 'ai:error' && (ev.data as { sessionId?: string }).sessionId === testSessionId,
+    15000,
+  );
+  errorPromise.catch(() => {});
 
   const gatewayToken = getSetting(KEY_GATEWAY_TOKEN);
   const authHeaders: Record<string, string> = gatewayToken
@@ -389,10 +402,21 @@ router.post('/connection/test', optionalAuth, async (req, res) => {
     return;
   }
 
-  // Wait for the AI to stream a complete response and validate its content
+  // Wait for the AI to stream a complete response and validate its content.
+  // Also race against an ai:error event so we can surface failures immediately.
   try {
-    const events = await roundTripPromise;
-    const fullResponse = events
+    const result = await Promise.race([
+      roundTripPromise.then((events) => ({ kind: 'tokens' as const, events })),
+      errorPromise.then((ev) => ({ kind: 'error' as const, ev })),
+    ]);
+
+    if (result.kind === 'error') {
+      const errMsg = (result.ev.data as { error?: string }).error ?? 'Unknown error from AI agent';
+      res.json({ success: false, error: `AI agent reported an error: ${errMsg}` });
+      return;
+    }
+
+    const fullResponse = result.events
       .map((ev) => (ev.data as { delta?: string }).delta ?? '')
       .join('');
 
@@ -409,9 +433,13 @@ router.post('/connection/test', optionalAuth, async (req, res) => {
     getConnectionManager().checkAiStatus();
     res.json({ success: true, latencyMs: Date.now() - start });
   } catch {
+    const callbackBase = getCallbackBase(req);
+    const hint = callbackBase.includes('localhost') || callbackBase.includes('127.0.0.1')
+      ? ` If the AI agent runs in a separate container or machine, set a reachable Callback Base URL in the AI connection settings (currently: ${callbackBase}).`
+      : '';
     res.json({
       success: false,
-      error: 'Webhook was reached but the AI did not stream a complete response within 15 seconds. Check that the AI agent is configured to POST back to the stream URL.',
+      error: `Webhook was reached but the AI did not stream a complete response within 15 seconds. Check that the AI agent is configured to POST back to the stream URL.${hint}`,
     });
   }
 });
@@ -630,6 +658,13 @@ router.post('/sessions/:id/stream', apiKeyAuth(true), (req, res) => {
   const session = db.select().from(aiSessions).where(eq(aiSessions.id, id)).get();
 
   const body = req.body as Record<string, unknown>;
+
+  // If the AI agent signals an error, broadcast it and return immediately.
+  if (typeof body['error'] === 'string' && body['error']) {
+    broadcast({ type: 'ai:error', data: { sessionId: id, error: body['error'] } });
+    res.json({ success: true });
+    return;
+  }
 
   // Defensively coerce all fields to valid SQLite-bindable types.
   // The AI agent (especially third-party gateways) may send unexpected types.

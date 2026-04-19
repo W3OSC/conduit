@@ -669,6 +669,10 @@ export class ConnectionManager {
                         String((e.data as Record<string, unknown>)?.content).includes(token),
                 10000,
               );
+              // Suppress unhandled-rejection noise: if the step throws before or
+              // after we await `received`, the timeout rejection must still be
+              // observed somewhere or Node will surface it as an unhandled rejection.
+              received.catch(() => {});
               const sent = await this.slack.sendSelfWithToken(token);
               if (!sent) throw new Error('Failed to send message');
               await received; // waits for the realtime listener to push it back

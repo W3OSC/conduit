@@ -1247,7 +1247,10 @@ export default function Chat() {
 
           {/* Composer */}
           <div className="flex-shrink-0 px-4 pb-4 pt-2 border-t border-border bg-card/20">
-            <div className={cn('rounded-2xl border transition-all', canSend ? 'border-border/60 focus-within:border-primary/30 bg-secondary/40' : 'border-border/30 bg-secondary/20 opacity-50')}>
+            <div
+              className={cn('rounded-2xl border transition-all', canSend ? 'border-border/60 focus-within:border-primary/30 bg-secondary/40 cursor-text' : 'border-border/30 bg-secondary/20 opacity-50 cursor-not-allowed')}
+              onClick={() => composerRef.current?.focus()}
+            >
               <textarea
                 ref={composerRef}
                 value={composer}
@@ -1256,8 +1259,8 @@ export default function Chat() {
                 placeholder={canSend ? `Message ${selected.name}…` : 'Sending is disabled for this service'}
                 disabled={!canSend || sendMutation.isPending}
                 rows={1}
-                className="w-full bg-transparent px-4 pt-3 pb-1 text-sm focus:outline-none placeholder:text-muted-foreground/40 resize-none disabled:cursor-not-allowed"
-                style={{ minHeight: 44, maxHeight: 160 }}
+                className="w-full bg-transparent px-4 py-3 text-sm focus:outline-none placeholder:text-muted-foreground/40 resize-none disabled:cursor-not-allowed"
+                style={{ maxHeight: 160 }}
               />
               <div className="flex items-center justify-between px-3 pb-2.5">
                 <span className="text-[10px] text-muted-foreground/30">

@@ -9,8 +9,8 @@
 
 import { Router } from 'express';
 import { getDb } from '../db/client.js';
-import { twitterDms, outbox, permissions, settings } from '../db/schema.js';
-import { desc, eq, sql } from 'drizzle-orm';
+import { twitterDms, outbox, permissions, settings, accounts, contacts } from '../db/schema.js';
+import { desc, eq, sql, and } from 'drizzle-orm';
 import { optionalAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
 import { getConnectionManager } from '../connections/manager.js';
 import { broadcast } from '../websocket/hub.js';
@@ -253,10 +253,26 @@ router.get('/notifications/mentions', optionalAuth, async (req, res) => {
 router.get('/dms', optionalAuth, (req, res) => {
   const { limit = '50', offset = '0' } = req.query as Record<string, string>;
   const db = getDb();
+  const creds = getTwitterCreds();
+  const myUserIdFromCreds = creds?.userId ? String(creds.userId) : null;
+  // Also pull account IDs from the accounts table as a fallback
+  const myAccountRows = db.select({ accountId: accounts.accountId })
+    .from(accounts).where(eq(accounts.source, 'twitter')).all();
+  const myUserIds = new Set<string>(myAccountRows.map((a) => a.accountId));
+  if (myUserIdFromCreds) myUserIds.add(myUserIdFromCreds);
   const all = db.select().from(twitterDms).orderBy(desc(twitterDms.createdAt)).all();
 
   // Group by conversationId
-  const convMap = new Map<string, { conversationId: string; participants: Set<string>; lastMessage: typeof all[0]; messageCount: number }>();
+  type ConvEntry = {
+    conversationId: string;
+    participants: Set<string>;
+    lastMessage: typeof all[0];
+    messageCount: number;
+    // Best known handle/name for the other participant
+    otherHandle: string;
+    otherName: string;
+  };
+  const convMap = new Map<string, ConvEntry>();
   for (const msg of all) {
     const c = convMap.get(msg.conversationId);
     if (!c) {
@@ -265,20 +281,59 @@ router.get('/dms', optionalAuth, (req, res) => {
         participants: new Set([msg.senderId, msg.recipientId || ''].filter(Boolean)),
         lastMessage: msg,
         messageCount: 1,
+        otherHandle: '',
+        otherName: '',
       });
     } else {
       c.messageCount++;
       c.participants.add(msg.senderId);
       if (msg.recipientId) c.participants.add(msg.recipientId);
     }
+
+    // Track the best handle/name for the other participant (not the logged-in user).
+    // isFromMe: true if senderId matches any known account ID for the logged-in user.
+    const entry = convMap.get(msg.conversationId)!;
+    const isFromMe = myUserIds.size > 0
+      ? myUserIds.has(String(msg.senderId))
+      : false;
+    if (!isFromMe && msg.senderHandle && !entry.otherHandle) {
+      entry.otherHandle = msg.senderHandle;
+    }
+    if (!isFromMe && msg.senderName && !entry.otherName) {
+      entry.otherName = msg.senderName;
+    }
   }
 
-  const conversations = [...convMap.values()].map((c) => ({
-    conversationId: c.conversationId,
-    participantIds: [...c.participants],
-    lastMessage: c.lastMessage,
-    messageCount: c.messageCount,
-  })).sort((a, b) => (b.lastMessage.createdAt || '').localeCompare(a.lastMessage.createdAt || ''));
+  // Look up avatar URLs from the contacts table for all known participants
+  const allParticipantIds = new Set<string>();
+  for (const c of convMap.values()) {
+    for (const pid of c.participants) allParticipantIds.add(pid);
+  }
+  const avatarByUserId = new Map<string, string | null>();
+  for (const pid of allParticipantIds) {
+    const contact = db.select({ avatarUrl: contacts.avatarUrl })
+      .from(contacts)
+      .where(and(eq(contacts.source, 'twitter'), eq(contacts.platformId, pid)))
+      .get();
+    if (contact) avatarByUserId.set(pid, contact.avatarUrl);
+  }
+
+  const conversations = [...convMap.values()].map((c) => {
+    // Find the other participant's user id (not the logged-in user)
+    const otherParticipantIds = [...c.participants].filter((pid) => !myUserIds.has(pid));
+    const otherAvatarUrl = otherParticipantIds.length > 0
+      ? avatarByUserId.get(otherParticipantIds[0]) || null
+      : null;
+    return {
+      conversationId: c.conversationId,
+      participantIds: [...c.participants],
+      lastMessage: c.lastMessage,
+      messageCount: c.messageCount,
+      otherHandle: c.otherHandle,
+      otherName: c.otherName,
+      otherAvatarUrl,
+    };
+  }).sort((a, b) => (b.lastMessage.createdAt || '').localeCompare(a.lastMessage.createdAt || ''));
 
   const lim = Math.min(parseInt(limit), 100);
   const off = parseInt(offset);
@@ -292,7 +347,24 @@ router.get('/dms/:conversationId', optionalAuth, (req, res) => {
     .where(eq(twitterDms.conversationId, req.params['conversationId'] as string))
     .orderBy(twitterDms.createdAt)
     .all();
-  res.json({ messages: messages.slice(0, parseInt(limit)), conversationId: req.params['conversationId'] });
+
+  // Attach avatar URLs from the contacts table keyed by senderId
+  const senderIds = new Set(messages.map((m) => m.senderId).filter(Boolean) as string[]);
+  const avatarBySender = new Map<string, string | null>();
+  for (const sid of senderIds) {
+    const contact = db.select({ avatarUrl: contacts.avatarUrl })
+      .from(contacts)
+      .where(and(eq(contacts.source, 'twitter'), eq(contacts.platformId, sid)))
+      .get();
+    if (contact) avatarBySender.set(sid, contact.avatarUrl);
+  }
+
+  const enriched = messages.map((m) => ({
+    ...m,
+    senderAvatarUrl: avatarBySender.get(m.senderId) ?? null,
+  }));
+
+  res.json({ messages: enriched.slice(0, parseInt(limit)), conversationId: req.params['conversationId'] });
 });
 
 // ── Analytics ─────────────────────────────────────────────────────────────────

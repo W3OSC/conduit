@@ -98,6 +98,23 @@ export class SlackSync {
           if (ch.user) name = await this.resolveUser(ch.user);
         } else if (ch.is_mpim) {
           type = 'mpim';
+          // Resolve MPDM name to a list of participant usernames (excluding self)
+          if (ch.id) {
+            try {
+              const membersRes = await this.client.conversations.members({ channel: ch.id });
+              const memberIds = (membersRes.members || []) as string[];
+              const myUserId = this.accountInfo?.userId;
+              const names: string[] = [];
+              for (const memberId of memberIds) {
+                if (myUserId && memberId === myUserId) continue;
+                const memberName = await this.resolveUser(memberId);
+                names.push(memberName);
+              }
+              if (names.length > 0) name = names.join(', ');
+            } catch {
+              // keep raw name on error
+            }
+          }
         } else if (ch.is_private) {
           type = 'private_channel';
         }

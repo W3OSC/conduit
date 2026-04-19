@@ -31,17 +31,68 @@ import { cn, timeAgo, formatDate } from '@/lib/utils';
 import { toast } from '@/store';
 import { useConnectionStore } from '@/store';
 
+// ─── Shared avatar helpers ─────────────────────────────────────────────────────
+
+/** Returns a deterministic hue (0–359) from a string (username/name). */
+function strHue(s: string): number {
+  return s.split('').reduce((h, c) => (h * 31 + c.charCodeAt(0)) & 0xffff, 0) % 360;
+}
+
+/**
+ * Avatar that shows a real profile image when available and falls back to a
+ * deterministic colour circle with the first letter as the initial.
+ */
+function TwitterAvatar({
+  avatarUrl,
+  name,
+  username,
+  size = 10,
+  className,
+}: {
+  avatarUrl?: string | null;
+  name?: string | null;
+  username?: string | null;
+  size?: number;
+  className?: string;
+}) {
+  const [imgErr, setImgErr] = useState(false);
+  const label = name || username || '?';
+  const hue = strHue(username || name || '?');
+
+  if (avatarUrl && !imgErr) {
+    return (
+      <img
+        src={avatarUrl}
+        alt={label}
+        onError={() => setImgErr(true)}
+        className={cn(`w-${size} h-${size} rounded-full flex-shrink-0 object-cover`, className)}
+      />
+    );
+  }
+  return (
+    <div
+      className={cn(`w-${size} h-${size} rounded-full flex-shrink-0 flex items-center justify-center text-sm font-bold text-white`, className)}
+      style={{ background: `hsl(${hue}, 52%, 40%)` }}
+    >
+      {label.charAt(0).toUpperCase()}
+    </div>
+  );
+}
+
 // ─── Tweet Card ────────────────────────────────────────────────────────────────
 
 function TweetAvatar({ tweet, size = 10 }: { tweet: Tweet; size?: number }) {
-  const hue = tweet.username.split('').reduce((h, c) => (h * 31 + c.charCodeAt(0)) & 0xffff, 0) % 360;
+  // Tweets carry an avatar directly on the profile object when available via
+  // the scraper. Fall back to the deterministic colour avatar.
+  const avatarUrl = (tweet as unknown as Record<string, unknown>).avatar as string | undefined
+    || (tweet as unknown as Record<string, unknown>).profileImageUrl as string | undefined;
   return (
-    <div
-      className={cn(`w-${size} h-${size} rounded-full flex-shrink-0 flex items-center justify-center text-sm font-bold text-white`)}
-      style={{ background: `hsl(${hue}, 52%, 40%)` }}
-    >
-      {tweet.name.charAt(0).toUpperCase()}
-    </div>
+    <TwitterAvatar
+      avatarUrl={avatarUrl}
+      name={tweet.name}
+      username={tweet.username}
+      size={size}
+    />
   );
 }
 
@@ -163,7 +214,6 @@ function TweetCard({ tweet, onThread, compact }: TweetCardProps) {
 // ─── Profile Card ──────────────────────────────────────────────────────────────
 
 function ProfileCard({ profile, onTweets }: { profile: TwitterProfile; onTweets?: () => void }) {
-  const qc = useQueryClient();
   const follow = useMutation({
     mutationFn: () => api.twitterAction({ action: 'follow', handle: profile.username }),
     onSuccess: () => toast({ title: 'Follow queued for approval', variant: 'success' }),
@@ -171,10 +221,7 @@ function ProfileCard({ profile, onTweets }: { profile: TwitterProfile; onTweets?
 
   return (
     <div className="flex items-start gap-3 border-b border-border px-4 py-3.5 hover:bg-white/[0.02] transition-colors">
-      <div className="w-10 h-10 rounded-full bg-secondary flex-shrink-0 flex items-center justify-center font-bold text-sm"
-        style={{ background: `hsl(${profile.username.charCodeAt(0) % 360}, 52%, 40%)` }}>
-        {profile.name.charAt(0).toUpperCase()}
-      </div>
+      <TwitterAvatar avatarUrl={profile.avatar} name={profile.name} username={profile.username} size={10} />
       <div className="flex-1 min-w-0">
         <div className="flex items-start justify-between gap-2">
           <div>
@@ -275,11 +322,15 @@ function DmTab() {
                     isSelected ? 'bg-primary/8 border-l-2 border-l-primary' : 'hover:bg-white/[0.025] border-l-2 border-l-transparent',
                   )}
                 >
-                  <div className="w-10 h-10 rounded-full bg-secondary/70 flex items-center justify-center font-bold text-sm flex-shrink-0 text-sky-400">
-                    {(last?.senderHandle || '?').charAt(0).toUpperCase()}
-                  </div>
+                  <TwitterAvatar
+                    avatarUrl={conv.otherAvatarUrl}
+                    name={conv.otherName}
+                    username={conv.otherHandle}
+                    size={10}
+                    className="text-sky-400"
+                  />
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">@{last?.senderHandle || conv.conversationId}</p>
+                    <p className="text-sm font-medium truncate">{conv.otherName || (conv.otherHandle ? `@${conv.otherHandle}` : conv.conversationId)}</p>
                     <p className="text-xs text-muted-foreground truncate">{last?.text || '(no messages)'}</p>
                   </div>
                   <p className="text-[10px] text-muted-foreground flex-shrink-0">{last?.createdAt ? timeAgo(last.createdAt) : ''}</p>
@@ -297,18 +348,21 @@ function DmTab() {
             <div className="px-4 py-3 border-b border-border flex items-center gap-3 flex-shrink-0">
               <AtSign className="w-4 h-4 text-muted-foreground" />
               <h4 className="text-sm font-semibold">
-                @{messages[0]?.senderHandle || selectedConv.conversationId}
+                {selectedConv.otherName || (selectedConv.otherHandle ? `@${selectedConv.otherHandle}` : selectedConv.conversationId)}
               </h4>
             </div>
             <div className="flex-1 overflow-y-auto flex flex-col-reverse px-5 py-4 gap-3">
-              {[...messages].reverse().map((msg) => {
+                {[...messages].reverse().map((msg) => {
                 const isMine = msg.senderId === myUserId;
                 return (
                   <div key={msg.messageId} className={cn('flex gap-2.5 max-w-lg', isMine && 'ml-auto flex-row-reverse')}>
                     {!isMine && (
-                      <div className="w-7 h-7 rounded-full bg-secondary/70 flex items-center justify-center text-[11px] font-bold flex-shrink-0 text-sky-400">
-                        {(msg.senderHandle || '?').charAt(0).toUpperCase()}
-                      </div>
+                      <TwitterAvatar
+                        avatarUrl={msg.senderAvatarUrl ?? selectedConv?.otherAvatarUrl}
+                        name={msg.senderName}
+                        username={msg.senderHandle}
+                        size={7}
+                      />
                     )}
                     <div className={cn(
                       'rounded-2xl px-3.5 py-2.5 text-sm',

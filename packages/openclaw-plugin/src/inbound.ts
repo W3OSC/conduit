@@ -18,7 +18,7 @@
  * }
  */
 
-import { streamReplyToConduit } from './client.js';
+import { streamReplyToConduit, postStreamError } from './client.js';
 
 export interface ConduitInboundPayload {
   sessionId: string;
@@ -96,12 +96,28 @@ export async function handleConduitInbound(
   dispatch: DispatchFn,
 ): Promise<void> {
   let replyText: string;
+  let dispatchError: string | undefined;
 
   try {
     replyText = await dispatch(payload);
   } catch (err) {
-    replyText = `Error generating response: ${err instanceof Error ? err.message : String(err)}`;
+    dispatchError = err instanceof Error ? err.message : String(err);
+    replyText = `Error generating response: ${dispatchError}`;
+    // Signal the error to Conduit immediately so it surfaces in the UI
+    // without waiting for the streamed error text to arrive.
+    await postStreamError(payload.streamUrl, apiKey, `Agent dispatch failed: ${dispatchError}`);
   }
 
-  await streamReplyToConduit(payload.streamUrl, apiKey, replyText);
+  try {
+    await streamReplyToConduit(payload.streamUrl, apiKey, replyText);
+  } catch (streamErr) {
+    // Stream POST failed (e.g. wrong API key, unreachable Conduit).
+    // Try to send an error signal back so Conduit surfaces it immediately.
+    const cause = streamErr instanceof Error ? streamErr.message : String(streamErr);
+    const errorMsg = dispatchError
+      ? `Agent error: ${dispatchError}; stream delivery also failed: ${cause}`
+      : `Failed to stream reply to Conduit: ${cause}`;
+    await postStreamError(payload.streamUrl, apiKey, errorMsg);
+    throw new Error(errorMsg);
+  }
 }

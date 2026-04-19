@@ -499,12 +499,12 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
     if (composerRef.current) composerRef.current.style.height = 'auto';
   };
 
-  const items: Array<{ type: 'message'; msg: AiMessage } | { type: 'streaming' } | { type: 'thinking' }> = [
+  const items: Array<{ type: 'message'; msg: AiMessage } | { type: 'streaming'; state: typeof streamState } | { type: 'thinking' }> = [
     // Exclude in-flight assistant rows — the live { type: 'streaming' } bubble
     // below already renders them; including them here would cause a duplicate
     // blank bubble while the stream is active.
     ...sessionMessages.filter((msg) => !msg.streaming).map((msg) => ({ type: 'message' as const, msg })),
-    ...(isStreaming && streamState ? [{ type: 'streaming' as const }] : []),
+    ...(isStreaming && streamState ? [{ type: 'streaming' as const, state: streamState }] : []),
     ...(!isStreaming && isWaiting ? [{ type: 'thinking' as const }] : []),
   ];
 
@@ -568,13 +568,13 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
                   </div>
                 );
               }
-              if (item.type === 'streaming' && streamState) {
+              if (item.type === 'streaming' && item.state) {
                 const streamMsg: AiMessage = {
-                  id: streamState.messageId,
+                  id: item.state.messageId,
                   sessionId: session.id,
                   role: 'assistant',
-                  content: streamState.content,
-                  toolCalls: streamState.toolCalls ? JSON.stringify(streamState.toolCalls) : null,
+                  content: item.state.content,
+                  toolCalls: item.state.toolCalls ? JSON.stringify(item.state.toolCalls) : null,
                   streaming: true,
                   createdAt: new Date().toISOString(),
                 };
@@ -583,8 +583,8 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
                     <MessageBubble
                       message={streamMsg}
                       isStreaming
-                      streamContent={streamState.content}
-                      streamToolCalls={streamState.toolCalls}
+                      streamContent={item.state.content}
+                      streamToolCalls={item.state.toolCalls}
                     />
                   </div>
                 );
@@ -623,12 +623,15 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
 
       {/* Composer */}
       <div className="flex-shrink-0 px-4 py-3 border-t border-border">
-        <div className={cn(
-          'flex items-end gap-3 rounded-2xl border bg-secondary px-4 py-3 transition-all duration-150',
-          !connected || isBusy
-            ? 'border-border opacity-75'
-            : 'border-border focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10',
-        )}>
+        <div
+          className={cn(
+            'flex items-center gap-3 rounded-2xl border bg-secondary px-4 py-3 transition-all duration-150',
+            !connected || isBusy
+              ? 'border-border opacity-75 cursor-not-allowed'
+              : 'border-border focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-primary/10 cursor-text',
+          )}
+          onClick={() => composerRef.current?.focus()}
+        >
           <textarea
             ref={composerRef}
             value={input}
@@ -648,7 +651,7 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
             onClick={send}
             disabled={!input.trim() || isBusy || !connected}
             className={cn(
-              'flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center transition-all duration-150 mb-0.5',
+              'flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center transition-all duration-150',
               input.trim() && !isBusy && connected
                 ? 'bg-primary text-primary-foreground hover:bg-primary/90 shadow-amber'
                 : 'bg-white/5 text-muted-foreground cursor-not-allowed',
@@ -674,6 +677,13 @@ export default function AiChat() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const activeSession = sessions.find((s) => s.id === activeId) ?? null;
+
+  // Auto-select the first tab when no tab is active but sessions are available
+  useEffect(() => {
+    if (!activeId && sessions.length > 0) {
+      setActiveId(sessions[0]!.id);
+    }
+  }, [activeId, sessions]);
 
   // Load global connection status
   const { data: conn } = useQuery<AiConnection>({
