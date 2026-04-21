@@ -7,7 +7,7 @@ import { broadcast, broadcastUnread } from '../websocket/hub.js';
 import {
   syncSlackContacts, upsertContactFromMessage, getContactCriteria,
 } from './contacts.js';
-import { persistMuteState, broadcastUnreadForChat, markChatRead, computeAllUnreads } from './unread.js';
+import { persistMuteState, seedReadState, broadcastUnreadForChat, markChatRead, computeAllUnreads } from './unread.js';
 
 export interface SlackConfig {
   token: string;           // xoxp- user token
@@ -428,6 +428,7 @@ export class SlackSync {
     try {
       const channels = await this.getChannels();
       const muteUpdates: Array<{ source: string; chatId: string; isMuted: boolean }> = [];
+      const readUpdates: Array<{ source: string; chatId: string; lastReadAt: string }> = [];
 
       for (const ch of channels) {
         try {
@@ -435,12 +436,23 @@ export class SlackSync {
           const chInfo = info.channel as Record<string, unknown> | undefined;
           const isMuted = (chInfo?.is_muted as boolean | undefined) ?? false;
           muteUpdates.push({ source: 'slack', chatId: ch.id, isMuted });
+
+          // Seed conduit's read cursor from Slack's native last_read timestamp.
+          // last_read is a Slack epoch string like "1720000000.123456"; skip if
+          // absent or "0" (channel never read on the platform).
+          const lastReadTs = chInfo?.last_read as string | undefined;
+          if (lastReadTs && lastReadTs !== '0') {
+            const lastReadAt = new Date(parseFloat(lastReadTs) * 1000).toISOString();
+            readUpdates.push({ source: 'slack', chatId: ch.id, lastReadAt });
+          }
+
           await sleep(100); // rate limit
         } catch { /* skip individual channel errors */ }
       }
 
-      // Persist mute state and broadcast all counts (computed from DB)
+      // Persist mute + read state, then broadcast all counts (computed from DB)
       persistMuteState(muteUpdates);
+      seedReadState(readUpdates);
       const allUpdates = computeAllUnreads();
       if (allUpdates.length > 0) broadcastUnread(allUpdates);
     } catch (e) {

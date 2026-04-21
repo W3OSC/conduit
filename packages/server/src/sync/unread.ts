@@ -36,6 +36,34 @@ export interface UnreadEntry {
 // ---------------------------------------------------------------------------
 
 /**
+ * Seed (or overwrite) the read cursor for a batch of chats from platform data.
+ * Called by each service's fetchUnreadCounts() to propagate the platform's own
+ * read position into conduit's chat_read_state table, so that already-read
+ * messages are not counted as unread after a sync.
+ *
+ * Uses an upsert — always overwrites any existing row — so re-syncing always
+ * reflects the freshest platform read state.
+ */
+export function seedReadState(
+  updates: Array<{ source: string; chatId: string; lastReadAt: string }>,
+): void {
+  if (updates.length === 0) return;
+  const db = getDb();
+  const now = new Date().toISOString();
+  for (let i = 0; i < updates.length; i += 100) {
+    db.insert(chatReadState)
+      .values(updates.slice(i, i + 100).map(({ source, chatId, lastReadAt }) => ({
+        source, chatId, lastReadAt, updatedAt: now,
+      })))
+      .onConflictDoUpdate({
+        target: [chatReadState.source, chatReadState.chatId],
+        set: { lastReadAt: sql`excluded.last_read_at`, updatedAt: now },
+      })
+      .run();
+  }
+}
+
+/**
  * Persist mute state for a batch of chats. Called by each service's
  * fetchUnreadCounts() after computing mute state from the platform.
  */

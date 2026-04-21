@@ -1,12 +1,12 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
-import { RefreshCw, AlertTriangle, Wifi, MessageSquare, Database, TrendingUp, Activity } from 'lucide-react';
+import { RefreshCw, AlertTriangle, Wifi, MessageSquare, Database, TrendingUp, Activity, Heart, Repeat2, ExternalLink, Bird } from 'lucide-react';
 import {
   AreaChart, Area, BarChart, Bar, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
-import { api } from '@/lib/api';
+import { api, type Tweet } from '@/lib/api';
 import { useConnectionStore, useSyncStore } from '@/store';
 import { StatusDot } from '@/components/shared/StatusDot';
 import { ServiceIcon } from '@/components/shared/ServiceBadge';
@@ -181,6 +181,137 @@ function ChartCard({ title, subtitle, icon: Icon, children, controls, delay = 0 
   );
 }
 
+// ── Twitter latest posts card ─────────────────────────────────────────────────
+
+function MiniTweetCard({ tweet }: { tweet: Tweet }) {
+  const avatarUrl = (tweet as unknown as Record<string, unknown>).avatar as string | undefined
+    || (tweet as unknown as Record<string, unknown>).profileImageUrl as string | undefined;
+  const [imgErr, setImgErr] = useState(false);
+  const hue = tweet.username.split('').reduce((h, c) => (h * 31 + c.charCodeAt(0)) & 0xffff, 0) % 360;
+
+  return (
+    <div className="flex-shrink-0 w-56 h-full bg-secondary/40 border border-border/60 rounded-xl p-3.5 flex flex-col gap-2.5 hover:bg-secondary/70 transition-colors">
+      {/* Author */}
+      <div className="flex items-center gap-2 min-w-0">
+        {avatarUrl && !imgErr ? (
+          <img
+            src={avatarUrl}
+            alt={tweet.name}
+            onError={() => setImgErr(true)}
+            className="w-7 h-7 rounded-full flex-shrink-0 object-cover"
+          />
+        ) : (
+          <div
+            className="w-7 h-7 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold text-white"
+            style={{ background: `hsl(${hue}, 52%, 40%)` }}
+          >
+            {(tweet.name || tweet.username || '?').charAt(0).toUpperCase()}
+          </div>
+        )}
+        <div className="min-w-0">
+          <p className="text-xs font-semibold truncate leading-tight">{tweet.name}</p>
+          <p className="text-[10px] text-muted-foreground truncate leading-tight">@{tweet.username}</p>
+        </div>
+        {tweet.permanentUrl && (
+          <a
+            href={tweet.permanentUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="ml-auto flex-shrink-0 text-muted-foreground hover:text-primary transition-colors"
+          >
+            <ExternalLink className="w-3 h-3" />
+          </a>
+        )}
+      </div>
+
+      {/* Text */}
+      <p className="text-xs text-foreground/80 leading-relaxed line-clamp-4 flex-1 break-words">
+        {tweet.text}
+      </p>
+
+      {/* Photo preview */}
+      {tweet.photos.length > 0 && (
+        <img
+          src={tweet.photos[0].url}
+          alt={tweet.photos[0].alt || ''}
+          className="w-full h-20 object-cover rounded-lg flex-shrink-0"
+          loading="lazy"
+        />
+      )}
+
+      {/* Footer: stats + timestamp */}
+      <div className="flex items-center gap-3 text-[10px] text-muted-foreground flex-shrink-0">
+        {tweet.likes > 0 && (
+          <span className="flex items-center gap-0.5">
+            <Heart className="w-3 h-3" />
+            {tweet.likes.toLocaleString()}
+          </span>
+        )}
+        {tweet.retweets > 0 && (
+          <span className="flex items-center gap-0.5">
+            <Repeat2 className="w-3 h-3" />
+            {tweet.retweets.toLocaleString()}
+          </span>
+        )}
+        {tweet.timestamp > 0 && (
+          <span className="ml-auto">
+            {timeAgo(new Date(tweet.timestamp * 1000).toISOString())}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LatestPostsCard({ delay = 0 }: { delay?: number }) {
+  const { data, isLoading, refetch, isFetching } = useQuery({
+    queryKey: ['twitter', 'feed', 'dashboard'],
+    queryFn: () => api.twitterFeed(10),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const tweets = data?.tweets ?? [];
+
+  return (
+    <motion.div {...fade(delay)} className="card-warm p-5 flex flex-col min-h-0">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-4 mb-4 flex-shrink-0">
+        <div className="flex items-center gap-2">
+          <Bird className="w-4 h-4 text-sky-400" />
+          <h3 className="text-sm font-semibold">Latest Posts</h3>
+        </div>
+        <button
+          onClick={() => refetch()}
+          disabled={isFetching}
+          className="text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+        >
+          <RefreshCw className={cn('w-3.5 h-3.5', isFetching && 'animate-spin')} />
+        </button>
+      </div>
+
+      {/* Horizontal scroll row */}
+      <div className="flex-1 min-h-0 overflow-hidden">
+        {isLoading ? (
+          <div className="flex items-center justify-center h-full">
+            <div className="w-5 h-5 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+          </div>
+        ) : tweets.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
+            <Bird className="w-6 h-6 opacity-30" />
+            <p className="text-xs">No posts — connect Twitter to see your feed</p>
+          </div>
+        ) : (
+          <div className="flex gap-3 h-full overflow-x-auto pb-1 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
+            {tweets.map((tweet) => (
+              <MiniTweetCard key={tweet.id} tweet={tweet} />
+            ))}
+          </div>
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
@@ -188,7 +319,6 @@ export default function Dashboard() {
   const [msgGran, setMsgGran]       = useState<'day'|'hour'>('day');
   const [syncDays, setSyncDays]     = useState(14);
   const [outboxDays, setOutboxDays] = useState(30);
-  const [apiDays, setApiDays]       = useState(30);
 
   const { data: metricsData } = useQuery({
     queryKey: ['metrics', 'messages-over-time', msgDays, msgGran],
@@ -205,12 +335,6 @@ export default function Dashboard() {
   const { data: obData, isLoading: obLoading } = useQuery({
     queryKey: ['metrics', 'outbox', outboxDays],
     queryFn: () => api.outboxActivity(outboxDays),
-    refetchInterval: 60000,
-  });
-
-  const { data: apiData, isLoading: apiLoading } = useQuery({
-    queryKey: ['metrics', 'api', apiDays],
-    queryFn: () => api.apiUsage(apiDays),
     refetchInterval: 60000,
   });
 
@@ -342,36 +466,8 @@ export default function Dashboard() {
           )}
         </ChartCard>
 
-        {/* API Requests / Day — per-key stacked bars */}
-        <ChartCard
-          title="API Requests / Day"
-          subtitle="Calls by external API consumers"
-          delay={0.2}
-          controls={<RangeSelector value={apiDays} onChange={setApiDays} options={[7, 14, 30]} />}
-          icon={TrendingUp}
-        >
-          {apiLoading ? <Loader /> : (
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={apiData?.daily || []}>
-                <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
-                <XAxis dataKey="date" tick={axisStyle} tickLine={false} axisLine={false} />
-                <YAxis tick={axisStyle} tickLine={false} axisLine={false} width={36} />
-                <Tooltip content={<ChartTooltip />} cursor={{ fill: 'hsl(20 8% 18% / 0.5)' }} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-                {(apiData?.keys ?? ['Requests']).map((keyName, i) => {
-                  const KEY_COLORS = ['#F59E0B', '#8B5CF6', '#0EA5E9', '#10B981', '#EF4444', '#6366F1'];
-                  return (
-                    <Bar key={keyName} dataKey={keyName} stackId="a"
-                      fill={KEY_COLORS[i % KEY_COLORS.length]}
-                      radius={i === (apiData?.keys.length ?? 1) - 1 ? [3, 3, 0, 0] : [0, 0, 0, 0]}
-                      name={keyName}
-                    />
-                  );
-                })}
-              </BarChart>
-            </ResponsiveContainer>
-          )}
-        </ChartCard>
+        {/* Twitter latest posts */}
+        <LatestPostsCard delay={0.2} />
 
       </div>
     </div>
