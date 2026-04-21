@@ -3,9 +3,9 @@ import { StringSession } from 'telegram/sessions/index.js';
 import { NewMessage, NewMessageEvent } from 'telegram/events/index.js';
 import { getDb } from '../db/client.js';
 import { telegramMessages, syncState, syncRuns, accounts } from '../db/schema.js';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, desc, sql } from 'drizzle-orm';
 import { broadcast, broadcastUnread } from '../websocket/hub.js';
-import { persistMuteState, broadcastUnreadForChat, markChatRead, computeAllUnreads } from './unread.js';
+import { persistMuteState, seedReadState, broadcastUnreadForChat, markChatRead, computeAllUnreads } from './unread.js';
 import { getCreds, setCreds, type TelegramCreds } from '../api/credentials.js';
 import {
   syncTelegramContacts, upsertContact, upsertContactFromMessage, getContactCriteria,
@@ -608,9 +608,11 @@ export class TelegramBridge {
   async fetchUnreadCounts(): Promise<void> {
     if (!this.client) return;
     try {
+      const db = getDb();
       const dialogs = await this.client.getDialogs({ limit: 500 });
       const now = Math.floor(Date.now() / 1000);
       const muteUpdates: Array<{ source: string; chatId: string; isMuted: boolean }> = [];
+      const readUpdates: Array<{ source: string; chatId: string; lastReadAt: string }> = [];
 
       for (const dialog of dialogs) {
         const entity = dialog.entity as { id?: { value?: unknown } } | null;
@@ -621,9 +623,37 @@ export class TelegramBridge {
             .dialog?.notifySettings?.muteUntil ?? 0;
         const isMuted = muteUntil === 2147483647 || muteUntil > now;
         muteUpdates.push({ source: 'telegram', chatId, isMuted });
+
+        // Seed conduit's read cursor from Telegram's native unread state.
+        // dialog.unreadCount is the number of messages the user hasn't read yet.
+        // If unreadCount === 0, the chat is fully read → seed to now.
+        // If unreadCount > 0, find the timestamp of the message at offset
+        // unreadCount from the end of our local DB so that exactly that many
+        // messages remain counted as unread.
+        const unreadCount: number = (dialog as unknown as { unreadCount?: number }).unreadCount ?? 0;
+        if (unreadCount === 0) {
+          readUpdates.push({ source: 'telegram', chatId, lastReadAt: new Date().toISOString() });
+        } else {
+          // Find the timestamp of the message just before the unread window.
+          // ORDER BY timestamp DESC LIMIT 1 OFFSET unreadCount gives us the
+          // last message the user has read (i.e. the one before the unread window).
+          const row = db.select({ timestamp: telegramMessages.timestamp })
+            .from(telegramMessages)
+            .where(eq(telegramMessages.chatId, sql<number>`${chatId}`))
+            .orderBy(desc(telegramMessages.timestamp))
+            .limit(1)
+            .offset(unreadCount)
+            .get();
+          if (row?.timestamp) {
+            readUpdates.push({ source: 'telegram', chatId, lastReadAt: row.timestamp });
+          }
+          // If not found (fewer messages in DB than unreadCount), don't seed —
+          // all synced messages will be counted as unread, which is correct.
+        }
       }
 
       persistMuteState(muteUpdates);
+      seedReadState(readUpdates);
       const allUpdates = computeAllUnreads();
       if (allUpdates.length > 0) broadcastUnread(allUpdates);
     } catch (e) {

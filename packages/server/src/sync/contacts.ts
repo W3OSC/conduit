@@ -31,6 +31,8 @@ const DEFAULTS: Record<string, ContactCriteria> = {
   telegram: { enabled: true, hasDm: true, ownedGroup: true, smallGroup: true, nativeContacts: true, smallGroupThreshold: 50 },
   gmail:    { enabled: true, hasDm: true, ownedGroup: false, smallGroup: false, nativeContacts: false, smallGroupThreshold: 50 },
   calendar: { enabled: true, hasDm: true, ownedGroup: false, smallGroup: false, nativeContacts: false, smallGroupThreshold: 50 },
+  // Twitter: DM participants + following list as native contacts (both enabled by default)
+  twitter:  { enabled: true, hasDm: true, ownedGroup: false, smallGroup: false, nativeContacts: true, smallGroupThreshold: 50 },
 };
 
 export function getContactCriteria(source: string): ContactCriteria {

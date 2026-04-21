@@ -107,7 +107,7 @@ function AppInner() {
       <Sidebar />
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <TopBar />
-        <main className="flex-1 overflow-hidden h-full">
+        <main className="flex-1 overflow-hidden min-h-0 h-full">
           <Suspense fallback={<PageLoader />}>
             <Routes>
               <Route path="/" element={<Inbox />} />

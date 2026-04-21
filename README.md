@@ -114,19 +114,17 @@ See [SECURITY.md](SECURITY.md) for the responsible disclosure policy and known a
 
 ## Platform terms of service
 
-Several connection methods may conflict with platform ToS. Review each platform's terms before connecting.
+Some connection methods may be worth reviewing against each platform's terms of service.
 
-| Platform | Access method | Risk |
-|---|---|---|
-| **Discord** | User token (selfbot) | Account suspension possible — not an official bot integration |
-| **Twitter / X** | Cookie / credential auth | Account suspension possible — no official API key used |
-| **Telegram** | MTProto (official client API) | Low risk under normal personal use |
-| **Slack** | Official OAuth user token | Low risk |
-| **Gmail / Google Calendar** | OAuth2 (official API) | Low risk |
-| **Notion** | Official integration token | Low risk |
-| **Obsidian** | Local git repository | No external account risk |
-
-By connecting a platform, you accept that risk entirely.
+| Platform | How it connects |
+|---|---|
+| **Discord** | User token (selfbot) |
+| **Twitter / X** | Cookie / credential auth |
+| **Telegram** | MTProto (official client API) |
+| **Slack** | Official OAuth user token |
+| **Gmail / Google Calendar** | OAuth2 (official API) |
+| **Notion** | Official integration token |
+| **Obsidian** | Local git repository |
 
 ---
 

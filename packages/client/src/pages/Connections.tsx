@@ -1980,6 +1980,20 @@ function SecurityTab() {
     staleTime: 10000,
   });
 
+  const { data: securitySettings } = useQuery({
+    queryKey: ['settings'],
+    queryFn: api.settings,
+    staleTime: 10000,
+  });
+
+  const blockSsrf = securitySettings?.['security.blockPrivateIpSsrf'] === true;
+
+  const updateSecuritySetting = useMutation({
+    mutationFn: (updates: Record<string, unknown>) => api.updateSettings(updates),
+    onSuccess: () => { toast({ title: 'Security settings saved', variant: 'success' }); qc.invalidateQueries({ queryKey: ['settings'] }); },
+    onError: (e: Error) => toast({ title: 'Save failed', description: e.message, variant: 'destructive' }),
+  });
+
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [currentPassword, setCurrentPassword] = useState('');
@@ -2208,6 +2222,33 @@ function SecurityTab() {
           </div>
         </div>
       )}
+
+      {/* Network security */}
+      <div className="rounded-xl border border-border bg-secondary/20 p-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-muted-foreground" />
+              <p className="text-sm font-semibold">Block private IP SSRF</p>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {blockSsrf
+                ? 'Outbound requests to private/loopback IP addresses are blocked. Disable if you need to reach a local service (e.g. a self-hosted AI running on the same network).'
+                : 'Private IP blocking is disabled. Outbound requests to local network addresses are allowed.'}
+            </p>
+          </div>
+          <MiniToggle
+            checked={blockSsrf}
+            onChange={(v) => updateSecuritySetting.mutate({ 'security.blockPrivateIpSsrf': v })}
+            disabled={updateSecuritySetting.isPending}
+          />
+        </div>
+        {!blockSsrf && (
+          <p className="text-[11px] text-amber-400 mt-3 flex items-center gap-1.5">
+            <AlertTriangle className="w-3 h-3" /> Only disable this if you trust all users who can configure AI connections.
+          </p>
+        )}
+      </div>
     </div>
   );
 }

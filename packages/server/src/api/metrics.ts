@@ -140,25 +140,35 @@ router.get('/api-usage', optionalAuth, (req, res) => {
 
   const keys = db.select().from(apiKeys).all();
 
-  // Resolve a human-readable label for each log entry's key id
-  const keyLabel = (apiKeyId: number | null): string => {
-    if (!apiKeyId) return 'Unknown';
-    const info = keys.find((k) => k.id === apiKeyId);
-    return info?.name || 'Unknown';
+  // Only include active (non-revoked) keys
+  const activeKeys = keys.filter((k) => !k.revokedAt);
+
+  // Resolve a human-readable label for each log entry's key id — returns null for deleted keys
+  const keyLabel = (apiKeyId: number | null): string | null => {
+    if (!apiKeyId) return null;
+    const info = activeKeys.find((k) => k.id === apiKeyId);
+    return info?.name || null;
   };
 
-  // Daily breakdown — one column per API key name
+  // Daily breakdown — one column per API key name; skip entries from deleted keys
   const buckets = new Map<string, Record<string, number>>();
   for (const log of logs) {
-    const day = truncateToDay(log.timestamp || new Date().toISOString());
     const label = keyLabel(log.apiKeyId ?? null);
+    if (!label) continue; // skip requests from deleted keys
+    const day = truncateToDay(log.timestamp || new Date().toISOString());
     if (!buckets.has(day)) buckets.set(day, {});
     const b = buckets.get(day)!;
     b[label] = (b[label] || 0) + 1;
   }
 
   // Collect the full set of key names that appear in the data
-  const keyNames = Array.from(new Set(logs.map((l) => keyLabel(l.apiKeyId ?? null))));
+  const keyNames = Array.from(
+    new Set(
+      logs
+        .map((l) => keyLabel(l.apiKeyId ?? null))
+        .filter((label): label is string => label !== null)
+    )
+  );
 
   const daily = Array.from(buckets.entries())
     .map(([date, counts]) => ({ date, ...counts }))
