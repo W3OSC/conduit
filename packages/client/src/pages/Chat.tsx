@@ -7,7 +7,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Send, Search, MessageSquare, ArrowDown, ChevronDown, ChevronRight,
   Hash, MessageCircle, Users, Radio, Inbox, X as Twitter, Loader2 as Loader2Chat,
-  CheckCheck, ExternalLink,
+  CheckCheck, ExternalLink, MailOpen, RefreshCw,
 } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { api, type Message, type ChatEntry, type ChatSection, type ServiceTree, type ChatTreeMap, type MessageAttachments, type MessageAttachmentFile, type ChatNavState } from '@/lib/api';
@@ -840,6 +840,8 @@ export default function Chat() {
   const qc = useQueryClient();
   const recentMessages = useMessageStreamStore((s) => s.recentMessages);
   const markReadOptimistic = useUnreadStore((s) => s.markReadOptimistic);
+  const markUnreadOptimistic = useUnreadStore((s) => s.markUnreadOptimistic);
+  const markAllReadOptimistic = useUnreadStore((s) => s.markAllReadOptimistic);
   const navApplied = useRef(false);
   // Persists the full nav state so it's available in async fetchInitial even after
   // navApplied is set to true by the auto-select effect
@@ -859,10 +861,11 @@ export default function Chat() {
 
   // ── Data fetching ────────────────────────────────────────────────────────────
 
-  const { data: treeData, isLoading: treeLoading } = useQuery({
+  const { data: treeData, isLoading: treeLoading, isError: treeError, refetch: refetchChats } = useQuery({
     queryKey: ['chats'],
     queryFn: api.chats,
     refetchInterval: 30000,
+    refetchOnWindowFocus: true,
   });
 
   const { data: permissionsData } = useQuery({ queryKey: ['permissions'], queryFn: api.permissions });
@@ -1075,6 +1078,16 @@ export default function Chat() {
             {(['slack', 'discord', 'telegram', 'twitter'] as const).map((f) => (
               <ServiceFilterChip key={f} service={f} active={filter === f} onClick={() => setFilter(f)} />
             ))}
+            <button
+              className="ml-auto flex-shrink-0 p-1 rounded text-muted-foreground/50 hover:text-foreground hover:bg-secondary/60 transition-colors"
+              title="Mark all chats read"
+              onClick={() => {
+                markAllReadOptimistic();
+                api.markAllChatsRead().catch(() => {});
+              }}
+            >
+              <CheckCheck className="w-3 h-3" />
+            </button>
           </div>
         </div>
 
@@ -1105,6 +1118,15 @@ export default function Chat() {
                   ))}
                 </div>
               ))}
+            </div>
+          ) : treeError ? (
+            <div className="flex flex-col items-center justify-center h-48 gap-2 text-muted-foreground">
+              <RefreshCw className="w-6 h-6 opacity-30" />
+              <p className="text-xs">Failed to load conversations</p>
+              <button
+                onClick={() => refetchChats()}
+                className="text-xs text-primary hover:underline"
+              >Retry</button>
             </div>
           ) : serviceTrees.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-48 gap-2 text-muted-foreground">
@@ -1149,6 +1171,17 @@ export default function Chat() {
             <span className="text-xs text-muted-foreground/50 hidden sm:block flex-shrink-0">
               {selected.messageCount.toLocaleString()} messages
             </span>
+            <button
+              onClick={() => {
+                if (!selected) return;
+                markUnreadOptimistic(selected.source, selected.id);
+                api.markChatUnread(selected.source, selected.id).catch(() => {});
+              }}
+              title="Mark as unread"
+              className="p-1.5 rounded hover:bg-accent text-muted-foreground/50 hover:text-foreground transition-colors flex-shrink-0"
+            >
+              <MailOpen className="w-3.5 h-3.5" />
+            </button>
             {(() => {
               const url = getPlatformUrl(selected);
               if (!url) return null;

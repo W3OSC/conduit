@@ -5,7 +5,7 @@ import { getDb } from '../db/client.js';
 import { telegramMessages, syncState, syncRuns, accounts } from '../db/schema.js';
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { broadcast, broadcastUnread } from '../websocket/hub.js';
-import { persistMuteState, seedReadState, broadcastUnreadForChat, markChatRead, computeAllUnreads } from './unread.js';
+import { persistMuteState, seedReadState, seedMissingReadState, broadcastUnreadForChat, markChatRead, computeAllUnreads } from './unread.js';
 import { getCreds, setCreds, type TelegramCreds } from '../api/credentials.js';
 import {
   syncTelegramContacts, upsertContact, upsertContactFromMessage, getContactCriteria,
@@ -435,6 +435,13 @@ export class TelegramBridge {
         }).where(eq(syncRuns.id, runId)).run();
 
         broadcast({ type: 'sync:progress', data: { service: 'telegram', status: 'success', messagesSaved: totalSaved } });
+
+        // Mark every synced chat as read so imported history doesn't appear as
+        // unread. fetchUnreadCounts() runs next and overwrites with accurate
+        // platform positions (Telegram's unreadCount), but this INSERT OR IGNORE
+        // ensures any chat fetchUnreadCounts skips stays marked as read.
+        const now = new Date().toISOString();
+        seedMissingReadState(chats.map((c) => ({ source: 'telegram', chatId: String(c.chat_id), lastReadAt: now })));
 
         // Contact sync
         try {

@@ -7,7 +7,7 @@ import { broadcast, broadcastUnread } from '../websocket/hub.js';
 import {
   syncSlackContacts, upsertContactFromMessage, getContactCriteria,
 } from './contacts.js';
-import { persistMuteState, seedReadState, broadcastUnreadForChat, markChatRead, computeAllUnreads } from './unread.js';
+import { persistMuteState, seedReadState, seedMissingReadState, broadcastUnreadForChat, markChatRead, computeAllUnreads } from './unread.js';
 
 export interface SlackConfig {
   token: string;           // xoxp- user token
@@ -31,6 +31,7 @@ export class SlackSync {
   private _cancelRequested = false;
   public connected = false;
   public accountInfo: { userId: string; displayName: string } | null = null;
+  get isSocketMode(): boolean { return this.socketClient !== null; }
 
   cancelSync(): void {
     this._cancelRequested = true;
@@ -287,6 +288,12 @@ export class SlackSync {
           finishedAt: new Date().toISOString(),
         }).where(eq(syncRuns.id, runId)).run();
         broadcast({ type: 'sync:progress', data: { service: 'slack', status: 'success', messagesSaved: totalSaved } });
+        // Mark every synced channel as read so imported history doesn't appear
+        // as unread. fetchUnreadCounts() runs next and overwrites with accurate
+        // platform positions where available (onConflictDoUpdate), but this
+        // INSERT OR IGNORE ensures channels with no platform last_read stay read.
+        const now = new Date().toISOString();
+        seedMissingReadState(channels.map((ch) => ({ source: 'slack', chatId: ch.id, lastReadAt: now })));
         // Contact sync — runs after messages so criteria flags can use message history
         try {
           const criteria = getContactCriteria('slack');

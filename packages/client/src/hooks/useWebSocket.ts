@@ -25,6 +25,17 @@ async function syncUnreadFromServer(): Promise<void> {
   } catch { /* ignore — retries on next reconnect */ }
 }
 
+/** Fetch authoritative connection status from the server and seed the store.
+ *  The server fires connection:status events at startup — if the browser
+ *  connects after those events, it would never receive them. Polling the
+ *  REST endpoint on every (re)connect ensures the UI is always up-to-date. */
+async function syncConnectionStatusFromServer(): Promise<void> {
+  try {
+    const statuses = await api.connections();
+    useConnectionStore.getState().setAllStatuses(statuses);
+  } catch { /* ignore — retries on next reconnect */ }
+}
+
 function connectGlobal() {
   if (globalWs && globalWs.readyState === WebSocket.OPEN) return;
   if (globalWs && globalWs.readyState === WebSocket.CONNECTING) return;
@@ -39,6 +50,9 @@ function connectGlobal() {
     // Re-seed unread state from the server on every (re)connect.
     // This is the single authoritative load — no client-side counting, no localStorage.
     syncUnreadFromServer();
+    // Seed connection status — server fires connection:status events at startup,
+    // which the browser would miss if it connects after those events fired.
+    syncConnectionStatusFromServer();
   };
 
   globalWs.onmessage = (event) => {

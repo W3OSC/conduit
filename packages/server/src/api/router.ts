@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { getConnectionManager, type ServiceName } from '../connections/manager.js';
 import { optionalAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
-import { computeAllUnreads, markChatRead } from '../sync/unread.js';
+import { computeAllUnreads, markChatRead, markAllChatsRead } from '../sync/unread.js';
 import messagesRouter from './messages.js';
 import outboxRouter from './outbox.js';
 import permissionsRouter from './permissions.js';
@@ -178,7 +178,58 @@ router.post('/unread/:source/:chatId/read', optionalAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-// Sub-routers
+// POST /api/unread/all/read — mark ALL chats across all services as read.
+// Persists read state in DB, broadcasts count=0, and calls platform APIs where enabled.
+router.post('/unread/all/read', optionalAuth, async (req, res) => {
+  const entries = markAllChatsRead();
+
+  // Also mark read on platforms where the permission is enabled (best-effort)
+  const db = (await import('../db/client.js')).getDb();
+  const { permissions } = await import('../db/schema.js');
+  const perms = db.select().from(permissions).all();
+  const permMap = new Map(perms.map((p) => [p.service, p]));
+
+  const manager = getConnectionManager();
+  const bySource = new Map<string, string[]>();
+  for (const { source, chatId } of entries) {
+    const list = bySource.get(source) ?? [];
+    list.push(chatId);
+    bySource.set(source, list);
+  }
+
+  for (const [source, chatIds] of bySource) {
+    if (!permMap.get(source)?.markReadEnabled) continue;
+    for (const chatId of chatIds) {
+      try {
+        if (source === 'slack') await manager.getSlack()?.markChannelRead(chatId);
+        else if (source === 'discord') await manager.getDiscord()?.markChannelRead(chatId);
+        else if (source === 'telegram') await manager.getTelegram()?.markChatRead(chatId);
+      } catch { /* best-effort platform call */ }
+    }
+  }
+
+  res.json({ success: true });
+});
+
+// POST /api/unread/:source/:chatId/unread — mark a chat as unread (reset read cursor).
+// Clears the chat_read_state row so all messages count as unread again.
+router.post('/unread/:source/:chatId/unread', optionalAuth, (req, res) => {
+  const source = req.params['source'] as string;
+  const chatId = req.params['chatId'] as string;
+  (async () => {
+    const { getDb } = await import('../db/client.js');
+    const { chatReadState } = await import('../db/schema.js');
+    const { and: andFn, eq: eqFn } = await import('drizzle-orm');
+    getDb().delete(chatReadState)
+      .where(andFn(eqFn(chatReadState.source, source), eqFn(chatReadState.chatId, chatId)))
+      .run();
+    const { broadcastUnreadForChat } = await import('../sync/unread.js');
+    broadcastUnreadForChat(source, chatId);
+  })().catch(() => {});
+  res.json({ success: true });
+});
+
+
 router.use('/', messagesRouter);
 router.use('/outbox', outboxRouter);
 router.use('/permissions', permissionsRouter);

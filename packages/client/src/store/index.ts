@@ -186,6 +186,12 @@ interface UnreadStore {
    */
   markReadOptimistic: (source: string, chatId: string) => void;
 
+  /** Optimistic mark-as-unread — sets count to 1 locally while server confirms. */
+  markUnreadOptimistic: (source: string, chatId: string) => void;
+
+  /** Optimistic mark-all-as-read — sets every known chat count to 0. */
+  markAllReadOptimistic: () => void;
+
   /** Total unread across all non-muted chats — used for the sidebar badge. */
   getTotalUnread: () => number;
   getUnreadForEntry: (source: string, chatId: string) => number;
@@ -223,6 +229,21 @@ export const useUnreadStore = create<UnreadStore>((set, get) => ({
   markReadOptimistic: (source, chatId) => {
     const key = `${source}:${chatId}`;
     set((s) => ({ unreadCounts: { ...s.unreadCounts, [key]: 0 } }));
+  },
+
+  markUnreadOptimistic: (source, chatId) => {
+    const key = `${source}:${chatId}`;
+    set((s) => ({ unreadCounts: { ...s.unreadCounts, [key]: Math.max(1, s.unreadCounts[key] ?? 1) } }));
+  },
+
+  markAllReadOptimistic: () => {
+    set((s) => {
+      const nextCounts = { ...s.unreadCounts };
+      for (const key of Object.keys(nextCounts)) {
+        nextCounts[key] = 0;
+      }
+      return { unreadCounts: nextCounts };
+    });
   },
 
   getTotalUnread: () => {
