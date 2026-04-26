@@ -24,7 +24,7 @@ import {
 
 import { eq, and, or, like, desc, lt, gte, sql, isNull } from 'drizzle-orm';
 import { optionalAuth, writeAuditLog } from '../auth/middleware.js';
-import { getContactCriteria, setContactCriteria, upsertContact, syncGmailContactsFromDb, syncCalendarContactsFromDb, type ContactCriteria } from '../sync/contacts.js';
+import { getContactCriteria, setContactCriteria, syncGmailContactsFromDb, syncCalendarContactsFromDb, rebuildContactsFromMessages, type ContactCriteria } from '../sync/contacts.js';
 import { getConnectionManager } from '../connections/manager.js';
 
 const router = Router();
@@ -373,182 +373,48 @@ router.post('/rebuild', optionalAuth, async (req, res) => {
   const db = getDb();
   let total = 0;
 
-  for (const src of sources) {
-    const criteria = getContactCriteria(src);
-    if (!criteria.enabled) continue;
+  // Message-based rebuild (no API calls) for chat sources
+  const messageSources = sources.filter((s) => ['slack', 'discord', 'telegram', 'twitter'].includes(s));
+  if (messageSources.length > 0) {
+    total += rebuildContactsFromMessages(messageSources);
+  }
 
-    // Get our own account IDs so we can exclude ourselves
-    const myAccounts = db.select({ accountId: accounts.accountId })
-      .from(accounts).where(eq(accounts.source, src)).all();
-    const myIds = new Set(myAccounts.map((a) => a.accountId).filter(Boolean) as string[]);
-
-    if (src === 'discord') {
-      // Scan all distinct DM channel participants
-      if (criteria.hasDm) {
-        const dmAuthors = db.selectDistinct({
-          authorId: discordMessages.authorId,
-          authorName: discordMessages.authorName,
-          channelId: discordMessages.channelId,
-        }).from(discordMessages)
-          .where(and(isNull(discordMessages.guildId)))
-          .all();
-
-        for (const row of dmAuthors) {
-          if (!row.authorId || myIds.has(row.authorId)) continue;
-          // Build Discord CDN default avatar URL (doesn't need hash)
-          const defaultIndex = Number(BigInt(row.authorId) >> 22n) % 6;
-          const avatarUrl = `https://cdn.discordapp.com/embed/avatars/${defaultIndex}.png`;
-          upsertContact({
-            source: 'discord',
-            platformId: row.authorId,
-            displayName: row.authorName || row.authorId || undefined,
-            username: row.authorName ?? undefined,
-            avatarUrl,
-            hasDm: true,
-          });
-          total++;
-        }
-      }
-
-      // Scan guild channel participants
-      if (criteria.ownedGroup || criteria.smallGroup) {
-        const guildAuthors = db.selectDistinct({
-          authorId: discordMessages.authorId,
-          authorName: discordMessages.authorName,
-          guildId: discordMessages.guildId,
-          guildName: discordMessages.guildName,
-        }).from(discordMessages).all();
-
-        for (const row of guildAuthors) {
-          if (!row.authorId || !row.guildId || myIds.has(row.authorId)) continue;
-          // We don't have member count in the messages DB, so use a conservative heuristic:
-          // always add guild message authors with isFromSmallGroup flag when smallGroup criteria is on
-          upsertContact({
-            source: 'discord',
-            platformId: row.authorId,
-            displayName: row.authorName || row.authorId || undefined,
-            username: row.authorName ?? undefined,
-            isFromSmallGroup: criteria.smallGroup,
-            workspaceIds: row.guildId ? [row.guildId] : [],
-          });
-          total++;
+  // Twitter following list — needs live API
+  if (sources.includes('twitter')) {
+    const criteria = getContactCriteria('twitter');
+    if (criteria.nativeContacts || criteria.enabled) {
+      const manager = getConnectionManager();
+      const twitter = manager.getTwitter();
+      if (twitter) {
+        try {
+          const followingCount = await twitter.syncFollowingContacts();
+          total += followingCount;
+        } catch (e) {
+          console.error('[contacts] Twitter following sync failed during rebuild:', e);
         }
       }
     }
+  }
 
-    if (src === 'slack') {
-      if (criteria.hasDm) {
-        // DM channels start with D or G
-        const dmMessages = db.selectDistinct({
-          userId: slackMessages.userId,
-          userName: slackMessages.userName,
-          channelId: slackMessages.channelId,
-        }).from(slackMessages).all();
-
-        for (const row of dmMessages) {
-          if (!row.userId || myIds.has(row.userId)) continue;
-          const isDm = row.channelId.startsWith('D') || row.channelId.startsWith('G');
-          if (!isDm && !criteria.smallGroup) continue;
-          upsertContact({
-            source: 'slack',
-            platformId: row.userId,
-            displayName: row.userName || row.userId || undefined,
-            username: row.userName ?? undefined,
-            hasDm: isDm && criteria.hasDm,
-            isFromSmallGroup: !isDm && criteria.smallGroup,
-          });
-          total++;
-        }
-      }
+  // Gmail contacts
+  if (sources.includes('gmail')) {
+    const criteria = getContactCriteria('gmail');
+    if (criteria.enabled) {
+      const gmailAccounts = db.select({ accountId: accounts.accountId })
+        .from(accounts).where(eq(accounts.source, 'gmail')).all();
+      const ownEmail = gmailAccounts[0]?.accountId ?? undefined;
+      total += syncGmailContactsFromDb(ownEmail);
     }
+  }
 
-    if (src === 'telegram') {
-      if (criteria.hasDm) {
-        // Private chats: positive chatId < 1e12
-        const tgMessages = db.selectDistinct({
-          senderId: telegramMessages.senderId,
-          senderName: telegramMessages.senderName,
-          chatId: telegramMessages.chatId,
-          chatType: telegramMessages.chatType,
-        }).from(telegramMessages).all();
-
-        for (const row of tgMessages) {
-          if (!row.senderId) continue;
-          if (myIds.has(String(row.senderId))) continue;
-          const type = row.chatType?.toLowerCase() || '';
-          const isDm = type === 'private' || type === 'user' ||
-            (!type && row.chatId > 0 && row.chatId < 1_000_000_000_000);
-          const isGroup = type === 'group' || type === 'supergroup' ||
-            (!type && row.chatId < 0);
-          if (!isDm && !isGroup) continue;
-          upsertContact({
-            source: 'telegram',
-            platformId: String(row.senderId),
-            displayName: row.senderName || String(row.senderId) || undefined,
-            hasDm: isDm && criteria.hasDm,
-            isFromSmallGroup: isGroup && criteria.smallGroup,
-          });
-          total++;
-        }
-      }
-    }
-
-    if (src === 'twitter') {
-      if (criteria.hasDm) {
-        const twMessages = db.selectDistinct({
-          senderId: twitterDms.senderId,
-          senderHandle: twitterDms.senderHandle,
-          senderName: twitterDms.senderName,
-        }).from(twitterDms).all();
-
-        for (const row of twMessages) {
-          if (!row.senderId || myIds.has(row.senderId)) continue;
-          upsertContact({
-            source: 'twitter',
-            platformId: row.senderId,
-            displayName: row.senderName || row.senderHandle || row.senderId || undefined,
-            username: row.senderHandle ?? undefined,
-            hasDm: true,
-          });
-          total++;
-        }
-      }
-
-      // Also sync the following list as native contacts (with profile pictures)
-      if (criteria.nativeContacts || criteria.enabled) {
-        const manager = getConnectionManager();
-        const twitter = manager.getTwitter();
-        if (twitter) {
-          try {
-            const followingCount = await twitter.syncFollowingContacts();
-            total += followingCount;
-          } catch (e) {
-            console.error('[contacts] Twitter following sync failed during rebuild:', e);
-          }
-        }
-      }
-    }
-
-    if (src === 'gmail') {
-      if (criteria.enabled) {
-        // Use our own account email(s) to exclude self
-        const gmailAccounts = db.select({ accountId: accounts.accountId })
-          .from(accounts).where(eq(accounts.source, 'gmail')).all();
-        const ownEmail = gmailAccounts[0]?.accountId ?? undefined;
-        const n = syncGmailContactsFromDb(ownEmail);
-        total += n;
-      }
-    }
-
-    if (src === 'calendar') {
-      if (criteria.enabled) {
-        // Calendar shares the same Google account as Gmail
-        const calAccounts = db.select({ accountId: accounts.accountId })
-          .from(accounts).where(eq(accounts.source, 'gmail')).all();
-        const ownEmail = calAccounts[0]?.accountId ?? undefined;
-        const n = syncCalendarContactsFromDb(ownEmail);
-        total += n;
-      }
+  // Calendar contacts
+  if (sources.includes('calendar')) {
+    const criteria = getContactCriteria('calendar');
+    if (criteria.enabled) {
+      const calAccounts = db.select({ accountId: accounts.accountId })
+        .from(accounts).where(eq(accounts.source, 'gmail')).all();
+      const ownEmail = calAccounts[0]?.accountId ?? undefined;
+      total += syncCalendarContactsFromDb(ownEmail);
     }
   }
 

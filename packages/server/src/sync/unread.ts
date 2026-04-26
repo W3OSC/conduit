@@ -36,6 +36,29 @@ export interface UnreadEntry {
 // ---------------------------------------------------------------------------
 
 /**
+ * Seed the read cursor only for chats that have NO existing row yet.
+ * Called at the end of each service's initialFullSync so that imported
+ * history is treated as already-read. Existing read positions are never
+ * overwritten, so real unreads that arrive after the initial sync are
+ * preserved correctly.
+ */
+export function seedMissingReadState(
+  updates: Array<{ source: string; chatId: string; lastReadAt: string }>,
+): void {
+  if (updates.length === 0) return;
+  const db = getDb();
+  const now = new Date().toISOString();
+  for (let i = 0; i < updates.length; i += 100) {
+    db.insert(chatReadState)
+      .values(updates.slice(i, i + 100).map(({ source, chatId, lastReadAt }) => ({
+        source, chatId, lastReadAt, updatedAt: now,
+      })))
+      .onConflictDoNothing()
+      .run();
+  }
+}
+
+/**
  * Seed (or overwrite) the read cursor for a batch of chats from platform data.
  * Called by each service's fetchUnreadCounts() to propagate the platform's own
  * read position into conduit's chat_read_state table, so that already-read
@@ -236,6 +259,33 @@ export function broadcastUnreadForChat(source: string, chatId: string): void {
   } catch (e) {
     console.error(`[unread] broadcastUnreadForChat error (${source}:${chatId}):`, e);
   }
+}
+
+/**
+ * Mark every known chat as read at the current time, then broadcast count=0 for all.
+ * Returns the list of chats that were marked so the caller can also hit platform APIs.
+ */
+export function markAllChatsRead(): Array<{ source: string; chatId: string }> {
+  const db = getDb();
+  const now = new Date().toISOString();
+
+  const allEntries = computeAllUnreads();
+  for (const { source, chatId } of allEntries) {
+    db.insert(chatReadState)
+      .values({ source, chatId, lastReadAt: now, updatedAt: now })
+      .onConflictDoUpdate({
+        target: [chatReadState.source, chatReadState.chatId],
+        set: { lastReadAt: now, updatedAt: now },
+      })
+      .run();
+  }
+
+  const isMutedFn = (source: string, chatId: string) => getChatMuteState(source, chatId);
+  broadcastUnread(allEntries.map(({ source, chatId }) => ({
+    source, chatId, count: 0, isMuted: isMutedFn(source, chatId),
+  })));
+
+  return allEntries.map(({ source, chatId }) => ({ source, chatId }));
 }
 
 // ---------------------------------------------------------------------------

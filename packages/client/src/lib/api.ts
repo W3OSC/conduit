@@ -12,20 +12,14 @@ function getCsrfToken(): string | null {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
-/**
- * Check if the current session uses a UI session cookie (not an API key).
- * If so, we must attach the CSRF token header on state-changing requests.
- */
-function hasUiSession(): boolean {
-  return document.cookie.includes('conduit-session=');
-}
-
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const method = options?.method?.toUpperCase() ?? 'GET';
   const extraHeaders: Record<string, string> = {};
 
-  // Attach X-CSRF-Token on state-changing requests when using a UI session
-  if (!SAFE_METHODS.has(method) && hasUiSession()) {
+  // Always attach X-CSRF-Token on state-changing requests if the cookie is present.
+  // The session cookie is httpOnly so JS cannot detect it — just send the token
+  // whenever it exists; the server ignores it for API-key and unauthenticated requests.
+  if (!SAFE_METHODS.has(method)) {
     const csrfToken = getCsrfToken();
     if (csrfToken) {
       extraHeaders['X-CSRF-Token'] = csrfToken;
@@ -161,6 +155,10 @@ export const api = {
   getUnread: () => request<Array<{ source: string; chatId: string; count: number; isMuted: boolean }>>('/unread'),
   markChatRead: (source: string, chatId: string) =>
     request<{ success: boolean }>(`/unread/${source}/${encodeURIComponent(chatId)}/read`, { method: 'POST' }),
+  markChatUnread: (source: string, chatId: string) =>
+    request<{ success: boolean }>(`/unread/${source}/${encodeURIComponent(chatId)}/unread`, { method: 'POST' }),
+  markAllChatsRead: () =>
+    request<{ success: boolean }>('/unread/all/read', { method: 'POST' }),
 
   // Audit Log
   auditLog: (params?: AuditParams) => {

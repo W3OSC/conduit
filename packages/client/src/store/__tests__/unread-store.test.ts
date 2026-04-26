@@ -62,6 +62,13 @@ function markReadOptimistic(state: StoreState, source: string, chatId: string): 
   return { ...state, unreadCounts: { ...state.unreadCounts, [key]: 0 } };
 }
 
+/** Optimistic zero for ALL chats at once (mark-all-read button). */
+function markAllReadOptimistic(state: StoreState): StoreState {
+  const nextCounts = { ...state.unreadCounts };
+  for (const key of Object.keys(nextCounts)) nextCounts[key] = 0;
+  return { ...state, unreadCounts: nextCounts };
+}
+
 function getIsMuted(state: StoreState, source: string, chatId: string): boolean {
   return state.mutedChats[`${source}:${chatId}`] ?? false;
 }
@@ -231,5 +238,59 @@ describe('mute state accuracy', () => {
 
   it('getIsMuted returns false for unknown chats (safe default)', () => {
     expect(getIsMuted(makeStore(), 'discord', 'unknown')).toBe(false);
+  });
+});
+
+describe('markAllReadOptimistic — mark-all-read button', () => {
+  it('zeros every chat in the store at once', () => {
+    let state = setFromServer(makeStore(), [
+      { source: 'discord', chatId: 'ch1', count: 5,  isMuted: false },
+      { source: 'discord', chatId: 'ch2', count: 3,  isMuted: true  },
+      { source: 'slack',   chatId: 'sl1', count: 12, isMuted: false },
+    ]);
+    state = markAllReadOptimistic(state);
+    expect(state.unreadCounts['discord:ch1']).toBe(0);
+    expect(state.unreadCounts['discord:ch2']).toBe(0);
+    expect(state.unreadCounts['slack:sl1']).toBe(0);
+    expect(getTotalUnread(state)).toBe(0);
+  });
+
+  it('does not affect mute state', () => {
+    let state = setFromServer(makeStore(), [
+      { source: 'discord', chatId: 'ch1', count: 5, isMuted: true  },
+      { source: 'slack',   chatId: 'sl1', count: 3, isMuted: false },
+    ]);
+    state = markAllReadOptimistic(state);
+    expect(getIsMuted(state, 'discord', 'ch1')).toBe(true);
+    expect(getIsMuted(state, 'slack', 'sl1')).toBe(false);
+  });
+
+  it('is a no-op on an empty store', () => {
+    const state = markAllReadOptimistic(makeStore());
+    expect(Object.keys(state.unreadCounts)).toHaveLength(0);
+    expect(getTotalUnread(state)).toBe(0);
+  });
+
+  it('is idempotent — calling twice still gives all zeros', () => {
+    let state = setFromServer(makeStore(), [
+      { source: 'discord', chatId: 'ch1', count: 7, isMuted: false },
+    ]);
+    state = markAllReadOptimistic(state);
+    state = markAllReadOptimistic(state);
+    expect(state.unreadCounts['discord:ch1']).toBe(0);
+  });
+
+  it('server confirmation via applyUpdate after optimistic zero', () => {
+    let state = setFromServer(makeStore(), [
+      { source: 'discord', chatId: 'ch1', count: 5,  isMuted: false },
+      { source: 'slack',   chatId: 'sl1', count: 10, isMuted: false },
+    ]);
+    state = markAllReadOptimistic(state);
+    // Server confirms both via unread:update
+    state = applyUpdate(state, [
+      { source: 'discord', chatId: 'ch1', count: 0, isMuted: false },
+      { source: 'slack',   chatId: 'sl1', count: 0, isMuted: false },
+    ]);
+    expect(getTotalUnread(state)).toBe(0);
   });
 });

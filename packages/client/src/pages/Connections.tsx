@@ -19,7 +19,7 @@ import {
   Send, Server, Shield, Settings, PlugZap, UserCircle2, Clock, Users, ExternalLink,
   MessageSquare as MessageSquareIcon, Mail as MailIcon, Lock, ShieldCheck, QrCode,
   LogOut, Zap, FileText, Bot, Unplug, ArrowRight, CircleCheck, CircleX, Bell, Volume2, VolumeX,
-  BookOpen, GitBranch, Palette, Play, RotateCcw,
+  BookOpen, GitBranch, Palette, Play, RotateCcw, Download,
 } from 'lucide-react';
 import { AppearanceTab } from '@/components/settings/AppearanceTab';
 import {
@@ -38,6 +38,34 @@ import { DEFAULT_SOUND_SETTINGS, playSound } from '@/hooks/useNotificationSound'
 
 type Service = 'slack' | 'discord' | 'telegram';
 const SERVICES: Service[] = ['slack', 'discord', 'telegram'];
+
+const SLACK_MANIFEST = JSON.stringify({
+  display_information: {
+    name: 'Conduit',
+    description: 'Personal communications hub',
+    background_color: '#000000',
+  },
+  oauth_config: {
+    scopes: {
+      user: [
+        'channels:history', 'channels:read', 'channels:write',
+        'groups:history',   'groups:read',   'groups:write',
+        'im:history',       'im:read',       'im:write',
+        'mpim:history',     'mpim:read',     'mpim:write',
+        'chat:write',       'users:read',
+      ],
+    },
+  },
+  settings: {
+    event_subscriptions: {
+      user_events: ['message.channels', 'message.groups', 'message.im', 'message.mpim'],
+    },
+    interactivity: { is_enabled: false },
+    org_deploy_enabled: false,
+    socket_mode_enabled: true,
+    token_rotation_enabled: false,
+  },
+}, null, 2);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Primitives
@@ -720,7 +748,7 @@ function GuildRow({ guild, checked, onToggle }: { guild: DiscordGuildInfo; check
   );
 }
 
-function CredentialsSection({ service }: { service: Service }) {
+function CredentialsSection({ service, onConnected }: { service: Service; onConnected?: () => void }) {
   const qc = useQueryClient();
   const connStatus = useConnectionStore((s) => s.statuses[service]);
   const isConnected = connStatus?.status === 'connected';
@@ -749,12 +777,30 @@ function CredentialsSection({ service }: { service: Service }) {
     || Object.keys(savedFields).some((k) => (fields[k] ?? '') !== savedFields[k]);
 
   const save = useMutation({
-    mutationFn: () => api.updateCredentials(service, fields),
-    onSuccess: () => {
+    mutationFn: () => {
+      // Strip accidental surrounding quotes (e.g. copied from Local Storage as `"token-value"`)
+      const cleaned = Object.fromEntries(
+        Object.entries(fields).map(([k, v]) => [k, v.replace(/^["']|["']$/g, '')])
+      );
+      return api.updateCredentials(service, cleaned);
+    },
+    onSuccess: async () => {
+      // Reflect stripped values back and sync savedFields to the same cleaned snapshot
+      const cleaned = Object.fromEntries(
+        Object.entries(fields).map(([k, v]) => [k, v.replace(/^["']|["']$/g, '')])
+      );
+      setFields(cleaned);
       toast({ title: 'Credentials saved', variant: 'success' });
-      setSavedFields({ ...fields }); // reset dirty state
+      setSavedFields(cleaned); // reset dirty state
       qc.invalidateQueries({ queryKey: ['credentials-raw', service] });
       qc.invalidateQueries({ queryKey: ['credentials'] });
+      // Auto-connect when credentials are saved for the first time or while disconnected.
+      // Telegram uses its own OTP flow so skip auto-connect there.
+      if (!isConnected && service !== 'telegram') {
+        await api.connect(service);
+        qc.invalidateQueries({ queryKey: ['connections'] });
+        onConnected?.();
+      }
     },
     onError: (e: Error) => toast({ title: 'Save failed', description: e.message, variant: 'destructive' }),
   });
@@ -767,14 +813,22 @@ function CredentialsSection({ service }: { service: Service }) {
 
       {service === 'slack' && (
         <div className="space-y-4">
-          <div className="rounded-xl border border-border bg-secondary/20 p-4 space-y-2.5 text-xs text-muted-foreground">
+          <div className="rounded-xl border border-border bg-secondary/20 p-4 space-y-3 text-xs text-muted-foreground">
             <p className="font-semibold text-foreground text-[13px]">How to get your Slack tokens</p>
-            <ol className="space-y-1.5 list-decimal list-inside marker:text-muted-foreground/50">
-              <li>Go to <a href="https://api.slack.com/apps" target="_blank" rel="noreferrer" className="text-primary hover:underline">api.slack.com/apps</a> → click <strong className="text-foreground/80">Create New App</strong> → choose <strong className="text-foreground/80">From scratch</strong> → name it anything → select your workspace → click <strong className="text-foreground/80">Create App</strong></li>
-              <li>In the left sidebar click <strong className="text-foreground/80">OAuth &amp; Permissions</strong> → scroll to <strong className="text-foreground/80">User Token Scopes</strong> (not Bot Token Scopes) → click <strong className="text-foreground/80">Add an OAuth Scope</strong> and add all of these: <code className="bg-secondary/80 px-1 rounded text-[10px]">channels:history</code> <code className="bg-secondary/80 px-1 rounded text-[10px]">channels:read</code> <code className="bg-secondary/80 px-1 rounded text-[10px]">channels:write</code> <code className="bg-secondary/80 px-1 rounded text-[10px]">groups:history</code> <code className="bg-secondary/80 px-1 rounded text-[10px]">groups:read</code> <code className="bg-secondary/80 px-1 rounded text-[10px]">groups:write</code> <code className="bg-secondary/80 px-1 rounded text-[10px]">im:history</code> <code className="bg-secondary/80 px-1 rounded text-[10px]">im:read</code> <code className="bg-secondary/80 px-1 rounded text-[10px]">im:write</code> <code className="bg-secondary/80 px-1 rounded text-[10px]">mpim:history</code> <code className="bg-secondary/80 px-1 rounded text-[10px]">mpim:read</code> <code className="bg-secondary/80 px-1 rounded text-[10px]">mpim:write</code> <code className="bg-secondary/80 px-1 rounded text-[10px]">chat:write</code> <code className="bg-secondary/80 px-1 rounded text-[10px]">users:read</code></li>
-              <li>Scroll back to the top of <strong className="text-foreground/80">OAuth &amp; Permissions</strong> → click <strong className="text-foreground/80">Install to Workspace</strong> → click <strong className="text-foreground/80">Allow</strong> → copy the <strong className="text-foreground/80">User OAuth Token</strong> (<code className="bg-secondary/80 px-1 rounded text-[10px]">xoxp-…</code>) and paste it below</li>
-              <li>For real-time events: in the sidebar click <strong className="text-foreground/80">Socket Mode</strong> → toggle <strong className="text-foreground/80">Enable Socket Mode</strong> on → create a token with any name → copy the <strong className="text-foreground/80">App-Level Token</strong> (<code className="bg-secondary/80 px-1 rounded text-[10px]">xapp-…</code>) and paste it below</li>
-              <li>In the sidebar click <strong className="text-foreground/80">Event Subscriptions</strong> → toggle <strong className="text-foreground/80">Enable Events</strong> on → under <strong className="text-foreground/80">Subscribe to events on behalf of users</strong> add: <code className="bg-secondary/80 px-1 rounded text-[10px]">message.channels</code> <code className="bg-secondary/80 px-1 rounded text-[10px]">message.groups</code> <code className="bg-secondary/80 px-1 rounded text-[10px]">message.im</code> <code className="bg-secondary/80 px-1 rounded text-[10px]">message.mpim</code> → click <strong className="text-foreground/80">Save Changes</strong></li>
+            <ol className="space-y-3 list-decimal list-inside marker:text-muted-foreground/50">
+              <li>Go to <a href="https://api.slack.com/apps" target="_blank" rel="noreferrer" className="text-primary hover:underline">api.slack.com/apps</a> → <strong className="text-foreground/80">Create New App</strong> → choose <strong className="text-foreground/80">From an app manifest</strong> → select your workspace</li>
+              <li>
+                <span>Copy the manifest and paste it into Slack → click <strong className="text-foreground/80">Next</strong> → <strong className="text-foreground/80">Create</strong></span>
+                <div className="mt-2 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <p className="font-medium text-foreground/70">App Manifest</p>
+                    <CopyButton text={SLACK_MANIFEST} title="Copy manifest" />
+                  </div>
+                  <pre className="rounded-lg bg-background border border-border p-3 text-[10px] font-mono text-foreground/70 overflow-x-auto whitespace-pre leading-relaxed">{SLACK_MANIFEST}</pre>
+                </div>
+              </li>
+              <li>In Slack's app settings go to <strong className="text-foreground/80">OAuth &amp; Permissions</strong> → click <strong className="text-foreground/80">Install to Workspace</strong> → <strong className="text-foreground/80">Allow</strong> → back on that same page, copy the <strong className="text-foreground/80">User OAuth Token</strong> (<code className="bg-secondary/80 px-1 rounded text-[10px]">xoxp-…</code>) and paste it below</li>
+              <li>For real-time: sidebar → <strong className="text-foreground/80">Socket Mode</strong> → enable → generate a token → copy the <strong className="text-foreground/80">App-Level Token</strong> (<code className="bg-secondary/80 px-1 rounded text-[10px]">xapp-…</code>) and paste it below</li>
             </ol>
           </div>
           <SecretField
@@ -799,12 +853,19 @@ function CredentialsSection({ service }: { service: Service }) {
 
       {service === 'discord' && (
         <div className="space-y-4">
+          <div className="rounded-xl border border-border bg-secondary/20 p-4 space-y-3 text-xs text-muted-foreground">
+            <p className="font-semibold text-foreground text-[13px]">How to get your Discord user token</p>
+            <ol className="space-y-3 list-decimal list-inside marker:text-muted-foreground/50">
+              <li>Go to <a href="https://discord.com/app" target="_blank" rel="noreferrer" className="text-primary hover:underline">discord.com/app</a> and log in</li>
+              <li>Press <kbd className="bg-secondary/80 border border-border rounded px-1 text-[10px]">F12</kbd> → <strong className="text-foreground/80">Application</strong> tab → <strong className="text-foreground/80">Local Storage</strong> → <code className="bg-secondary/80 px-1 rounded text-[10px]">https://discord.com</code> → find the key <code className="bg-secondary/80 px-1 rounded text-[10px]">token</code></li>
+              <li>Double-click the value column and copy it</li>
+            </ol>
+          </div>
           <SecretField
             label="User Token"
             value={fields.token || ''}
             onChange={set('token')}
             placeholder="Discord user token"
-            hint={<><a href="https://discord.com/app" target="_blank" rel="noreferrer" className="text-primary hover:underline">Open Discord in your browser</a> → press <kbd className="bg-secondary/80 border border-border rounded px-1 text-[10px]">F12</kbd> → Network tab → click any request to <code className="bg-secondary/80 px-1 rounded text-[10px]">discord.com</code> → copy the <code className="bg-secondary/80 px-1 rounded text-[10px]">Authorization</code> header value.</>}
           />
           <button onClick={() => save.mutate()} disabled={save.isPending || !isDirty} className="btn-primary text-xs">
             {save.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
@@ -1400,7 +1461,7 @@ function ServiceAccordion({ service }: { service: Service }) {
                     transition={{ duration: 0.15 }}
                   >
                     {activeSection === 'overview'    && <OverviewSection    service={service} testSteps={testSteps} testRunning={testRunning} runTest={runTest} clearTestSteps={() => setTestSteps([])} />}
-                    {activeSection === 'credentials' && <CredentialsSection service={service} />}
+                    {activeSection === 'credentials' && <CredentialsSection service={service} onConnected={() => setActiveSection('overview')} />}
                     {activeSection === 'permissions' && <PermissionsSection service={service} />}
                     {activeSection === 'sync'        && <SyncSection        service={service} />}
                     {activeSection === 'contacts'    && <ContactsSection    service={service} />}
@@ -3897,6 +3958,81 @@ function AiPermissionsPanel() {
   );
 }
 
+// ─── Skill Install Panel ──────────────────────────────────────────────────────
+
+const SKILL_RAW_URL = 'https://raw.githubusercontent.com/W3OSC/conduit/main/skills/conduit/SKILL.md';
+
+type SkillTarget = 'claude' | 'gemini';
+
+const SKILL_TARGETS: { id: SkillTarget; label: string; path: string }[] = [
+  { id: 'claude', label: 'Claude / Copilot CLI', path: '~/.claude/conduit/SKILL.md' },
+  { id: 'gemini', label: 'Gemini CLI / Codex',  path: '~/.agents/conduit/SKILL.md' },
+];
+
+function skillPrompt(path: string) {
+  return `Please install the Conduit skill: fetch ${SKILL_RAW_URL} and save it to ${path}, creating the directory if it doesn't exist.`;
+}
+
+function SkillInstallPanel() {
+  const [target, setTarget] = useState<SkillTarget>('claude');
+  const selected = SKILL_TARGETS.find((t) => t.id === target)!;
+  const prompt = skillPrompt(selected.path);
+
+  return (
+    <div className="rounded-xl border border-border bg-secondary/30 overflow-hidden">
+      <div className="px-3 py-2 border-b border-border flex items-center gap-1.5">
+        <Download className="w-3 h-3 text-muted-foreground" />
+        <p className="text-xs font-semibold text-foreground">Install as Skill</p>
+        <p className="text-[10px] text-muted-foreground ml-auto">Paste this prompt into your AI agent</p>
+      </div>
+      <div className="p-3 space-y-2.5">
+        {/* Target selector */}
+        <div className="flex gap-1.5">
+          {SKILL_TARGETS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTarget(t.id)}
+              className={cn(
+                'px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors',
+                target === t.id
+                  ? 'bg-primary/15 border-primary/40 text-primary'
+                  : 'bg-secondary/40 border-border text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        {/* Copyable prompt */}
+        <div className="relative group">
+          <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 pr-8 overflow-x-auto text-foreground/80 whitespace-pre-wrap break-all leading-relaxed">
+            {prompt}
+          </pre>
+          <CopyButton
+            text={prompt}
+            title="Copy prompt"
+            className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"
+          />
+        </div>
+        <p className="text-[10px] text-muted-foreground">
+          Installs to <code className="font-mono">{selected.path}</code>
+          {' · '}
+          <a
+            href={SKILL_RAW_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-primary hover:underline"
+          >
+            view SKILL.md
+          </a>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 type AiSetupMethod = 'channel' | 'gateway' | 'cli' | 'other';
 
 function AiConnectionTab() {
@@ -4094,6 +4230,9 @@ function AiConnectionTab() {
 
       {/* ── PERMISSIONS (always visible) ── */}
       <AiPermissionsPanel />
+
+      {/* ── SKILL INSTALL (always visible) ── */}
+      <SkillInstallPanel />
 
       {/* ── METHOD SELECTOR ── */}
       {!configured && (
