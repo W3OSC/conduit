@@ -11,6 +11,7 @@ import apiRouter from './api/router.js';
 import uiAuthRouter, { uiAuthMiddleware } from './api/ui-auth.js';
 import { csrfMiddleware } from './auth/csrf.js';
 import { startUpdatePoller } from './update/checker.js';
+import { bootstrapContactsIfEmpty } from './sync/contacts.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -109,6 +110,10 @@ async function main() {
   // Fire-and-forget: connections run in the background, the HTTP server is
   // already accepting requests so the UI can render immediately.
   manager.connectAll().catch((e) => console.error('[conduit] connectAll error:', e));
+
+  // Bootstrap contacts from existing messages for any source that has messages
+  // but no contacts yet (e.g. after a direct DB import or first run).
+  try { bootstrapContactsIfEmpty(); } catch (e) { console.error('[contacts] Bootstrap error:', e); }
 
   // Start the background update poller (checks for new commits every hour)
   startUpdatePoller();

@@ -5,7 +5,7 @@ import { getDb } from '../db/client.js';
 import { telegramMessages, syncState, syncRuns, accounts } from '../db/schema.js';
 import { eq, and, sql } from 'drizzle-orm';
 import { broadcast, broadcastUnread } from '../websocket/hub.js';
-import { persistMuteState, seedReadState, broadcastUnreadForChat, markChatRead, computeAllUnreads } from './unread.js';
+import { persistMuteState, seedReadState, seedMissingReadState, broadcastUnreadForChat, markChatRead, computeAllUnreads } from './unread.js';
 import { getCreds, setCreds, type TelegramCreds } from '../api/credentials.js';
 import {
   syncTelegramContacts, upsertContact, upsertContactFromMessage, getContactCriteria,
@@ -436,6 +436,13 @@ export class TelegramBridge {
 
         broadcast({ type: 'sync:progress', data: { service: 'telegram', status: 'success', messagesSaved: totalSaved } });
 
+        // Mark every synced chat as read so imported history doesn't appear as
+        // unread. fetchUnreadCounts() runs next and overwrites with accurate
+        // platform positions (Telegram's unreadCount), but this INSERT OR IGNORE
+        // ensures any chat fetchUnreadCounts skips stays marked as read.
+        const now = new Date().toISOString();
+        seedMissingReadState(chats.map((c) => ({ source: 'telegram', chatId: String(c.chat_id), lastReadAt: now })));
+
         // Contact sync
         try {
           const criteria = getContactCriteria('telegram');
@@ -636,7 +643,7 @@ export class TelegramBridge {
       // last-read message (i.e. the message just before the unread window).
       //
       // Instead of one DB query per dialog (N queries), we load all messages
-      // for all relevant chat IDs in two bulk queries and compute offsets in memory.
+      // for all relevant chat IDs in one bulk query and compute offsets in memory.
 
       const nowIso = new Date().toISOString();
 
@@ -648,17 +655,13 @@ export class TelegramBridge {
       }
 
       // Chats with unread messages: fetch all their messages ordered DESC in one
-      // query per chat — but batch them by loading timestamps for all affected
-      // chats at once using a single GROUP BY + window-function-style raw query.
+      // batch query using a window function to avoid N separate queries.
       const unreadChatIds = [...dialogMap.entries()]
         .filter(([, { unreadCount }]) => unreadCount > 0)
         .map(([chatId]) => chatId);
 
       if (unreadChatIds.length > 0) {
-        // Load per-chat timestamp arrays in one query:
-        // SELECT chat_id, timestamp, ROW_NUMBER() OVER (PARTITION BY chat_id ORDER BY timestamp DESC)
-        // SQLite supports window functions since 3.25 (2018). We use them here to
-        // avoid N separate queries.
+        // SQLite supports window functions since 3.25 (2018).
         const inList = sql.join(unreadChatIds.map((id) => sql`${id}`), sql`, `);
         const rows = db.all<{ chatId: string; timestamp: string; rn: number }>(sql`
           SELECT CAST(chat_id AS TEXT) AS chatId,

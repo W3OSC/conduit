@@ -661,6 +661,15 @@ export class ConnectionManager {
             name: 'Send & receive DM to self',
             run: async () => {
               if (!this.slack) throw new Error('Not connected');
+              // Without an xapp- app-level token Socket Mode is disabled and
+              // messages only arrive via polling (~2 min). Skip the realtime
+              // round-trip check and just verify the send succeeds.
+              if (!this.slack.isSocketMode) {
+                const sent = await this.slack.sendSelfWithToken(token);
+                if (!sent) throw new Error('Failed to send message');
+                await this.slack.deleteSelfMessage(sent.channelId, sent.ts, token);
+                return 'Message sent (realtime check skipped — add an xapp- App-Level Token to enable Socket Mode)';
+              }
               const t0 = Date.now();
               // Subscribe to the broadcast bus BEFORE sending so we never miss the event
               const received = onNextBroadcast(

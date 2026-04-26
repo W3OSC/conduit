@@ -11,8 +11,11 @@
  */
 
 import { getDb } from '../db/client.js';
-import { contacts, settings, gmailMessages, calendarEvents } from '../db/schema.js';
-import { eq, and, sql } from 'drizzle-orm';
+import {
+  contacts, settings, gmailMessages, calendarEvents,
+  slackMessages, discordMessages, telegramMessages, twitterDms, accounts,
+} from '../db/schema.js';
+import { eq, and, sql, isNull } from 'drizzle-orm';
 
 // ─── Criteria ─────────────────────────────────────────────────────────────────
 
@@ -733,6 +736,188 @@ export function syncCalendarContactsFromDb(accountId?: string): number {
   }
 
   return count;
+}
+
+// ─── Rebuild contacts from local messages (no API calls) ─────────────────────
+
+/**
+ * Scans existing message tables and upserts contacts for the given sources.
+ * Pure local operation — no platform API calls.
+ * Returns the number of contacts upserted.
+ */
+export function rebuildContactsFromMessages(
+  sources: string[] = ['slack', 'discord', 'telegram', 'twitter'],
+): number {
+  const db = getDb();
+  let total = 0;
+
+  for (const src of sources) {
+    const criteria = getContactCriteria(src);
+    if (!criteria.enabled) continue;
+
+    const myAccounts = db.select({ accountId: accounts.accountId })
+      .from(accounts).where(eq(accounts.source, src)).all();
+    const myIds = new Set(myAccounts.map((a) => a.accountId).filter(Boolean) as string[]);
+
+    if (src === 'slack') {
+      const rows = db.selectDistinct({
+        userId: slackMessages.userId,
+        userName: slackMessages.userName,
+        channelId: slackMessages.channelId,
+      }).from(slackMessages).all();
+
+      for (const row of rows) {
+        if (!row.userId || myIds.has(row.userId)) continue;
+        const isDm = row.channelId.startsWith('D') || row.channelId.startsWith('G');
+        if (!isDm && !criteria.smallGroup) continue;
+        upsertContact({
+          source: 'slack',
+          platformId: row.userId,
+          displayName: row.userName || row.userId || undefined,
+          username: row.userName ?? undefined,
+          hasDm: isDm && criteria.hasDm,
+          isFromSmallGroup: !isDm && criteria.smallGroup,
+        });
+        total++;
+      }
+    }
+
+    if (src === 'discord') {
+      if (criteria.hasDm) {
+        const dmAuthors = db.selectDistinct({
+          authorId: discordMessages.authorId,
+          authorName: discordMessages.authorName,
+          channelId: discordMessages.channelId,
+        }).from(discordMessages).where(isNull(discordMessages.guildId)).all();
+
+        for (const row of dmAuthors) {
+          if (!row.authorId || myIds.has(row.authorId)) continue;
+          const defaultIndex = Number(BigInt(row.authorId) >> 22n) % 6;
+          upsertContact({
+            source: 'discord',
+            platformId: row.authorId,
+            displayName: row.authorName || row.authorId || undefined,
+            username: row.authorName ?? undefined,
+            avatarUrl: `https://cdn.discordapp.com/embed/avatars/${defaultIndex}.png`,
+            hasDm: true,
+          });
+          total++;
+        }
+      }
+
+      if (criteria.ownedGroup || criteria.smallGroup) {
+        const guildAuthors = db.selectDistinct({
+          authorId: discordMessages.authorId,
+          authorName: discordMessages.authorName,
+          guildId: discordMessages.guildId,
+        }).from(discordMessages).all();
+
+        for (const row of guildAuthors) {
+          if (!row.authorId || !row.guildId || myIds.has(row.authorId)) continue;
+          upsertContact({
+            source: 'discord',
+            platformId: row.authorId,
+            displayName: row.authorName || row.authorId || undefined,
+            username: row.authorName ?? undefined,
+            isFromSmallGroup: criteria.smallGroup,
+            workspaceIds: [row.guildId],
+          });
+          total++;
+        }
+      }
+    }
+
+    if (src === 'telegram') {
+      if (criteria.hasDm) {
+        const tgRows = db.selectDistinct({
+          senderId: telegramMessages.senderId,
+          senderName: telegramMessages.senderName,
+          chatId: telegramMessages.chatId,
+          chatType: telegramMessages.chatType,
+        }).from(telegramMessages).all();
+
+        for (const row of tgRows) {
+          if (!row.senderId || myIds.has(String(row.senderId))) continue;
+          const type = row.chatType?.toLowerCase() || '';
+          const isDm = type === 'private' || type === 'user' ||
+            (!type && row.chatId > 0 && row.chatId < 1_000_000_000_000);
+          const isGroup = type === 'group' || type === 'supergroup' ||
+            (!type && row.chatId < 0);
+          if (!isDm && !isGroup) continue;
+          upsertContact({
+            source: 'telegram',
+            platformId: String(row.senderId),
+            displayName: row.senderName || String(row.senderId) || undefined,
+            hasDm: isDm && criteria.hasDm,
+            isFromSmallGroup: isGroup && criteria.smallGroup,
+          });
+          total++;
+        }
+      }
+    }
+
+    if (src === 'twitter') {
+      if (criteria.hasDm) {
+        const twRows = db.selectDistinct({
+          senderId: twitterDms.senderId,
+          senderHandle: twitterDms.senderHandle,
+          senderName: twitterDms.senderName,
+        }).from(twitterDms).all();
+
+        for (const row of twRows) {
+          if (!row.senderId || myIds.has(row.senderId)) continue;
+          upsertContact({
+            source: 'twitter',
+            platformId: row.senderId,
+            displayName: row.senderName || row.senderHandle || row.senderId || undefined,
+            username: row.senderHandle ?? undefined,
+            hasDm: true,
+          });
+          total++;
+        }
+      }
+    }
+  }
+
+  return total;
+}
+
+/**
+ * Checks which of the given sources have messages but no contacts,
+ * and runs rebuildContactsFromMessages for those sources.
+ * Safe to call on every startup — no-ops if contacts already exist.
+ */
+export function bootstrapContactsIfEmpty(
+  sources: string[] = ['slack', 'discord', 'telegram', 'twitter'],
+): void {
+  const db = getDb();
+
+  const sourcesToRebuild: string[] = [];
+  for (const src of sources) {
+    const contactCount = db.select({ n: sql<number>`count(*)` })
+      .from(contacts).where(eq(contacts.source, src)).get()?.n ?? 0;
+    if (contactCount > 0) continue;
+
+    // Check if there are any messages for this source
+    let hasMessages = false;
+    if (src === 'slack') {
+      hasMessages = (db.select({ n: sql<number>`count(*)` }).from(slackMessages).get()?.n ?? 0) > 0;
+    } else if (src === 'discord') {
+      hasMessages = (db.select({ n: sql<number>`count(*)` }).from(discordMessages).get()?.n ?? 0) > 0;
+    } else if (src === 'telegram') {
+      hasMessages = (db.select({ n: sql<number>`count(*)` }).from(telegramMessages).get()?.n ?? 0) > 0;
+    } else if (src === 'twitter') {
+      hasMessages = (db.select({ n: sql<number>`count(*)` }).from(twitterDms).get()?.n ?? 0) > 0;
+    }
+
+    if (hasMessages) sourcesToRebuild.push(src);
+  }
+
+  if (sourcesToRebuild.length === 0) return;
+
+  console.log(`[contacts] Bootstrapping contacts from messages for: ${sourcesToRebuild.join(', ')}`);
+  const n = rebuildContactsFromMessages(sourcesToRebuild);
+  console.log(`[contacts] Bootstrap complete: ${n} contacts upserted`);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
