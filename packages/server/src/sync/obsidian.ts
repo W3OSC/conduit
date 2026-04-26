@@ -44,10 +44,46 @@ export interface VaultFileEntry {
   extension?: string;
 }
 
+/** A single edit operation within a patch_file action. */
+export interface ObsidianPatchEdit {
+  /** Exact text to locate in the file (must match verbatim, including whitespace). Must appear exactly once. */
+  search: string;
+  /**
+   * Where the edit is applied relative to the matched text.
+   *
+   * - `'replace'` (default) — the matched text is replaced by `replace`.
+   * - `'before'`            — `content` is inserted immediately before the match; the matched text is kept unchanged.
+   * - `'after'`             — `content` is inserted immediately after the match; the matched text is kept unchanged.
+   */
+  position?: 'replace' | 'before' | 'after';
+  /**
+   * For `position: 'replace'` (or when `position` is omitted):
+   * the text that replaces the matched region. Use `""` to delete it.
+   */
+  replace?: string;
+  /**
+   * For `position: 'before'` or `position: 'after'`:
+   * the text to insert next to the match. The matched text itself is not modified.
+   */
+  content?: string;
+}
+
 // Write actions — go through the outbox, executed on approval
 export type ObsidianWriteAction =
   | { action: 'create_file'; path: string; content: string }
   | { action: 'write_file'; path: string; content: string }
+  | {
+      action: 'patch_file';
+      path: string;
+      /**
+       * Ordered list of search-and-replace edits to apply to the file.
+       * Each edit is applied in sequence to the result of the previous one.
+       * Every `search` string must appear exactly once in the file at the
+       * point it is applied — if any edit fails to match (or matches more
+       * than once) the whole action is aborted with an error.
+       */
+      edits: ObsidianPatchEdit[];
+    }
   | { action: 'rename_file'; oldPath: string; newPath: string }
   | { action: 'delete_file'; path: string };
 
@@ -288,6 +324,61 @@ export class ObsidianVaultSync {
         await git.commit(`Update ${action.path}\n\n[via Conduit]`);
         await this.pushWithAuth(git, config);
         return JSON.stringify({ path: action.path, action: 'written' });
+      }
+
+      case 'patch_file': {
+        const fullPath = this.resolvePath(config.localPath, action.path);
+        if (!fs.existsSync(fullPath)) {
+          throw new Error(`File not found: ${action.path}. Use create_file to create a new file.`);
+        }
+        if (!action.edits || action.edits.length === 0) {
+          throw new Error('patch_file requires at least one edit.');
+        }
+
+        let current = fs.readFileSync(fullPath, 'utf-8');
+
+        for (let i = 0; i < action.edits.length; i++) {
+          const { search, position = 'replace', replace = '', content = '' } = action.edits[i];
+          if (!search) {
+            throw new Error(`Edit ${i + 1}: search string must not be empty. Use write_file to replace entire file content.`);
+          }
+
+          // Count occurrences (literal string match, no regex)
+          let count = 0;
+          let pos = current.indexOf(search);
+          const firstPos = pos;
+          while (pos !== -1) {
+            count++;
+            if (count > 1) break; // no need to keep counting
+            pos = current.indexOf(search, pos + 1);
+          }
+
+          if (count === 0) {
+            throw new Error(`Edit ${i + 1}: search string not found in file. Make sure it matches the file content exactly (including whitespace and line endings).`);
+          }
+          if (count > 1) {
+            throw new Error(`Edit ${i + 1}: search string matches more than one location in the file. Make it more specific by including more surrounding context.`);
+          }
+
+          if (position === 'before') {
+            // Insert content before the match; leave the matched text in place
+            current = current.slice(0, firstPos) + content + current.slice(firstPos);
+          } else if (position === 'after') {
+            // Insert content after the match; leave the matched text in place
+            const afterPos = firstPos + search.length;
+            current = current.slice(0, afterPos) + content + current.slice(afterPos);
+          } else {
+            // 'replace' (default) — substitute matched text with replace
+            current = current.slice(0, firstPos) + replace + current.slice(firstPos + search.length);
+          }
+        }
+
+        fs.writeFileSync(fullPath, current, 'utf-8');
+        await git.add(fullPath);
+        const editCount = action.edits.length;
+        await git.commit(`Patch ${action.path} (${editCount} edit${editCount === 1 ? '' : 's'})\n\n[via Conduit]`);
+        await this.pushWithAuth(git, config);
+        return JSON.stringify({ path: action.path, action: 'patched', edits: editCount });
       }
 
       case 'rename_file': {

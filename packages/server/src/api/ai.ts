@@ -154,8 +154,26 @@ function buildSystemPrompt(baseUrl: string, sessionId: string, perms: AiPermissi
   if (perms.writeVault) {
     allowed.push(
       perms.requireApproval
-        ? '- `POST /api/outbox` with `source: "obsidian"` and JSON content `{ "action": "create_file"|"write_file"|"rename_file"|"delete_file", ... }` — queue a vault write for approval'
-        : '- `POST /api/outbox` with `source: "obsidian"` — queue a vault write (approval not required)',
+        ? `- \`POST /api/outbox\` with \`source: "obsidian"\` and a JSON-encoded action as the \`content\` field — queue a vault write for approval. Available actions:
+  - \`patch_file\` **(preferred for editing existing files)** — one or more targeted edits, each with a \`search\` anchor (must match exactly once) and an operation:
+    - Omit \`position\` or set \`position:"replace"\` to replace the matched text: \`{"search":"old","replace":"new"}\`. Set \`replace:""\` to delete.
+    - \`position:"after"\` + \`content\` — insert text immediately after the anchor without changing it. Best for appending to a section or list: \`{"search":"## Action Items","position":"after","content":"\\n- New task"}\`
+    - \`position:"before"\` + \`content\` — insert text immediately before the anchor without changing it: \`{"search":"## Next Section","position":"before","content":"New paragraph.\\n\\n"}\`
+    Multiple edits run in sequence. Example: \`{"action":"patch_file","path":"Notes/foo.md","edits":[{"search":"## Old","replace":"## New"},{"search":"## Tasks","position":"after","content":"\\n- Do thing"}]}\`
+  - \`create_file\` — create a new file: \`{"action":"create_file","path":"...","content":"..."}\`
+  - \`write_file\` — overwrite an entire file (only when replacing the whole file is intentional): \`{"action":"write_file","path":"...","content":"..."}\`
+  - \`rename_file\` — move/rename: \`{"action":"rename_file","oldPath":"...","newPath":"..."}\`
+  - \`delete_file\` — delete: \`{"action":"delete_file","path":"..."}\``
+        : `- \`POST /api/outbox\` with \`source: "obsidian"\` — queue a vault write (approval not required). Available actions:
+  - \`patch_file\` **(preferred for editing existing files)** — one or more targeted edits, each with a \`search\` anchor (must match exactly once) and an operation:
+    - Omit \`position\` or set \`position:"replace"\` to replace the matched text: \`{"search":"old","replace":"new"}\`. Set \`replace:""\` to delete.
+    - \`position:"after"\` + \`content\` — insert text immediately after the anchor without changing it. Best for appending to a section or list: \`{"search":"## Action Items","position":"after","content":"\\n- New task"}\`
+    - \`position:"before"\` + \`content\` — insert text immediately before the anchor without changing it: \`{"search":"## Next Section","position":"before","content":"New paragraph.\\n\\n"}\`
+    Multiple edits run in sequence. Example: \`{"action":"patch_file","path":"Notes/foo.md","edits":[{"search":"## Old","replace":"## New"},{"search":"## Tasks","position":"after","content":"\\n- Do thing"}]}\`
+  - \`create_file\` — create a new file: \`{"action":"create_file","path":"...","content":"..."}\`
+  - \`write_file\` — overwrite an entire file (only when replacing the whole file is intentional): \`{"action":"write_file","path":"...","content":"..."}\`
+  - \`rename_file\` — move/rename: \`{"action":"rename_file","oldPath":"...","newPath":"..."}\`
+  - \`delete_file\` — delete: \`{"action":"delete_file","path":"..."}\``,
     );
   } else {
     denied.push('writing to the Obsidian vault (not permitted)');

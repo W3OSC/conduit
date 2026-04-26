@@ -777,8 +777,34 @@ router.get('/openapi.json', (req, res) => {
         },
         post: {
           operationId: 'createOutboxItem',
-          summary: 'Send a message to any platform via the outbox',
-          description: 'Queues a message for sending. The recipient_id is the platform-native channel or user ID. For DMs, use the contact\'s platformId. For channels, use the channel ID from GET /chats. Messages require sendEnabled permission for the service.',
+          summary: 'Queue an action to any platform via the outbox',
+          description: `Queues a message or file action for sending. For messaging platforms (slack, discord, telegram, twitter), content is plain text. For structured platforms (gmail, calendar, notion, obsidian), content must be a JSON string encoding the action payload — see below.
+
+**Obsidian vault writes** — set source to "obsidian" and JSON-encode one of these action objects as the content field:
+
+- \`create_file\` — Create a new file (fails if it already exists):
+  \`{"action":"create_file","path":"Notes/example.md","content":"# Hello\\nFile body here."}\`
+
+- \`patch_file\` — Edit an existing file with one or more targeted operations. **Prefer this over write_file whenever editing an existing file.** Each edit locates an exact anchor string (must match exactly once) and applies one of three operations via the optional \`position\` field:
+  - \`position: "replace"\` (default) — replaces the matched text with \`replace\`. To delete a block set \`replace\` to \`""\`.
+    \`{"search":"old text","replace":"new text"}\`
+  - \`position: "after"\` — inserts \`content\` immediately after the anchor; the anchor itself is unchanged. Use this to append to a section, add a list item, etc.
+    \`{"search":"## Action Items","position":"after","content":"\\n- New task here"}\`
+  - \`position: "before"\` — inserts \`content\` immediately before the anchor; the anchor itself is unchanged.
+    \`{"search":"## Next Section","position":"before","content":"New paragraph above.\\n\\n"}\`
+  Edits are applied in sequence; each operates on the result of the previous. Full example:
+  \`{"action":"patch_file","path":"Notes/example.md","edits":[{"search":"## Old Heading","replace":"## New Heading"},{"search":"## Action Items","position":"after","content":"\\n- Follow up with Alice"}]}\`
+
+- \`write_file\` — Overwrite an entire file (or create it if absent). **Only use this for new content or when replacing the entire file is intentional.** For targeted edits use patch_file instead.
+  \`{"action":"write_file","path":"Notes/example.md","content":"# Replaced\\nEntire content."}\`
+
+- \`rename_file\` — Move or rename a file:
+  \`{"action":"rename_file","oldPath":"Notes/old.md","newPath":"Notes/new.md"}\`
+
+- \`delete_file\` — Delete a file:
+  \`{"action":"delete_file","path":"Notes/example.md"}\`
+
+The recipient_id field should be set to the vault file path for obsidian actions (same as the path field in the JSON content). All writes require sendEnabled permission for the obsidian service.`,
           requestBody: {
             required: true,
             content: {
@@ -787,10 +813,10 @@ router.get('/openapi.json', (req, res) => {
                   type: 'object',
                   required: ['source', 'recipient_id', 'content'],
                   properties: {
-                    source:         { type: 'string', enum: ['slack', 'discord', 'telegram', 'twitter'] },
-                    recipient_id:   { type: 'string', description: 'Platform-native channel ID or user ID' },
+                    source:         { type: 'string', enum: ['slack', 'discord', 'telegram', 'twitter', 'gmail', 'calendar', 'notion', 'obsidian'], description: 'Platform to send on' },
+                    recipient_id:   { type: 'string', description: 'Platform-native channel ID, user ID, or vault file path (obsidian)' },
                     recipient_name: { type: 'string', description: 'Human-readable name for display in the outbox UI' },
-                    content:        { type: 'string', description: 'Message text' },
+                    content:        { type: 'string', description: 'Plain text for messaging platforms; JSON-encoded action object for obsidian, gmail, calendar, notion' },
                   },
                 },
               },
