@@ -233,6 +233,12 @@ export class TwitterSync {
     broadcast({ type: 'connection:status', data: { service: 'twitter', status: 'disconnected' } });
   }
 
+  /** Clear all in-memory dedup/cache state without disconnecting. Called before a data reset + resync. */
+  resetInMemoryState(): void {
+    this.seenFeedIds.clear();
+    clearTwitterCache();
+  }
+
   // ── DM sync ─────────────────────────────────────────────────────────────────
 
   /** Returns true if this is the first successful DM sync (no prior syncRuns). */

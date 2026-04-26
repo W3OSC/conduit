@@ -457,13 +457,13 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
   // Auto-scroll
   useEffect(() => {
     if (atBottom && virtuosoRef.current) {
-      virtuosoRef.current.scrollToIndex({ index: 'LAST', behavior: 'smooth' });
+      virtuosoRef.current.scrollToIndex({ index: 'LAST', behavior: 'smooth', align: 'end' });
     }
   }, [sessionMessages.length, streamState?.content, atBottom]);
 
   useEffect(() => {
     setTimeout(() => {
-      virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'auto' });
+      virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'auto', align: 'end' });
     }, 50);
   }, [session.id]);
 
@@ -472,7 +472,7 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
     onSuccess: (message) => {
       replaceOptimisticMessage(session.id, message);
       setWaiting(session.id, true);
-      setTimeout(() => virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'smooth' }), 50);
+      setTimeout(() => virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'smooth', align: 'end' }), 50);
     },
     onError: (err) => toast({ title: 'Failed to send message', description: String(err), variant: 'destructive' }),
   });
@@ -612,7 +612,7 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
               initial={{ opacity: 0, scale: 0.8 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.8 }}
-              onClick={() => virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'smooth' })}
+              onClick={() => virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'smooth', align: 'end' })}
               className="absolute bottom-4 right-6 w-8 h-8 rounded-full glass border border-border flex items-center justify-center hover:border-primary/30 transition-colors shadow-warm-md"
             >
               <ChevronDown className="w-4 h-4 text-muted-foreground" />

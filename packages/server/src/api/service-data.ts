@@ -20,7 +20,8 @@ import { getDb } from '../db/client.js';
 import {
   telegramMessages, discordMessages, slackMessages,
   gmailMessages, calendarEvents, twitterDms,
-  syncState, syncRuns, settings, contacts,
+  syncState, syncRuns, settings, contacts, meetNotes,
+  chatReadState, chatMuteState,
 } from '../db/schema.js';
 import { eq, and, like } from 'drizzle-orm';
 import { optionalAuth } from '../auth/middleware.js';
@@ -52,9 +53,20 @@ router.post('/service/:service/reset', optionalAuth, async (req, res) => {
   db.delete(syncRuns).where(eq(syncRuns.source, service)).run();
   db.delete(contacts).where(eq(contacts.source, service)).run();
 
+  // 3. Wipe read/mute cursors for this service so unread counts reset cleanly
+  db.delete(chatReadState).where(eq(chatReadState.source, service)).run();
+  db.delete(chatMuteState).where(eq(chatMuteState.source, service)).run();
+
+  // 4. For Gmail/calendar: also clear persisted incremental-sync tokens from settings
+  if (service === 'gmail' || service === 'calendar') {
+    db.delete(settings).where(like(settings.key, 'gmail.historyId.%')).run();
+    db.delete(settings).where(like(settings.key, 'calendar.syncToken.%')).run();
+    db.delete(meetNotes).run();
+  }
+
   broadcast({ type: 'sync:progress', data: { service, status: 'idle' } });
 
-  // 3. Re-connect first (registers the live listener), THEN trigger sync.
+  // 5. Re-connect first (registers the live listener), THEN trigger sync.
   //    Order matters: listener must be active before the sync loop starts so
   //    that any message arriving mid-sync is captured by the listener and the
   //    DB unique constraint prevents duplicates from both paths.
@@ -65,6 +77,8 @@ router.post('/service/:service/reset', optionalAuth, async (req, res) => {
     else if (service === 'telegram') await manager.connectTelegram();
     else if (service === 'gmail' || service === 'calendar') await manager.connectGmail();
     else if (service === 'twitter') {
+      // Clear Twitter in-memory state so feed/DM dedup sets don't carry over
+      manager.getTwitter()?.resetInMemoryState();
       // Twitter just re-syncs DMs — no listener reconnect needed
       await manager.triggerSync('twitter');
       return res.json({ success: true, message: 'Twitter data cleared — resync started' });
@@ -103,9 +117,15 @@ router.post('/service/gmail/reset/:email', optionalAuth, async (req, res) => {
   // 4. Clear syncState for this account
   db.delete(syncState).where(and(eq(syncState.source, 'gmail'), eq(syncState.accountId, email))).run();
 
+  // 5. Clear contacts sourced from this Gmail account
+  db.delete(contacts).where(and(eq(contacts.source, 'gmail'), eq(contacts.accountId, email))).run();
+
+  // 6. Clear meet notes for this account
+  db.delete(meetNotes).where(eq(meetNotes.accountId, email)).run();
+
   broadcast({ type: 'sync:progress', data: { service: 'gmail', status: 'idle' } });
 
-  // 5. Reconnect this specific account and trigger full sync
+  // 7. Reconnect this specific account and trigger full sync
   const manager = getConnectionManager();
   try {
     const { getGmailCredsByEmail } = await import('./google-auth.js');

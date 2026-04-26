@@ -123,7 +123,7 @@ router.get('/status', optionalAuth, (req, res) => {
   }>(sql`
     SELECT id, source, sync_type AS syncType, status, started_at AS startedAt,
            finished_at AS finishedAt, chats_visited AS chatsVisited,
-           messages_saved AS messagesSaved, error, rn
+           messages_saved AS messagesSaved, error_message AS error, rn
     FROM (
       SELECT *, ROW_NUMBER() OVER (PARTITION BY source ORDER BY started_at DESC) AS rn
       FROM sync_runs

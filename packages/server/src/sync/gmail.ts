@@ -304,7 +304,7 @@ export class GmailSync {
       } else {
         db.update(syncRuns).set({ status: 'success', finishedAt: new Date().toISOString(), messagesSaved: saved }).where(eq(syncRuns.id, runId)).run();
         broadcast({ type: 'sync:progress', data: { service: 'gmail', status: 'success', messagesSaved: saved } });
-        console.log(`[gmail] Full sync complete: ${saved} messages`);
+        console.debug(`[gmail] Full sync complete: ${saved} messages`);
         // Broadcast unread counts after sync
         this.fetchUnreadCounts().catch(console.error);
       }
@@ -416,7 +416,7 @@ export class GmailSync {
       // 404 means the historyId has expired (Gmail only retains ~7 days of history).
       // Reset and fall back to a full sync so we get back in sync.
       if (e?.code === 404 || e?.status === 404) {
-        console.warn('[gmail] historyId expired (404), resetting and running full sync');
+        console.debug('[gmail] historyId expired (404), resetting and running full sync');
         this.historyId = null;
         this.saveHistoryId();
         await this.initialFullSync();
