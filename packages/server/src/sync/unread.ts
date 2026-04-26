@@ -106,6 +106,7 @@ export function getChatMuteState(source: string, chatId: string): boolean {
 /**
  * Count unread messages for a single chat (since last_read_at).
  * Used by broadcastUnreadForChat — the hot path after every new message.
+ * Relies on the composite (channelId/chatId, timestamp) indexes for speed.
  */
 function countUnreadForChat(source: string, chatId: string, lastReadAt: string | null): number {
   const db = getDb();
@@ -143,11 +144,17 @@ function countUnreadForChat(source: string, chatId: string, lastReadAt: string |
 }
 
 /**
- * Compute unread counts for ALL chats across all services.
- * Called by GET /api/unread — the authoritative initial-load endpoint.
+ * Compute unread counts for ALL chats across all services using a single
+ * grouped query per source (4 queries total) instead of N+1 per-chat queries.
  *
- * Returns an entry for every chat that has either unread messages OR a mute
- * state entry, so the client always gets a complete picture.
+ * Strategy:
+ *   1. Load all chat_read_state and chat_mute_state rows into maps (2 queries).
+ *   2. For each source, run one GROUP BY query that counts messages per chat
+ *      that are newer than a reference timestamp. We use '1970-01-01' as the
+ *      sentinel for chats with no read state, which counts everything.
+ *   3. Merge the counts with mute state.
+ *
+ * Called by GET /api/unread and after fetchUnreadCounts() on reconnect.
  */
 export function computeAllUnreads(): UnreadEntry[] {
   const db = getDb();
@@ -164,48 +171,92 @@ export function computeAllUnreads(): UnreadEntry[] {
     muteMap.set(`${row.source}:${row.chatId}`, row.isMuted);
   }
 
+  // Accumulate results by "source:chatId" key to avoid duplicates
+  const countMap = new Map<string, number>(); // "source:chatId" → unread count
+
+  // ── Discord: one aggregated query ─────────────────────────────────────────
+  // For each channel, count messages newer than the stored last_read_at.
+  // We use a LEFT JOIN on chat_read_state so channels with no read row get
+  // COALESCE'd to the epoch, counting all their messages as unread.
+  const discordRows = db.all<{ channelId: string; count: number }>(sql`
+    SELECT m.channel_id AS channelId,
+           COUNT(*) AS count
+    FROM discord_messages m
+    LEFT JOIN chat_read_state r
+      ON r.source = 'discord' AND r.chat_id = m.channel_id
+    WHERE m.timestamp > COALESCE(r.last_read_at, '1970-01-01T00:00:00.000Z')
+    GROUP BY m.channel_id
+  `);
+  for (const row of discordRows) {
+    countMap.set(`discord:${row.channelId}`, Number(row.count));
+  }
+
+  // ── Slack: one aggregated query ───────────────────────────────────────────
+  const slackRows = db.all<{ channelId: string; count: number }>(sql`
+    SELECT m.channel_id AS channelId,
+           COUNT(*) AS count
+    FROM slack_messages m
+    LEFT JOIN chat_read_state r
+      ON r.source = 'slack' AND r.chat_id = m.channel_id
+    WHERE m.timestamp > COALESCE(r.last_read_at, '1970-01-01T00:00:00.000Z')
+    GROUP BY m.channel_id
+  `);
+  for (const row of slackRows) {
+    countMap.set(`slack:${row.channelId}`, Number(row.count));
+  }
+
+  // ── Telegram: one aggregated query ───────────────────────────────────────
+  // chat_id is stored as INTEGER; cast to text for the JOIN key.
+  const telegramRows = db.all<{ chatId: string; count: number }>(sql`
+    SELECT CAST(m.chat_id AS TEXT) AS chatId,
+           COUNT(*) AS count
+    FROM telegram_messages m
+    LEFT JOIN chat_read_state r
+      ON r.source = 'telegram' AND r.chat_id = CAST(m.chat_id AS TEXT)
+    WHERE m.timestamp > COALESCE(r.last_read_at, '1970-01-01T00:00:00.000Z')
+    GROUP BY m.chat_id
+  `);
+  for (const row of telegramRows) {
+    countMap.set(`telegram:${row.chatId}`, Number(row.count));
+  }
+
+  // ── Twitter DMs: one aggregated query ────────────────────────────────────
+  const twitterRows = db.all<{ conversationId: string; count: number }>(sql`
+    SELECT m.conversation_id AS conversationId,
+           COUNT(*) AS count
+    FROM twitter_dms m
+    LEFT JOIN chat_read_state r
+      ON r.source = 'twitter' AND r.chat_id = m.conversation_id
+    WHERE m.created_at > COALESCE(r.last_read_at, '1970-01-01T00:00:00.000Z')
+    GROUP BY m.conversation_id
+  `);
+  for (const row of twitterRows) {
+    countMap.set(`twitter:${row.conversationId}`, Number(row.count));
+  }
+
+  // ── Collect all known chat keys (union of message tables + mute/read state) ─
+  const allKeys = new Set<string>();
+
+  // Chats that have messages (distinct keys already in countMap)
+  for (const key of countMap.keys()) allKeys.add(key);
+
+  // Chats that have a read state but zero unread messages (not in countMap yet)
+  for (const key of readStateMap.keys()) allKeys.add(key);
+
+  // Chats that have a mute state entry but possibly no messages
+  for (const key of muteMap.keys()) allKeys.add(key);
+
   const results: UnreadEntry[] = [];
-
-  // Helper to add entries for a given source + distinct chatIds
-  const addEntries = (source: string, chatIds: string[]) => {
-    for (const chatId of chatIds) {
-      const key = `${source}:${chatId}`;
-      const lastReadAt = readStateMap.get(key) ?? null;
-      const isMuted = muteMap.get(key) ?? false;
-      const count = countUnreadForChat(source, chatId, lastReadAt);
-      // Always include the entry so the client gets isMuted even for count=0
-      results.push({ source, chatId, count, isMuted });
-    }
-  };
-
-  // Discord — distinct channel IDs from messages
-  const discordChats = db.selectDistinct({ chatId: discordMessages.channelId })
-    .from(discordMessages).all().map((r) => r.chatId);
-  addEntries('discord', discordChats);
-
-  // Slack — distinct channel IDs from messages
-  const slackChats = db.selectDistinct({ chatId: slackMessages.channelId })
-    .from(slackMessages).all().map((r) => r.chatId);
-  addEntries('slack', slackChats);
-
-  // Telegram — distinct chat IDs from messages (stored as integer, cast to string)
-  const telegramChats = db.selectDistinct({ chatId: telegramMessages.chatId })
-    .from(telegramMessages).all().map((r) => String(r.chatId));
-  addEntries('telegram', telegramChats);
-
-  // Twitter — distinct conversation IDs
-  const twitterChats = db.selectDistinct({ chatId: twitterDms.conversationId })
-    .from(twitterDms).all().map((r) => r.chatId);
-  addEntries('twitter', twitterChats);
-
-  // Also include any chats that have a mute entry but no messages (rare but possible)
-  for (const [key, isMuted] of muteMap) {
+  for (const key of allKeys) {
     const colonIdx = key.indexOf(':');
     const source = key.slice(0, colonIdx);
     const chatId = key.slice(colonIdx + 1);
-    if (!results.some((r) => r.source === source && r.chatId === chatId)) {
-      results.push({ source, chatId, count: 0, isMuted });
-    }
+    results.push({
+      source,
+      chatId,
+      count: countMap.get(key) ?? 0,
+      isMuted: muteMap.get(key) ?? false,
+    });
   }
 
   return results;

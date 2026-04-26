@@ -98,19 +98,16 @@ export class SlackSync {
           if (ch.user) name = await this.resolveUser(ch.user);
         } else if (ch.is_mpim) {
           type = 'mpim';
-          // Resolve MPDM name to a list of participant usernames (excluding self)
+          // Resolve MPDM name to a list of participant usernames (excluding self).
+          // Resolve all members in parallel to avoid sequential await per member.
           if (ch.id) {
             try {
               const membersRes = await this.client.conversations.members({ channel: ch.id });
               const memberIds = (membersRes.members || []) as string[];
               const myUserId = this.accountInfo?.userId;
-              const names: string[] = [];
-              for (const memberId of memberIds) {
-                if (myUserId && memberId === myUserId) continue;
-                const memberName = await this.resolveUser(memberId);
-                names.push(memberName);
-              }
-              if (names.length > 0) name = names.join(', ');
+              const otherIds = memberIds.filter((id) => !myUserId || id !== myUserId);
+              const resolvedNames = await Promise.all(otherIds.map((id) => this.resolveUser(id)));
+              if (resolvedNames.length > 0) name = resolvedNames.join(', ');
             } catch {
               // keep raw name on error
             }

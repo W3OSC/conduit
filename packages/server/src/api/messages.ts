@@ -81,40 +81,64 @@ const MSG_SOURCES = ['telegram', 'discord', 'slack', 'twitter', 'gmail'] as cons
 router.get('/status', optionalAuth, (req, res) => {
   const db = getDb();
 
-  const tgCount = db.select({ count: sql<number>`count(*)` }).from(telegramMessages).get();
-  const dcCount = db.select({ count: sql<number>`count(*)` }).from(discordMessages).get();
-  const slCount = db.select({ count: sql<number>`count(*)` }).from(slackMessages).get();
-  const twCount = db.select({ count: sql<number>`count(*)` }).from(twitterDms).get();
-  const gmCount = db.select({ count: sql<number>`count(*)` }).from(gmailMessages).get();
-  const errCount = db.select({ count: sql<number>`count(*)` }).from(errorLog).get();
+  // ── Message counts: one UNION ALL query instead of 5 separate COUNTs ──────
+  const msgCountRows = db.all<{ source: string; cnt: number }>(sql`
+    SELECT 'telegram' AS source, COUNT(*) AS cnt FROM telegram_messages
+    UNION ALL
+    SELECT 'discord',  COUNT(*) FROM discord_messages
+    UNION ALL
+    SELECT 'slack',    COUNT(*) FROM slack_messages
+    UNION ALL
+    SELECT 'twitter',  COUNT(*) FROM twitter_dms
+    UNION ALL
+    SELECT 'gmail',    COUNT(*) FROM gmail_messages
+    UNION ALL
+    SELECT '_errors',  COUNT(*) FROM error_log
+  `);
+  const msgCounts: Record<string, number> = {};
+  for (const row of msgCountRows) msgCounts[row.source] = Number(row.cnt);
 
-  const tgStates = db.select().from(syncState).where(eq(syncState.source, 'telegram')).all();
-  const dcStates = db.select().from(syncState).where(eq(syncState.source, 'discord')).all();
-  const slStates = db.select().from(syncState).where(eq(syncState.source, 'slack')).all();
+  // ── Chat counts ───────────────────────────────────────────────────────────
+  // telegram/discord/slack: rows in sync_state (one per chat)
+  // twitter: distinct conversation_ids in twitter_dms
+  // gmail: distinct thread_ids in gmail_messages
+  const chatCountRows = db.all<{ source: string; cnt: number }>(sql`
+    SELECT source, COUNT(*) AS cnt FROM sync_state
+    WHERE source IN ('telegram', 'discord', 'slack')
+    GROUP BY source
+    UNION ALL
+    SELECT 'twitter', COUNT(DISTINCT conversation_id) FROM twitter_dms
+    UNION ALL
+    SELECT 'gmail',   COUNT(DISTINCT thread_id)       FROM gmail_messages
+  `);
+  const chatCounts: Record<string, number> = {};
+  for (const row of chatCountRows) chatCounts[row.source] = Number(row.cnt);
 
-  // Twitter conversations (distinct by conversation_id)
-  const twConvs = db.selectDistinct({ conversationId: twitterDms.conversationId }).from(twitterDms).all();
-  // Gmail threads
-  const gmThreads = db.selectDistinct({ threadId: gmailMessages.threadId }).from(gmailMessages).all();
-
+  // ── Last sync run per source: one query with ROW_NUMBER window function ───
+  const lastRunRows = db.all<{
+    id: number; source: string; syncType: string; status: string;
+    startedAt: string; finishedAt: string | null;
+    chatsVisited: number | null; messagesSaved: number | null; error: string | null;
+    rn: number;
+  }>(sql`
+    SELECT id, source, sync_type AS syncType, status, started_at AS startedAt,
+           finished_at AS finishedAt, chats_visited AS chatsVisited,
+           messages_saved AS messagesSaved, error, rn
+    FROM (
+      SELECT *, ROW_NUMBER() OVER (PARTITION BY source ORDER BY started_at DESC) AS rn
+      FROM sync_runs
+    ) ranked
+    WHERE rn = 1
+  `);
   const lastRuns: Record<string, unknown> = {};
-  for (const src of [...MSG_SOURCES]) {
-    const run = db.select().from(syncRuns)
-      .where(eq(syncRuns.source, src))
-      .orderBy(desc(syncRuns.startedAt))
-      .limit(1)
-      .get();
-    lastRuns[src] = run || null;
-  }
+  for (const row of lastRunRows) lastRuns[row.source] = row;
 
-  // Active syncs — runs that have started but not yet finished.
-  // Persisted in DB so they survive a browser refresh.
+  // ── Active syncs ──────────────────────────────────────────────────────────
   const activeRuns = db.select().from(syncRuns)
     .where(and(eq(syncRuns.status, 'running'), isNull(syncRuns.finishedAt)))
     .orderBy(desc(syncRuns.startedAt))
     .all();
 
-  // Build a map of source → active run (only the most recent per source)
   const activeSyncs: Record<string, {
     id: number; source: string; syncType: string;
     chatsVisited: number; messagesSaved: number; startedAt: string;
@@ -134,19 +158,19 @@ router.get('/status', optionalAuth, (req, res) => {
 
   res.json({
     messageCounts: {
-      telegram: tgCount?.count || 0,
-      discord:  dcCount?.count || 0,
-      slack:    slCount?.count || 0,
-      twitter:  twCount?.count || 0,
-      gmail:    gmCount?.count || 0,
+      telegram: msgCounts['telegram'] ?? 0,
+      discord:  msgCounts['discord']  ?? 0,
+      slack:    msgCounts['slack']    ?? 0,
+      twitter:  msgCounts['twitter']  ?? 0,
+      gmail:    msgCounts['gmail']    ?? 0,
     },
-    errorCount: errCount?.count || 0,
+    errorCount: msgCounts['_errors'] ?? 0,
     chatCounts: {
-      telegram: tgStates.length,
-      discord:  dcStates.length,
-      slack:    slStates.length,
-      twitter:  twConvs.length,
-      gmail:    gmThreads.length,
+      telegram: chatCounts['telegram'] ?? 0,
+      discord:  chatCounts['discord']  ?? 0,
+      slack:    chatCounts['slack']    ?? 0,
+      twitter:  chatCounts['twitter']  ?? 0,
+      gmail:    chatCounts['gmail']    ?? 0,
     },
     lastSync: lastRuns,
     activeSyncs,
