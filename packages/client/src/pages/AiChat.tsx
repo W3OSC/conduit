@@ -8,9 +8,13 @@ import { useNavigate } from 'react-router-dom';
 import {
   Plus, X, Bot, Send, ChevronDown, ChevronRight,
   Loader2, AlertTriangle, Zap, Terminal, Trash2, ArrowRight, Settings2,
+  Search, Mail, Calendar, Users, FileText, BookOpen, Database,
+  MessageSquare, Eye, Edit3, Trash, CheckCircle2, AtSign,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { api, type AiSession, type AiMessage, type AiToolCall, type AiConnection } from '@/lib/api';
 import { useAiChatStore } from '@/store';
+import { onWsReconnect } from '@/hooks/useWebSocket';
 import { cn } from '@/lib/utils';
 import { toast } from '@/store';
 import { CopyButton } from '@/components/shared/CopyButton';
@@ -32,72 +36,349 @@ function parseToolCalls(raw: string | null): AiToolCall[] {
   try { return JSON.parse(raw); } catch { return []; }
 }
 
-// ─── Copy button — re-exported from shared component ──────────────────────────
+// ─── Tool call helpers ────────────────────────────────────────────────────────
 
-// ─── Tool call panel ──────────────────────────────────────────────────────────
+function getToolCallIcon(name: string): LucideIcon {
+  if (/search|find/i.test(name)) return Search;
+  if (/gmail|email|mail/i.test(name)) return Mail;
+  if (/calendar|event/i.test(name)) return Calendar;
+  if (/contact/i.test(name)) return Users;
+  if (/obsidian|vault|file/i.test(name)) return FileText;
+  if (/notion.*page|getNotion|createNotion|updateNotion/i.test(name)) return BookOpen;
+  if (/notion.*database|queryNotion/i.test(name)) return Database;
+  if (/message|chat|outbox|send/i.test(name)) return MessageSquare;
+  if (/twitter|tweet/i.test(name)) return AtSign;
+  if (/get|list|read|fetch/i.test(name)) return Eye;
+  if (/create|write|update|patch/i.test(name)) return Edit3;
+  if (/delete|remove/i.test(name)) return Trash;
+  return Terminal;
+}
 
-function ToolCallPanel({ toolCalls }: { toolCalls: AiToolCall[] }) {
+function str(v: unknown): string {
+  if (typeof v === 'string') return v;
+  if (v === null || v === undefined) return '';
+  return JSON.stringify(v);
+}
+
+function q(v: unknown): string {
+  const s = str(v).trim();
+  return s ? `'${s.length > 40 ? s.slice(0, 40) + '…' : s}'` : '';
+}
+
+function countLabel(n: number, singular: string, plural?: string): string {
+  return `${n} ${n === 1 ? singular : (plural ?? singular + 's')}`;
+}
+
+function outputCount(output: unknown, noun: string, plural?: string): string {
+  if (output === undefined || output === null) return '';
+  // Array output — count items
+  if (Array.isArray(output)) return ` · ${countLabel(output.length, noun, plural)}`;
+  // Object with a known count/total field
+  if (typeof output === 'object') {
+    const obj = output as Record<string, unknown>;
+    const msgs = obj.messages; const itms = obj.items;
+    const n = obj.total ?? obj.count ?? obj.resultCount
+      ?? (Array.isArray(msgs) ? msgs.length : undefined)
+      ?? (Array.isArray(itms) ? itms.length : undefined);
+    if (typeof n === 'number') return ` · ${countLabel(n, noun, plural)}`;
+    // Check nested array properties
+    for (const key of ['messages', 'items', 'events', 'contacts', 'emails', 'results', 'files', 'pages', 'tweets', 'dms', 'threads', 'labels']) {
+      if (Array.isArray(obj[key])) return ` · ${countLabel((obj[key] as unknown[]).length, noun, plural)}`;
+    }
+  }
+  return '';
+}
+
+function getToolCallSummary(name: string, input: unknown, output?: unknown): string {
+  const inp = (input ?? {}) as Record<string, unknown>;
+
+  // ── Messages / Chats ──────────────────────────────────────────────────────
+  if (name === 'getMessages' || name === 'searchMessages') {
+    const qStr = q(inp.query ?? inp.search ?? inp.q);
+    const counts = outputCount(output, 'message');
+    return qStr ? `Searched messages for ${qStr}${counts}` : `Retrieved messages${counts}`;
+  }
+  if (name === 'getChats') {
+    const counts = outputCount(output, 'chat');
+    return `Listed chats${counts}`;
+  }
+  if (name === 'markChatRead') return 'Marked chat as read';
+
+  // ── Contacts ──────────────────────────────────────────────────────────────
+  if (name === 'listContacts') {
+    const counts = outputCount(output, 'contact');
+    return `Listed contacts${counts}`;
+  }
+  if (name === 'getContact') return `Looked up contact${inp.contactId ? ` ${q(inp.contactId)}` : ''}`;
+  if (name === 'getContactHistory') return `Retrieved contact message history`;
+  if (name === 'messageContact') {
+    const preview = q(inp.content ?? inp.text ?? inp.message);
+    return preview ? `Sent message: ${preview}` : 'Sent a message to a contact';
+  }
+  if (name === 'getContactDmChannel') return 'Got DM channel for contact';
+
+  // ── Outbox ────────────────────────────────────────────────────────────────
+  if (name === 'listOutbox') {
+    const counts = outputCount(output, 'item');
+    return `Listed outbox${counts}`;
+  }
+  if (name === 'createOutboxItem') {
+    const preview = q(inp.content ?? inp.text ?? inp.subject);
+    return preview ? `Queued message: ${preview}` : 'Created outbox item';
+  }
+  if (name === 'getOutboxItem') return 'Retrieved outbox item';
+  if (name === 'updateOutboxItem') return 'Updated outbox item';
+  if (name === 'deleteOutboxItem') return 'Deleted outbox item';
+  if (name === 'createOutboxBatch' || name === 'createOutboxBatchMulti') {
+    const batchItems = Array.isArray(inp.messages) ? inp.messages.length : (Array.isArray(inp.items) ? inp.items.length : null);
+    return batchItems !== null ? `Queued ${countLabel(batchItems, 'message')} in batch` : 'Created outbox batch';
+  }
+
+  // ── Gmail ─────────────────────────────────────────────────────────────────
+  if (name === 'listGmailMessages') {
+    const qStr = q(inp.query ?? inp.q);
+    const counts = outputCount(output, 'email');
+    return qStr ? `Searched Gmail for ${qStr}${counts}` : `Listed Gmail messages${counts}`;
+  }
+  if (name === 'getGmailMessage') return 'Retrieved Gmail message';
+  if (name === 'getGmailBody') return 'Read Gmail message body';
+  if (name === 'getGmailThread') {
+    const counts = outputCount(output, 'message');
+    return `Read Gmail thread${counts}`;
+  }
+  if (name === 'gmailAction') {
+    const action = str(inp.action ?? inp.type).toLowerCase();
+    if (action.includes('reply')) return 'Replied to Gmail message';
+    if (action.includes('send')) return 'Sent Gmail message';
+    if (action.includes('archive')) return 'Archived Gmail message';
+    if (action.includes('delete') || action.includes('trash')) return 'Deleted Gmail message';
+    if (action.includes('label')) return 'Labelled Gmail message';
+    return action ? `Gmail: ${action}` : 'Performed Gmail action';
+  }
+  if (name === 'listGmailLabels') {
+    const counts = outputCount(output, 'label');
+    return `Listed Gmail labels${counts}`;
+  }
+
+  // ── Calendar ──────────────────────────────────────────────────────────────
+  if (name === 'listCalendars') {
+    const counts = outputCount(output, 'calendar');
+    return `Listed calendars${counts}`;
+  }
+  if (name === 'listCalendarEvents') {
+    const counts = outputCount(output, 'event');
+    const from = q(inp.timeMin ?? inp.from ?? inp.start);
+    return from ? `Listed calendar events from ${from}${counts}` : `Listed calendar events${counts}`;
+  }
+  if (name === 'getCalendarEvent') return 'Retrieved calendar event';
+  if (name === 'calendarAction') {
+    const action = str(inp.action ?? inp.type).toLowerCase();
+    if (action.includes('create')) return 'Created calendar event';
+    if (action.includes('update') || action.includes('patch')) return 'Updated calendar event';
+    if (action.includes('delete')) return 'Deleted calendar event';
+    if (action.includes('rsvp') || action.includes('respond')) return 'Responded to calendar invite';
+    return action ? `Calendar: ${action}` : 'Performed calendar action';
+  }
+
+  // ── Twitter ───────────────────────────────────────────────────────────────
+  if (name === 'getTwitterFeed') {
+    const counts = outputCount(output, 'tweet');
+    return `Retrieved Twitter feed${counts}`;
+  }
+  if (name === 'searchTwitter') {
+    const qStr = q(inp.query ?? inp.q);
+    const counts = outputCount(output, 'tweet');
+    return qStr ? `Searched Twitter for ${qStr}${counts}` : `Searched Twitter${counts}`;
+  }
+  if (name === 'getTwitterMentions') {
+    const counts = outputCount(output, 'mention');
+    return `Retrieved Twitter mentions${counts}`;
+  }
+  if (name === 'listTwitterDMs') {
+    const counts = outputCount(output, 'DM', 'DMs');
+    return `Listed Twitter DMs${counts}`;
+  }
+  if (name === 'getTwitterDMConversation') {
+    const counts = outputCount(output, 'message');
+    return `Retrieved Twitter DM conversation${counts}`;
+  }
+  if (name === 'twitterAction') {
+    const action = str(inp.action ?? inp.type).toLowerCase();
+    if (action.includes('tweet') || action.includes('post')) return 'Posted a tweet';
+    if (action.includes('reply')) return 'Replied to a tweet';
+    if (action.includes('retweet')) return 'Retweeted';
+    if (action.includes('like') || action.includes('favorite')) return 'Liked a tweet';
+    if (action.includes('follow')) return 'Followed a user';
+    if (action.includes('dm') || action.includes('message')) return 'Sent a Twitter DM';
+    return action ? `Twitter: ${action}` : 'Performed Twitter action';
+  }
+  if (name === 'getTwitterTweet') return 'Retrieved tweet';
+  if (name === 'getTwitterTweetThread') {
+    const counts = outputCount(output, 'tweet');
+    return `Retrieved tweet thread${counts}`;
+  }
+  if (name === 'getTwitterMe') return 'Retrieved Twitter profile';
+  if (name === 'getTwitterUserProfile') return `Looked up Twitter user${q(inp.username) ? ` ${q(inp.username)}` : ''}`;
+  if (name === 'getTwitterUserTweets') {
+    const counts = outputCount(output, 'tweet');
+    return `Retrieved user tweets${counts}`;
+  }
+  if (name === 'getTwitterUserFollowers') {
+    const counts = outputCount(output, 'follower');
+    return `Retrieved followers${counts}`;
+  }
+  if (name === 'getTwitterUserFollowing') {
+    const counts = outputCount(output, 'following');
+    return `Retrieved following list${counts}`;
+  }
+  if (name === 'getTwitterTrends') {
+    const counts = outputCount(output, 'trend');
+    return `Retrieved Twitter trends${counts}`;
+  }
+
+  // ── Notion ────────────────────────────────────────────────────────────────
+  if (name === 'createNotionPage') {
+    const title = q(inp.title ?? inp.name);
+    return title ? `Created Notion page ${title}` : 'Created Notion page';
+  }
+  if (name === 'getNotionPage') return 'Retrieved Notion page';
+  if (name === 'updateNotionPage') return 'Updated Notion page';
+  if (name === 'listNotionDatabases') {
+    const counts = outputCount(output, 'database');
+    return `Listed Notion databases${counts}`;
+  }
+  if (name === 'queryNotionDatabase') {
+    const counts = outputCount(output, 'result');
+    return `Queried Notion database${counts}`;
+  }
+  if (name === 'searchNotion') {
+    const qStr = q(inp.query ?? inp.q);
+    const counts = outputCount(output, 'result');
+    return qStr ? `Searched Notion for ${qStr}${counts}` : `Searched Notion${counts}`;
+  }
+  if (name === 'getNotionBlock') return 'Retrieved Notion block';
+  if (name === 'getNotionBlockChildren') {
+    const counts = outputCount(output, 'block');
+    return `Retrieved Notion block children${counts}`;
+  }
+
+  // ── Obsidian / Vault ──────────────────────────────────────────────────────
+  if (name === 'listObsidianFiles') {
+    const counts = outputCount(output, 'file');
+    return `Listed vault files${counts}`;
+  }
+  if (name === 'readObsidianFile') {
+    const path = q(inp.path ?? inp.filePath ?? inp.file);
+    return path ? `Read vault file ${path}` : 'Read vault file';
+  }
+
+  // ── System / Status ───────────────────────────────────────────────────────
+  if (name === 'getActivity') {
+    const counts = outputCount(output, 'event');
+    return `Retrieved activity log${counts}`;
+  }
+  if (name === 'getStatus') return 'Checked Conduit status';
+  if (name === 'getConnections') {
+    const counts = outputCount(output, 'connection');
+    return `Listed connections${counts}`;
+  }
+
+  // ── Fallback ──────────────────────────────────────────────────────────────
+  // Convert camelCase to a readable phrase
+  return name.replace(/([A-Z])/g, ' $1').trim().toLowerCase();
+}
+
+// ─── Tool call activity row ───────────────────────────────────────────────────
+
+interface ToolCallActivityRowProps {
+  toolCall: AiToolCall;
+  pending?: boolean;
+}
+
+function ToolCallActivityRow({ toolCall, pending = false }: ToolCallActivityRowProps) {
   const [open, setOpen] = useState(false);
-  if (!toolCalls.length) return null;
+  const Icon = getToolCallIcon(toolCall.name);
+  const summary = getToolCallSummary(toolCall.name, toolCall.input, toolCall.output);
+  const hasOutput = toolCall.output !== undefined;
+  const outputStr = hasOutput
+    ? (typeof toolCall.output === 'string' ? toolCall.output : JSON.stringify(toolCall.output, null, 2))
+    : '';
+  const inputStr = JSON.stringify(toolCall.input, null, 2);
+
   return (
-    <div className="mt-2 rounded-xl border border-border overflow-hidden">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="w-full flex items-center gap-2 px-3 py-2 bg-secondary/60 hover:bg-secondary text-xs font-medium text-muted-foreground transition-colors"
-      >
-        <Terminal className="w-3.5 h-3.5 flex-shrink-0" />
-        <span className="flex-1 text-left">
-          {toolCalls.length} tool call{toolCalls.length !== 1 ? 's' : ''}
-        </span>
-        {open ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-      </button>
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            className="overflow-hidden"
-          >
-            <div className="divide-y divide-border">
-              {toolCalls.map((tc, i) => (
-                <div key={i} className="p-3 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="chip chip-amber text-[10px]">{tc.name}</span>
-                    {tc.output !== undefined && (
-                      <span className="chip chip-emerald text-[10px]">completed</span>
-                    )}
+    <motion.div
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.18 }}
+      className="px-6 py-1"
+    >
+      <div className="rounded-xl border border-border/60 bg-secondary/30 overflow-hidden">
+        {/* Header row */}
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-secondary/60 transition-colors group"
+        >
+          <div className="flex-shrink-0 w-5 h-5 rounded-md bg-primary/10 border border-primary/15 flex items-center justify-center">
+            <Icon className="w-3 h-3 text-primary/70" />
+          </div>
+          <span className="font-mono text-[10px] text-muted-foreground/70 flex-shrink-0 bg-background/60 border border-border/50 rounded px-1.5 py-0.5">
+            {toolCall.name}
+          </span>
+          <span className="text-xs text-muted-foreground flex-1 truncate">
+            {summary}
+          </span>
+          <div className="flex-shrink-0 flex items-center gap-1.5">
+            {pending ? (
+              <Loader2 className="w-3 h-3 text-amber-500/80 animate-spin" />
+            ) : (
+              <CheckCircle2 className="w-3 h-3 text-emerald-500/80" />
+            )}
+            {open
+              ? <ChevronDown className="w-3 h-3 text-muted-foreground/40" />
+              : <ChevronRight className="w-3 h-3 text-muted-foreground/40 group-hover:text-muted-foreground/70 transition-colors" />
+            }
+          </div>
+        </button>
+
+        {/* Expandable detail */}
+        <AnimatePresence>
+          {open && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.18 }}
+              className="overflow-hidden"
+            >
+              <div className="border-t border-border/50 divide-y divide-border/40">
+                {/* Input */}
+                <div className="p-3 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <p className="text-[10px] text-muted-foreground/60 uppercase tracking-wider font-medium">Input</p>
+                    <CopyButton text={inputStr} />
                   </div>
-                  {tc.input !== undefined && (
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Input</p>
-                        <CopyButton text={JSON.stringify(tc.input, null, 2)} />
-                      </div>
-                      <pre className="text-[11px] font-mono text-foreground/80 bg-background rounded-lg p-2 overflow-x-auto whitespace-pre-wrap break-all">
-                        {JSON.stringify(tc.input, null, 2)}
-                      </pre>
-                    </div>
-                  )}
-                  {tc.output !== undefined && (
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Output</p>
-                        <CopyButton text={typeof tc.output === 'string' ? tc.output : JSON.stringify(tc.output, null, 2)} />
-                      </div>
-                      <pre className="text-[11px] font-mono text-foreground/80 bg-background rounded-lg p-2 overflow-x-auto whitespace-pre-wrap break-all max-h-40 overflow-y-auto">
-                        {typeof tc.output === 'string' ? tc.output : JSON.stringify(tc.output, null, 2)}
-                      </pre>
-                    </div>
-                  )}
+                  <pre className="text-[11px] font-mono text-foreground/70 bg-background/60 rounded-lg p-2 overflow-x-auto whitespace-pre-wrap break-all max-h-36 overflow-y-auto">
+                    {inputStr}
+                  </pre>
                 </div>
-              ))}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
+                {/* Output */}
+                {hasOutput && (
+                  <div className="p-3 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[10px] text-muted-foreground/60 uppercase tracking-wider font-medium">Output</p>
+                      <CopyButton text={outputStr} />
+                    </div>
+                    <pre className="text-[11px] font-mono text-foreground/70 bg-background/60 rounded-lg p-2 overflow-x-auto whitespace-pre-wrap break-all max-h-40 overflow-y-auto">
+                      {outputStr}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    </motion.div>
   );
 }
 
@@ -136,13 +417,11 @@ interface MessageBubbleProps {
   message: AiMessage;
   isStreaming?: boolean;
   streamContent?: string;
-  streamToolCalls?: AiToolCall[];
 }
 
-function MessageBubble({ message, isStreaming, streamContent, streamToolCalls }: MessageBubbleProps) {
+function MessageBubble({ message, isStreaming, streamContent }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const content = isStreaming ? (streamContent ?? '') : message.content;
-  const toolCalls = isStreaming ? (streamToolCalls ?? []) : parseToolCalls(message.toolCalls);
   const ts = message.createdAt;
 
   const codeComponents = useMemo(() => ({
@@ -209,15 +488,12 @@ function MessageBubble({ message, isStreaming, streamContent, streamToolCalls }:
           {isUser ? (
             <p className="whitespace-pre-wrap">{content}</p>
           ) : (
-            <>
-              <div className="prose-ai">
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={codeComponents as Record<string, unknown>}>
-                  {content}
-                </ReactMarkdown>
-                {isStreaming && <StreamingCursor />}
-              </div>
-              <ToolCallPanel toolCalls={toolCalls} />
-            </>
+            <div className="prose-ai">
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={codeComponents as Record<string, unknown>}>
+                {content}
+              </ReactMarkdown>
+              {isStreaming && <StreamingCursor />}
+            </div>
           )}
         </div>
         {ts && (
@@ -426,6 +702,8 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
   const [input, setInput] = useState('');
   const [atBottom, setAtBottom] = useState(true);
 
+  const queryClient = useQueryClient();
+
   const {
     messages: allMessages,
     streaming,
@@ -436,6 +714,7 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
     setWaiting,
     addMessage,
     replaceOptimisticMessage,
+    reconcileFromDb,
   } = useAiChatStore();
 
   const sessionMessages = allMessages[session.id] ?? [];
@@ -448,11 +727,26 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
     queryFn: async () => {
       const res = await api.aiMessages(session.id);
       setMessages(session.id, res.messages);
+      // After merging the DB snapshot, check whether any streamed messages
+      // were missed (e.g. WS was disconnected) and recover them.
+      reconcileFromDb(session.id, res.messages);
       return res;
     },
+    // Always treat the cache as stale so that re-fetches (e.g. triggered by a
+    // WS reconnect) actually hit the server and pick up any missed messages.
     staleTime: 0,
     refetchOnWindowFocus: false,
   });
+
+  // When the WebSocket reconnects, force a re-fetch of this session's messages.
+  // Any ai:token events that arrived while the connection was down are already
+  // persisted in the DB by the server; this re-fetch surfaces them.
+  useEffect(() => {
+    const unsubscribe = onWsReconnect(() => {
+      queryClient.invalidateQueries({ queryKey: ['ai-messages', session.id] });
+    });
+    return unsubscribe;
+  }, [session.id, queryClient]);
 
   // Auto-scroll
   useEffect(() => {
@@ -465,7 +759,7 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
     setTimeout(() => {
       virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'auto', align: 'end' });
     }, 50);
-  }, [session.id]);
+  }, [session.id, isLoading]);
 
   const sendMutation = useMutation({
     mutationFn: (content: string) => api.sendAiMessage(session.id, content),
@@ -499,14 +793,35 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
     if (composerRef.current) composerRef.current.style.height = 'auto';
   };
 
-  const items: Array<{ type: 'message'; msg: AiMessage } | { type: 'streaming'; state: typeof streamState } | { type: 'thinking' }> = [
-    // Exclude in-flight assistant rows — the live { type: 'streaming' } bubble
-    // below already renders them; including them here would cause a duplicate
-    // blank bubble while the stream is active.
-    ...sessionMessages.filter((msg) => !msg.streaming).map((msg) => ({ type: 'message' as const, msg })),
-    ...(isStreaming && streamState ? [{ type: 'streaming' as const, state: streamState }] : []),
-    ...(!isStreaming && isWaiting ? [{ type: 'thinking' as const }] : []),
-  ];
+  type ChatItem =
+    | { type: 'message'; msg: AiMessage }
+    | { type: 'toolcall'; toolCall: AiToolCall; pending: boolean; key: string }
+    | { type: 'streaming'; state: typeof streamState }
+    | { type: 'thinking' };
+
+  const items: ChatItem[] = [];
+  // Exclude in-flight assistant rows — the live { type: 'streaming' } bubble
+  // below already renders them; including them here would cause a duplicate
+  // blank bubble while the stream is active.
+  for (const msg of sessionMessages.filter((m) => !m.streaming)) {
+    // Inject tool call rows before each assistant message that has them
+    if (msg.role === 'assistant') {
+      const tcs = parseToolCalls(msg.toolCalls);
+      for (let i = 0; i < tcs.length; i++) {
+        items.push({ type: 'toolcall', toolCall: tcs[i], pending: false, key: `${msg.id}-tc-${i}` });
+      }
+    }
+    items.push({ type: 'message', msg });
+  }
+  // During streaming: inject live tool call rows (pending state) before the streaming bubble
+  if (isStreaming && streamState) {
+    const liveTcs = streamState.toolCalls ?? [];
+    for (let i = 0; i < liveTcs.length; i++) {
+      items.push({ type: 'toolcall', toolCall: liveTcs[i], pending: liveTcs[i].output === undefined, key: `stream-tc-${i}` });
+    }
+    items.push({ type: 'streaming', state: streamState });
+  }
+  if (!isStreaming && isWaiting) items.push({ type: 'thinking' });
 
   const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
@@ -555,6 +870,8 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
             style={{ height: '100%' }}
             atBottomStateChange={setAtBottom}
             followOutput="smooth"
+            initialTopMostItemIndex={items.length > 0 ? items.length - 1 : 0}
+            alignToBottom
             itemContent={(_, item) => {
               if (item.type === 'thinking') {
                 return (
@@ -568,13 +885,22 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
                   </div>
                 );
               }
+              if (item.type === 'toolcall') {
+                return (
+                  <ToolCallActivityRow
+                    key={item.key}
+                    toolCall={item.toolCall}
+                    pending={item.pending}
+                  />
+                );
+              }
               if (item.type === 'streaming' && item.state) {
                 const streamMsg: AiMessage = {
                   id: item.state.messageId,
                   sessionId: session.id,
                   role: 'assistant',
                   content: item.state.content,
-                  toolCalls: item.state.toolCalls ? JSON.stringify(item.state.toolCalls) : null,
+                  toolCalls: null,
                   streaming: true,
                   createdAt: new Date().toISOString(),
                 };
@@ -584,7 +910,6 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
                       message={streamMsg}
                       isStreaming
                       streamContent={item.state.content}
-                      streamToolCalls={item.state.toolCalls}
                     />
                   </div>
                 );
@@ -672,8 +997,7 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
 
 export default function AiChat() {
   const queryClient = useQueryClient();
-  const { sessions, setSessions, addSession, removeSession, updateSession } = useAiChatStore();
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const { sessions, setSessions, addSession, removeSession, updateSession, activeId, setActiveId } = useAiChatStore();
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const activeSession = sessions.find((s) => s.id === activeId) ?? null;
@@ -693,8 +1017,10 @@ export default function AiChat() {
   });
   const connected = conn?.configured ?? false;
 
-  // Load sessions
-  const { isLoading: sessionsLoading } = useQuery({
+  // Load sessions — always fetches in the background to stay in sync with the
+  // server, but the UI hydrates immediately from the persisted store so there
+  // is no loading gate on return visits or after a reload.
+  useQuery({
     queryKey: ['ai-sessions'],
     queryFn: async () => {
       const list = await api.aiSessions();
@@ -721,10 +1047,6 @@ export default function AiChat() {
     mutationFn: (id: string) => api.deleteAiSession(id),
     onSuccess: (_, id) => {
       removeSession(id);
-      if (activeId === id) {
-        const remaining = sessions.filter((s) => s.id !== id);
-        setActiveId(remaining[0]?.id ?? null);
-      }
       queryClient.invalidateQueries({ queryKey: ['ai-sessions'] });
       setConfirmDeleteId(null);
     },
@@ -742,14 +1064,6 @@ export default function AiChat() {
       queryClient.invalidateQueries({ queryKey: ['ai-sessions'] });
     },
   });
-
-  if (sessionsLoading) {
-    return (
-      <div className="h-full flex items-center justify-center">
-        <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
 
   return (
     <div className="h-full flex flex-col overflow-hidden bg-background relative">

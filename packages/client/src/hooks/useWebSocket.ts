@@ -17,6 +17,29 @@ let globalWs: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let listeners = new Set<(event: WsEvent) => void>();
 
+// ── Reconnect callbacks ───────────────────────────────────────────────────────
+// Components can subscribe to be notified whenever the WebSocket successfully
+// (re)connects.  This is used by the AI chat to trigger a re-fetch and recover
+// any messages that were streamed while the connection was down.
+let reconnectCallbacks = new Set<() => void>();
+
+export function onWsReconnect(cb: () => void): () => void {
+  reconnectCallbacks.add(cb);
+  return () => { reconnectCallbacks.delete(cb); };
+}
+
+// ── Exponential backoff ───────────────────────────────────────────────────────
+const BACKOFF_BASE_MS  = 1_000;
+const BACKOFF_MAX_MS   = 30_000;
+let   backoffAttempt   = 0;
+
+function nextBackoffMs(): number {
+  // 1 s, 2 s, 4 s, 8 s, 16 s, 30 s (capped), with ±20 % jitter
+  const base = Math.min(BACKOFF_BASE_MS * 2 ** backoffAttempt, BACKOFF_MAX_MS);
+  const jitter = base * 0.2 * (Math.random() * 2 - 1); // ±20 %
+  return Math.round(base + jitter);
+}
+
 /** Fetch authoritative unread state from the server and replace the client store. */
 async function syncUnreadFromServer(): Promise<void> {
   try {
@@ -47,12 +70,21 @@ function connectGlobal() {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
+    // Reset backoff on successful connection
+    backoffAttempt = 0;
+
     // Re-seed unread state from the server on every (re)connect.
     // This is the single authoritative load — no client-side counting, no localStorage.
     syncUnreadFromServer();
     // Seed connection status — server fires connection:status events at startup,
     // which the browser would miss if it connects after those events fired.
     syncConnectionStatusFromServer();
+
+    // Notify all subscribers that the WebSocket (re)connected so they can
+    // trigger any necessary data re-fetches (e.g. AI message recovery).
+    for (const cb of reconnectCallbacks) {
+      try { cb(); } catch { /* ignore */ }
+    }
   };
 
   globalWs.onmessage = (event) => {
@@ -63,7 +95,9 @@ function connectGlobal() {
   };
 
   globalWs.onclose = () => {
-    reconnectTimer = setTimeout(connectGlobal, 3000);
+    backoffAttempt += 1;
+    const delay = nextBackoffMs();
+    reconnectTimer = setTimeout(connectGlobal, delay);
   };
 
   globalWs.onerror = () => { globalWs?.close(); };
