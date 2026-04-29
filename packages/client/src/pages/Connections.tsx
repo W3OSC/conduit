@@ -14,19 +14,26 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  ChevronDown, Eye, EyeOff, RefreshCw, Loader2, CheckCircle2,
+  ChevronDown, ChevronRight, Eye, EyeOff, RefreshCw, Loader2, CheckCircle2,
   XCircle, AlertTriangle, Database, Key, Plus, Copy, Check, Trash2, X,
   Send, Server, Shield, Settings, PlugZap, UserCircle2, Clock, Users, ExternalLink,
   MessageSquare as MessageSquareIcon, Mail as MailIcon, Lock, ShieldCheck, QrCode,
   LogOut, Zap, FileText, Bot, Unplug, ArrowRight, CircleCheck, CircleX, Bell, Volume2, VolumeX,
-  BookOpen, GitBranch, Palette, Play, RotateCcw, Download,
+  BookOpen, GitBranch, Palette, Play, RotateCcw, Download, Fingerprint,
+  SlidersHorizontal, Search, Filter, Link,
 } from 'lucide-react';
 import { AppearanceTab } from '@/components/settings/AppearanceTab';
 import {
   api, uiAuth, type ServiceCredential, type DiscordGuildInfo, type Permission, type ApiKeyItem,
   type ContactCriteria, type KeyPermissionsResponse, type KeyServicePerm, type AiConnection, type AiPermissions,
-  type ObsidianVaultConfigRow,
+  type ObsidianVaultConfigRow, type PasskeyCredential, type ConnectionStatus,
+  type ServiceFineGrained, type SlackFineGrained, type DiscordFineGrained, type TelegramFineGrained,
+  type GmailFineGrained, type CalendarFineGrained, type TwitterFineGrained, type NotionFineGrained,
+  type ObsidianFineGrained, type SlackChannel, type TelegramChat, type GmailLabel,
+  type GoogleCalendarInfo, type VaultFileEntry,
 } from '@/lib/api';
+import { startRegistration } from '@simplewebauthn/browser';
+import type { PublicKeyCredentialCreationOptionsJSON } from '@simplewebauthn/browser';
 import { useConnectionStore, useSyncStore, type SyncProgress } from '@/store';
 import { ServiceIcon, ServiceLogo, SERVICE_CONFIG } from '@/components/shared/ServiceBadge';
 import { StatusBadge, StatusDot } from '@/components/shared/StatusDot';
@@ -1657,7 +1664,481 @@ const SVC_COLOR: Record<string, string> = {
 
 // ── Permissions tab ───────────────────────────────────────────────────────────
 
-// Compact table of all service permissions for the UI user
+// ── ResourceMultiSelect ───────────────────────────────────────────────────────
+// A tag-input style multi-select for choosing allowed resource IDs.
+
+function ResourceMultiSelect({
+  items,
+  selected,
+  onChange,
+  placeholder,
+  loading,
+  label,
+  emptyLabel,
+}: {
+  items: Array<{ id: string; name: string; meta?: string }>;
+  selected: string[];
+  onChange: (ids: string[]) => void;
+  placeholder: string;
+  loading?: boolean;
+  label: string;
+  emptyLabel: string;
+}) {
+  const [search, setSearch] = useState('');
+  const [open, setOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const filtered = items.filter((item) =>
+    !selected.includes(item.id) &&
+    (item.name.toLowerCase().includes(search.toLowerCase()) || item.id.toLowerCase().includes(search.toLowerCase()))
+  );
+
+  const selectedItems = selected.map((id) => items.find((i) => i.id === id) ?? { id, name: id });
+
+  const toggle = (id: string) => {
+    if (selected.includes(id)) {
+      onChange(selected.filter((s) => s !== id));
+    } else {
+      onChange([...selected, id]);
+      setSearch('');
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">{label}</div>
+      {selected.length === 0 ? (
+        <div className="text-xs text-muted-foreground/50 italic">{emptyLabel}</div>
+      ) : (
+        <div className="flex flex-wrap gap-1.5">
+          {selectedItems.map((item) => (
+            <span key={item.id} className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 border border-primary/20 text-xs text-primary">
+              <span className="max-w-[140px] truncate">{item.name}</span>
+              <button
+                type="button"
+                onClick={() => toggle(item.id)}
+                className="opacity-60 hover:opacity-100 flex-shrink-0"
+              >
+                <X className="w-2.5 h-2.5" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="relative">
+        <div className="flex items-center gap-2 border border-border rounded-lg bg-secondary/20 px-2.5 py-1.5">
+          <Search className="w-3 h-3 text-muted-foreground flex-shrink-0" />
+          <input
+            ref={inputRef}
+            type="text"
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setOpen(true); }}
+            onFocus={() => setOpen(true)}
+            onBlur={() => setTimeout(() => setOpen(false), 150)}
+            placeholder={placeholder}
+            className="flex-1 bg-transparent text-xs outline-none text-foreground placeholder:text-muted-foreground/50"
+          />
+          {loading && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground flex-shrink-0" />}
+        </div>
+        {open && (
+          <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-background border border-border rounded-lg shadow-lg overflow-hidden max-h-48 overflow-y-auto">
+            {filtered.length === 0 ? (
+              <div className="px-3 py-2 text-xs text-muted-foreground">
+                {search ? 'No matches' : 'All items selected or none available'}
+              </div>
+            ) : (
+              filtered.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onMouseDown={(e) => { e.preventDefault(); toggle(item.id); }}
+                  className="w-full flex items-center justify-between px-3 py-1.5 text-xs text-left hover:bg-secondary/40 transition-colors"
+                >
+                  <span className="font-medium truncate">{item.name}</span>
+                  {item.meta && <span className="text-muted-foreground/50 text-[10px] ml-2 flex-shrink-0">{item.meta}</span>}
+                </button>
+              ))
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── FineGrainedPanel ──────────────────────────────────────────────────────────
+// Per-service fine-grained controls inside an expanded API key service row.
+
+type FineGrainedPanelProps = {
+  service: string;
+  config: ServiceFineGrained | null;
+  onChange: (config: ServiceFineGrained | null) => void;
+  isConnected: boolean;
+};
+
+function FineGrainedPanel({ service, config, onChange, isConnected }: FineGrainedPanelProps) {
+  const navigate = useNavigate();
+
+  // Fetch resource lists lazily
+  const { data: slackData, isLoading: loadingSlack } = useQuery({
+    queryKey: ['slack-channels'],
+    queryFn: api.slackChannels,
+    enabled: service === 'slack' && isConnected,
+  });
+  const { data: telegramData, isLoading: loadingTelegram } = useQuery({
+    queryKey: ['telegram-chats'],
+    queryFn: api.telegramChats,
+    enabled: service === 'telegram' && isConnected,
+  });
+  const { data: discordData, isLoading: loadingDiscord } = useQuery({
+    queryKey: ['discord-guilds'],
+    queryFn: api.discordGuilds,
+    enabled: service === 'discord' && isConnected,
+  });
+  const { data: gmailData, isLoading: loadingGmail } = useQuery({
+    queryKey: ['gmail-labels'],
+    queryFn: api.gmailLabels,
+    enabled: service === 'gmail' && isConnected,
+  });
+  const { data: calendarData, isLoading: loadingCalendar } = useQuery({
+    queryKey: ['calendar-list'],
+    queryFn: api.calendarList,
+    enabled: service === 'calendar' && isConnected,
+  });
+  const { data: notionData, isLoading: loadingNotion } = useQuery({
+    queryKey: ['notion-databases-list'],
+    queryFn: api.notionDatabasesList,
+    enabled: service === 'notion' && isConnected,
+  });
+  // Obsidian: vault files require a vault ID — show placeholder with empty list
+  const obsidianData: { files: VaultFileEntry[] } | undefined = service === 'obsidian' ? { files: [] } : undefined;
+  const loadingObsidian = false;
+
+  if (!isConnected) {
+    return (
+      <div className="flex items-center gap-2.5 p-3 rounded-lg bg-secondary/10 border border-border/50">
+        <PlugZap className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+        <p className="text-xs text-muted-foreground flex-1">
+          Connect {SVC_LABEL[service] || service} to configure resource-level access.
+        </p>
+        <button
+          onClick={() => navigate('/settings/connections')}
+          className="text-xs text-primary hover:underline flex-shrink-0"
+        >
+          Connect →
+        </button>
+      </div>
+    );
+  }
+
+  const upd = (patch: Partial<ServiceFineGrained>) => onChange({ ...(config ?? {}), ...patch } as ServiceFineGrained);
+
+  if (service === 'slack') {
+    const fg = config as SlackFineGrained | null;
+    const channels = (slackData?.channels ?? []).map((c) => ({ id: c.id, name: c.name, meta: c.type }));
+    return (
+      <div className="space-y-4">
+        <ResourceMultiSelect
+          items={channels} loading={loadingSlack}
+          selected={fg?.readChannelIds ?? []}
+          onChange={(ids) => upd({ readChannelIds: ids.length ? ids : undefined })}
+          label="Read — allowed channels / DMs" emptyLabel="All channels (unrestricted)"
+          placeholder="Search channels…"
+        />
+        <ResourceMultiSelect
+          items={channels} loading={loadingSlack}
+          selected={fg?.writeChannelIds ?? []}
+          onChange={(ids) => upd({ writeChannelIds: ids.length ? ids : undefined })}
+          label="Write — allowed channels / DMs" emptyLabel="All channels (unrestricted)"
+          placeholder="Search channels…"
+        />
+      </div>
+    );
+  }
+
+  if (service === 'discord') {
+    const fg = config as DiscordFineGrained | null;
+    const guilds = (discordData ?? []).map((g) => ({ id: g.id, name: g.name }));
+    const channels = (discordData ?? []).flatMap((g) => g.channels.map((c) => ({ id: c.id, name: c.name, meta: g.name })));
+    return (
+      <div className="space-y-4">
+        <ResourceMultiSelect
+          items={guilds} loading={loadingDiscord}
+          selected={fg?.readGuildIds ?? []}
+          onChange={(ids) => upd({ readGuildIds: ids.length ? ids : undefined })}
+          label="Read — allowed servers" emptyLabel="All servers (unrestricted)"
+          placeholder="Search servers…"
+        />
+        <ResourceMultiSelect
+          items={channels} loading={loadingDiscord}
+          selected={fg?.readChannelIds ?? []}
+          onChange={(ids) => upd({ readChannelIds: ids.length ? ids : undefined })}
+          label="Read — allowed channels" emptyLabel="All channels (unrestricted)"
+          placeholder="Search channels…"
+        />
+        <ResourceMultiSelect
+          items={guilds} loading={loadingDiscord}
+          selected={fg?.writeGuildIds ?? []}
+          onChange={(ids) => upd({ writeGuildIds: ids.length ? ids : undefined })}
+          label="Write — allowed servers" emptyLabel="All servers (unrestricted)"
+          placeholder="Search servers…"
+        />
+        <ResourceMultiSelect
+          items={channels} loading={loadingDiscord}
+          selected={fg?.writeChannelIds ?? []}
+          onChange={(ids) => upd({ writeChannelIds: ids.length ? ids : undefined })}
+          label="Write — allowed channels" emptyLabel="All channels (unrestricted)"
+          placeholder="Search channels…"
+        />
+      </div>
+    );
+  }
+
+  if (service === 'telegram') {
+    const fg = config as TelegramFineGrained | null;
+    const chats = (telegramData?.chats ?? []).map((c) => ({ id: c.id, name: c.name, meta: c.type }));
+    return (
+      <div className="space-y-4">
+        <ResourceMultiSelect
+          items={chats} loading={loadingTelegram}
+          selected={fg?.readChatIds ?? []}
+          onChange={(ids) => upd({ readChatIds: ids.length ? ids : undefined })}
+          label="Read — allowed chats / groups / channels" emptyLabel="All chats (unrestricted)"
+          placeholder="Search chats…"
+        />
+        <ResourceMultiSelect
+          items={chats} loading={loadingTelegram}
+          selected={fg?.writeChatIds ?? []}
+          onChange={(ids) => upd({ writeChatIds: ids.length ? ids : undefined })}
+          label="Write — allowed chats / groups" emptyLabel="All chats (unrestricted)"
+          placeholder="Search chats…"
+        />
+      </div>
+    );
+  }
+
+  if (service === 'gmail') {
+    const fg = config as GmailFineGrained | null;
+    const labels = (gmailData?.labels ?? []).map((l) => ({ id: l.id, name: l.name, meta: l.type }));
+    return (
+      <div className="space-y-4">
+        <ResourceMultiSelect
+          items={labels} loading={loadingGmail}
+          selected={fg?.readLabelIds ?? []}
+          onChange={(ids) => upd({ readLabelIds: ids.length ? ids : undefined })}
+          label="Read — allowed labels" emptyLabel="All labels (unrestricted)"
+          placeholder="Search labels…"
+        />
+        <ResourceMultiSelect
+          items={labels} loading={loadingGmail}
+          selected={fg?.writeLabelIds ?? []}
+          onChange={(ids) => upd({ writeLabelIds: ids.length ? ids : undefined })}
+          label="Write — allowed labels (send to these threads)" emptyLabel="All labels (unrestricted)"
+          placeholder="Search labels…"
+        />
+      </div>
+    );
+  }
+
+  if (service === 'calendar') {
+    const fg = config as CalendarFineGrained | null;
+    const calendars = (calendarData?.calendars ?? []).map((c) => ({ id: c.id, name: c.summary, meta: c.primary ? 'Primary' : undefined }));
+    return (
+      <div className="space-y-4">
+        <ResourceMultiSelect
+          items={calendars} loading={loadingCalendar}
+          selected={fg?.readCalendarIds ?? []}
+          onChange={(ids) => upd({ readCalendarIds: ids.length ? ids : undefined })}
+          label="Read — allowed calendars" emptyLabel="All calendars (unrestricted)"
+          placeholder="Search calendars…"
+        />
+        <ResourceMultiSelect
+          items={calendars} loading={loadingCalendar}
+          selected={fg?.writeCalendarIds ?? []}
+          onChange={(ids) => upd({ writeCalendarIds: ids.length ? ids : undefined })}
+          label="Write — allowed calendars (create/edit events)" emptyLabel="All calendars (unrestricted)"
+          placeholder="Search calendars…"
+        />
+      </div>
+    );
+  }
+
+  if (service === 'twitter') {
+    const fg = config as TwitterFineGrained | null;
+    const readDms     = fg?.readDms      !== false;
+    const readTl      = fg?.readTimeline !== false;
+    const allowTweets = fg?.allowTweets  !== false;
+    const allowDms    = fg?.allowDmReplies !== false;
+    return (
+      <div className="space-y-3">
+        <div className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">Read access</div>
+        <div className="space-y-2">
+          {([
+            { key: 'readDms',      label: 'Read DMs',       desc: 'Access direct message conversations', val: readDms },
+            { key: 'readTimeline', label: 'Read timeline',  desc: 'Access home feed and search results',  val: readTl },
+          ] as const).map(({ key, label, desc, val }) => (
+            <div key={key} className="flex items-center justify-between gap-3 py-1.5">
+              <div>
+                <div className="text-xs font-medium text-foreground">{label}</div>
+                <div className="text-[11px] text-muted-foreground">{desc}</div>
+              </div>
+              <MiniToggle
+                checked={val}
+                onChange={(v) => upd({ [key]: v } as Partial<TwitterFineGrained>)}
+              />
+            </div>
+          ))}
+        </div>
+        <div className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground mt-3 mb-1">Write access</div>
+        <div className="space-y-2">
+          {([
+            { key: 'allowTweets',    label: 'Post tweets',    desc: 'Create new tweets and replies',    val: allowTweets },
+            { key: 'allowDmReplies', label: 'Send DM replies', desc: 'Send direct messages to existing conversations', val: allowDms },
+          ] as const).map(({ key, label, desc, val }) => (
+            <div key={key} className="flex items-center justify-between gap-3 py-1.5">
+              <div>
+                <div className="text-xs font-medium text-foreground">{label}</div>
+                <div className="text-[11px] text-muted-foreground">{desc}</div>
+              </div>
+              <MiniToggle
+                checked={val}
+                onChange={(v) => upd({ [key]: v } as Partial<TwitterFineGrained>)}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (service === 'notion') {
+    const fg = config as NotionFineGrained | null;
+    const dbs = (notionData?.results ?? [])
+      .filter((r) => r.object === 'database')
+      .map((d) => ({
+        id: d.id,
+        name: Array.isArray((d as { title?: Array<{ plain_text?: string }> }).title)
+          ? ((d as { title?: Array<{ plain_text?: string }> }).title ?? []).map((t) => t.plain_text || '').join('')
+          : d.id,
+      }));
+    return (
+      <div className="space-y-4">
+        <ResourceMultiSelect
+          items={dbs} loading={loadingNotion}
+          selected={fg?.readDatabaseIds ?? []}
+          onChange={(ids) => upd({ readDatabaseIds: ids.length ? ids : undefined })}
+          label="Read — allowed databases" emptyLabel="All databases (unrestricted)"
+          placeholder="Search databases…"
+        />
+        <ResourceMultiSelect
+          items={dbs} loading={loadingNotion}
+          selected={fg?.writeDatabaseIds ?? []}
+          onChange={(ids) => upd({ writeDatabaseIds: ids.length ? ids : undefined })}
+          label="Write — allowed databases" emptyLabel="All databases (unrestricted)"
+          placeholder="Search databases…"
+        />
+      </div>
+    );
+  }
+
+  if (service === 'obsidian') {
+    const fg = config as ObsidianFineGrained | null;
+    // Flatten obsidian files to a flat list of paths
+    function flattenFiles(files: VaultFileEntry[], prefix = ''): Array<{ id: string; name: string }> {
+      return files.flatMap((f) => {
+        const path = prefix ? `${prefix}/${f.name}` : f.name;
+        if (f.type === 'directory' && f.children) {
+          return [{ id: path + '/', name: path + '/' }, ...flattenFiles(f.children, path)];
+        }
+        return [{ id: path, name: path }];
+      });
+    }
+    const paths = flattenFiles(obsidianData?.files ?? []);
+    return (
+      <div className="space-y-4">
+        <ResourceMultiSelect
+          items={paths} loading={loadingObsidian}
+          selected={fg?.readPaths ?? []}
+          onChange={(ids) => upd({ readPaths: ids.length ? ids : undefined })}
+          label="Read — allowed path prefixes" emptyLabel="All paths (unrestricted)"
+          placeholder="Search paths…"
+        />
+        <ResourceMultiSelect
+          items={paths} loading={loadingObsidian}
+          selected={fg?.writePaths ?? []}
+          onChange={(ids) => upd({ writePaths: ids.length ? ids : undefined })}
+          label="Write — allowed path prefixes" emptyLabel="All paths (unrestricted)"
+          placeholder="Search paths…"
+        />
+      </div>
+    );
+  }
+
+  return <div className="text-xs text-muted-foreground">No fine-grained options for this service.</div>;
+}
+
+// ── UiPermissionsCards ────────────────────────────────────────────────────────
+// Simplified UI user permissions — just outbox/direct-send toggle per service
+// and mark-read toggle where applicable. UI user is unrestricted on read/send.
+
+function UiPermissionsCards({
+  perms,
+  onUpdate,
+}: {
+  perms: Permission[];
+  onUpdate: (service: string, field: keyof Permission, value: boolean) => void;
+}) {
+  const NO_MARK_READ = ['obsidian', 'notion', 'twitter', 'calendar'];
+
+  return (
+    <div className="rounded-xl border border-border overflow-hidden divide-y divide-border">
+      {perms.map((perm) => {
+        const hasMarkRead = !NO_MARK_READ.includes(perm.service);
+        const directSend = !perm.requireApproval;
+        return (
+          <div key={perm.service} className="flex items-center gap-3 px-4 py-3 hover:bg-secondary/10 transition-colors">
+            {/* Service */}
+            <div className="flex items-center gap-2.5 flex-1 min-w-0">
+              <ServiceLogo service={perm.service} className="w-4 h-4 flex-shrink-0" />
+              <span className={cn('text-sm font-medium', SVC_COLOR[perm.service] || 'text-foreground')}>
+                {SVC_LABEL[perm.service] || perm.service}
+              </span>
+            </div>
+
+            {/* Mark as read (where applicable) */}
+            {hasMarkRead && (
+              <div className="flex flex-col items-center gap-0.5 flex-shrink-0">
+                <MiniToggle
+                  checked={!!perm.markReadEnabled}
+                  onChange={(v) => onUpdate(perm.service, 'markReadEnabled', v)}
+                />
+                <span className="text-[9px] text-muted-foreground/50 leading-tight">mark read</span>
+              </div>
+            )}
+            {!hasMarkRead && <div className="w-9 flex-shrink-0" />}
+
+            {/* Outbox / direct send */}
+            <div className="flex flex-col items-center gap-0.5 flex-shrink-0">
+              <MiniToggle
+                checked={directSend}
+                onChange={(v) => {
+                  onUpdate(perm.service, 'requireApproval', !v);
+                  onUpdate(perm.service, 'directSendFromUi', v);
+                }}
+              />
+              <span className="text-[9px] text-muted-foreground/50 leading-tight">
+                {directSend ? 'direct send' : 'via outbox'}
+              </span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Compact table of all service permissions for the UI user (legacy - kept as reference)
 function UiPermissionsTable({ perms, onUpdate }: { perms: Permission[]; onUpdate: (service: string, field: keyof Permission, value: boolean) => void }) {
   return (
     <div className="rounded-xl border border-border overflow-hidden">
@@ -1753,17 +2234,21 @@ function PermissionsTab() {
   const [copiedKey, setCopiedKey] = useState(false);
 
   const updatePerm = useMutation({
-    mutationFn: ({ service, field, value }: { service: string; field: string; value: boolean }) =>
-      api.updatePermission(service, { [field]: value }),
+    mutationFn: ({ service, updates }: { service: string; updates: Partial<Permission> }) =>
+      api.updatePermission(service, updates),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['permissions'] }),
     onError: (e: Error) => toast({ title: 'Update failed', description: e.message, variant: 'destructive' }),
   });
 
   const handleUiPerm = (service: string, field: keyof Permission, value: boolean) => {
-    const extra = field === 'requireApproval' ? { directSendFromUi: !value } : {};
-    setLocal((p) => p.map((r) => r.service === service ? { ...r, [field]: value, ...extra } : r));
-    updatePerm.mutate({ service, field, value });
-    if (field === 'requireApproval') updatePerm.mutate({ service, field: 'directSendFromUi', value: !value });
+    // If toggling outbox/direct-send, update both fields together
+    if (field === 'requireApproval') {
+      setLocal((p) => p.map((r) => r.service === service ? { ...r, requireApproval: value, directSendFromUi: !value } : r));
+      updatePerm.mutate({ service, updates: { requireApproval: value, directSendFromUi: !value } });
+    } else {
+      setLocal((p) => p.map((r) => r.service === service ? { ...r, [field]: value } : r));
+      updatePerm.mutate({ service, updates: { [field]: value } });
+    }
   };
 
   const createKey = useMutation({
@@ -1780,26 +2265,26 @@ function PermissionsTab() {
   const orderedPerms = ALL_SERVICES.map((svc) => local.find((p) => p.service === svc)).filter(Boolean) as Permission[];
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-10">
 
-      {/* ── UI User ── */}
+      {/* ── UI User ─────────────────────────────────────────────────────────── */}
       <div className="space-y-3">
         <div>
           <h3 className="text-sm font-semibold text-foreground">You (UI)</h3>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Controls what you can do in the browser. These are also the defaults inherited by API keys.
+            Browser controls. The UI has full read and send access — configure whether writes go through the outbox for approval or are sent directly.
           </p>
         </div>
-        <UiPermissionsTable perms={orderedPerms} onUpdate={handleUiPerm} />
+        <UiPermissionsCards perms={orderedPerms} onUpdate={handleUiPerm} />
       </div>
 
-      {/* ── API Keys ── */}
+      {/* ── API Keys ─────────────────────────────────────────────────────────── */}
       <div className="space-y-3">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h3 className="text-sm font-semibold text-foreground">API Keys</h3>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Each key inherits the UI permissions above. Expand a key to set per-service overrides.
+              Each key inherits UI defaults. Expand a key to override per-service access, then expand a service for fine-grained channel, label, or resource filters.
             </p>
           </div>
           {!creating && (
@@ -1864,10 +2349,143 @@ function PermissionsTab() {
   );
 }
 
-// Per-key expandable row with service-level permission overrides
+// ── ApiKeyServiceRow ──────────────────────────────────────────────────────────
+// Second-level expandable row: one service within an expanded API key.
+
+function ApiKeyServiceRow({
+  perm,
+  connections,
+  onUpdate,
+  onUpdateFg,
+}: {
+  perm: KeyServicePerm;
+  connections: Record<string, ConnectionStatus>;
+  onUpdate: (service: string, field: string, value: boolean | null) => void;
+  onUpdateFg: (service: string, config: ServiceFineGrained | null) => void;
+}) {
+  const [fgOpen, setFgOpen] = useState(false);
+
+  const COLS: Array<{ key: 'readEnabled' | 'sendEnabled' | 'requireApproval'; label: string }> = [
+    { key: 'readEnabled',     label: 'Read'     },
+    { key: 'sendEnabled',     label: 'Send'     },
+    { key: 'requireApproval', label: 'Approval' },
+  ];
+
+  const hasFgConfig = perm.fineGrainedConfig !== null &&
+    Object.values(perm.fineGrainedConfig as Record<string, unknown>).some((v) =>
+      Array.isArray(v) ? v.length > 0 : v !== undefined && v !== null
+    );
+
+  const isConnected = connections[perm.service]?.status === 'connected';
+
+  return (
+    <div className="border-t border-border first:border-t-0">
+      {/* Service row with basic toggles */}
+      <div className="flex items-center gap-3 px-4 py-2.5 hover:bg-secondary/5 transition-colors">
+        {/* Service name */}
+        <div className="flex items-center gap-2 w-28 flex-shrink-0">
+          <ServiceLogo service={perm.service} className="w-3.5 h-3.5 flex-shrink-0" />
+          <span className={cn('text-xs font-medium truncate', SVC_COLOR[perm.service] || 'text-foreground')}>
+            {SVC_LABEL[perm.service] || perm.service}
+          </span>
+        </div>
+
+        {/* Basic toggles */}
+        <div className="flex items-center gap-4 flex-1">
+          {COLS.map((c) => {
+            const isOverridden = perm.overrides[c.key] !== null;
+            return (
+              <div key={c.key} className="flex flex-col items-center gap-0.5">
+                <MiniToggle
+                  checked={perm[c.key]}
+                  onChange={(v) => onUpdate(perm.service, c.key, v)}
+                />
+                {isOverridden ? (
+                  <button
+                    onClick={() => onUpdate(perm.service, c.key, null)}
+                    className="text-[9px] text-primary hover:underline leading-tight cursor-pointer"
+                  >
+                    reset
+                  </button>
+                ) : (
+                  <span className="text-[9px] text-muted-foreground/35 leading-tight select-none cursor-default">
+                    inherit
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Fine-grained expand button */}
+        <button
+          onClick={() => setFgOpen(!fgOpen)}
+          className={cn(
+            'flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] transition-all flex-shrink-0',
+            fgOpen
+              ? 'bg-primary/10 text-primary border border-primary/20'
+              : hasFgConfig
+              ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+              : 'text-muted-foreground hover:text-foreground hover:bg-secondary border border-transparent',
+          )}
+          title="Fine-grained resource access"
+        >
+          <SlidersHorizontal className="w-2.5 h-2.5" />
+          <span>{hasFgConfig ? 'restricted' : 'fine-grained'}</span>
+          <ChevronDown className={cn('w-2.5 h-2.5 transition-transform', fgOpen && 'rotate-180')} />
+        </button>
+      </div>
+
+      {/* Fine-grained expansion */}
+      <AnimatePresence initial={false}>
+        {fgOpen && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.18 }}
+            className="overflow-hidden"
+          >
+            <div className="mx-4 mb-3 mt-0.5 rounded-xl border border-border/60 bg-secondary/10 p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-1.5">
+                  <Filter className="w-3 h-3 text-muted-foreground" />
+                  <span className="text-xs font-semibold text-foreground">Resource filters</span>
+                  {perm.overrides.fineGrainedConfig !== null && (
+                    <span className="chip chip-amber text-[9px]">overridden</span>
+                  )}
+                </div>
+                {perm.overrides.fineGrainedConfig !== null && (
+                  <button
+                    onClick={() => onUpdateFg(perm.service, null)}
+                    className="text-[10px] text-primary hover:underline"
+                  >
+                    reset to global
+                  </button>
+                )}
+              </div>
+              <FineGrainedPanel
+                service={perm.service}
+                config={perm.fineGrainedConfig}
+                onChange={(cfg) => onUpdateFg(perm.service, cfg)}
+                isConnected={isConnected}
+              />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+// ── ApiKeyRow ─────────────────────────────────────────────────────────────────
+// Top-level expandable row for an API key. Expanded view shows all services
+// as ApiKeyServiceRow entries (each independently expandable for fine-grained).
+
 function ApiKeyRow({ apiKey }: { apiKey: ApiKeyItem }) {
   const qc = useQueryClient();
   const [expanded, setExpanded] = useState(false);
+  const connections = useConnectionStore((s) => s.statuses);
 
   const { data, isLoading } = useQuery({
     queryKey: ['key-permissions', apiKey.id],
@@ -1877,8 +2495,16 @@ function ApiKeyRow({ apiKey }: { apiKey: ApiKeyItem }) {
 
   const update = useMutation({
     mutationFn: ({ service, field, value }: { service: string; field: string; value: boolean | null }) =>
-      api.updateKeyPermission(apiKey.id, service, { [field]: value }),
+      api.updateKeyPermission(apiKey.id, service, { [field]: value } as Parameters<typeof api.updateKeyPermission>[2]),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['key-permissions', apiKey.id] }),
+    onError: (e: Error) => toast({ title: 'Update failed', description: e.message, variant: 'destructive' }),
+  });
+
+  const updateFg = useMutation({
+    mutationFn: ({ service, config }: { service: string; config: ServiceFineGrained | null }) =>
+      api.updateKeyPermission(apiKey.id, service, { fineGrainedConfig: config }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['key-permissions', apiKey.id] }),
+    onError: (e: Error) => toast({ title: 'Update failed', description: e.message, variant: 'destructive' }),
   });
 
   const revoke = useMutation({
@@ -1886,21 +2512,32 @@ function ApiKeyRow({ apiKey }: { apiKey: ApiKeyItem }) {
     onSuccess: () => { toast({ title: 'API key revoked' }); qc.invalidateQueries({ queryKey: ['api-keys'] }); },
   });
 
-  const COLS: Array<{ key: 'readEnabled' | 'sendEnabled' | 'requireApproval'; label: string }> = [
-    { key: 'readEnabled',     label: 'Read'     },
-    { key: 'sendEnabled',     label: 'Send'     },
-    { key: 'requireApproval', label: 'Approval' },
-  ];
+  // Count services with any active overrides (basic or fine-grained)
+  const overrideCount = data?.permissions.filter((p) =>
+    p.overrides.readEnabled !== null || p.overrides.sendEnabled !== null ||
+    p.overrides.requireApproval !== null || p.overrides.fineGrainedConfig !== null
+  ).length ?? 0;
+
+  const fgCount = data?.permissions.filter((p) => p.fineGrainedConfig !== null).length ?? 0;
 
   return (
     <div className="rounded-xl border border-border overflow-hidden">
+      {/* Key header */}
       <div className="flex items-center gap-3 px-4 py-3 bg-secondary/20">
         <button onClick={() => setExpanded(!expanded)} className="flex items-center gap-2.5 flex-1 text-left min-w-0">
           <ChevronDown className={cn('w-3.5 h-3.5 text-muted-foreground flex-shrink-0 transition-transform duration-150', expanded && 'rotate-180')} />
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="text-sm font-medium truncate">{apiKey.name}</span>
               <code className="chip chip-emerald font-mono text-[10px]">{apiKey.keyPrefix}…</code>
+              {!expanded && overrideCount > 0 && (
+                <span className="chip chip-amber text-[9px]">{overrideCount} override{overrideCount !== 1 ? 's' : ''}</span>
+              )}
+              {!expanded && fgCount > 0 && (
+                <span className="flex items-center gap-1 chip bg-violet-500/10 text-violet-400 border-violet-500/20 text-[9px]">
+                  <SlidersHorizontal className="w-2.5 h-2.5" />{fgCount} filter{fgCount !== 1 ? 's' : ''}
+                </span>
+              )}
             </div>
             <p className="text-[11px] text-muted-foreground">
               {apiKey.lastUsedAt ? `Last used ${timeAgo(apiKey.lastUsedAt)}` : 'Never used'}
@@ -1913,53 +2550,42 @@ function ApiKeyRow({ apiKey }: { apiKey: ApiKeyItem }) {
         </button>
       </div>
 
+      {/* Expanded service list */}
       <AnimatePresence initial={false}>
         {expanded && (
-          <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} transition={{ duration: 0.18 }}
+          <motion.div
+            initial={{ height: 0 }}
+            animate={{ height: 'auto' }}
+            exit={{ height: 0 }}
+            transition={{ duration: 0.18 }}
             className="overflow-hidden border-t border-border"
           >
             {isLoading ? (
-              <div className="flex items-center justify-center py-4"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground" /></div>
+              <div className="flex items-center justify-center py-6">
+                <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+              </div>
             ) : data ? (
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b border-border bg-secondary/10">
-                      <th className="px-4 py-2 text-left text-2xs font-semibold uppercase tracking-wider text-muted-foreground">Service</th>
-                      {COLS.map((c) => (
-                        <th key={c.key} className="px-4 py-2 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground">{c.label}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border">
-                    {data.permissions.map((perm) => (
-                      <tr key={perm.service} className="hover:bg-secondary/10 transition-colors">
-                        <td className={cn('px-4 py-2.5 text-xs font-medium', SVC_COLOR[perm.service] || 'text-foreground')}>
-                          {SVC_LABEL[perm.service] || perm.service}
-                        </td>
-                        {COLS.map((c) => {
-                          const isOverridden = perm.overrides[c.key] !== null;
-                          return (
-                            <td key={c.key} className="px-4 py-2.5 text-center">
-                              <div className="flex flex-col items-center gap-0.5">
-                                <MiniToggle
-                                  checked={perm[c.key]}
-                                  onChange={(v) => update.mutate({ service: perm.service, field: c.key, value: v })}
-                                />
-                                {isOverridden ? (
-                                  <button onClick={() => update.mutate({ service: perm.service, field: c.key, value: null })}
-                                    className="text-[9px] text-primary hover:underline leading-tight cursor-pointer">reset</button>
-                                ) : (
-                                  <span className="text-[9px] text-muted-foreground/35 leading-tight select-none cursor-default">inherit</span>
-                                )}
-                              </div>
-                            </td>
-                          );
-                        })}
-                      </tr>
+              <div>
+                {/* Column header row */}
+                <div className="flex items-center gap-3 px-4 py-1.5 bg-secondary/10 border-b border-border">
+                  <div className="w-28 flex-shrink-0" />
+                  <div className="flex items-center gap-4 flex-1">
+                    {(['Read', 'Send', 'Approval'] as const).map((label) => (
+                      <span key={label} className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 w-9 text-center flex-shrink-0">{label}</span>
                     ))}
-                  </tbody>
-                </table>
+                  </div>
+                  <div className="w-24 flex-shrink-0" />
+                </div>
+                {/* Service rows */}
+                {data.permissions.map((perm) => (
+                  <ApiKeyServiceRow
+                    key={perm.service}
+                    perm={perm}
+                    connections={connections}
+                    onUpdate={(service, field, value) => update.mutate({ service, field, value })}
+                    onUpdateFg={(service, config) => updateFg.mutate({ service, config })}
+                  />
+                ))}
               </div>
             ) : null}
           </motion.div>
@@ -2033,6 +2659,63 @@ function InstallTab() {
 
 // ── Security tab ──────────────────────────────────────────────────────────────
 
+/** Small helper: session duration label */
+function sessionLabel(hours: number): string {
+  if (hours === 0) return 'Always require login';
+  if (hours < 24) return `${hours}h session`;
+  const days = hours / 24;
+  return `${days}d session`;
+}
+
+/** Inline editable session duration field */
+function SessionDurationField({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+  disabled?: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [raw, setRaw] = useState(String(value));
+
+  const commit = () => {
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n >= 0) onChange(n);
+    else setRaw(String(value));
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <div className="flex items-center gap-1.5">
+        <input
+          autoFocus
+          type="number"
+          min={0}
+          value={raw}
+          onChange={(e) => setRaw(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') { setRaw(String(value)); setEditing(false); } }}
+          className="input-warm text-xs py-1 px-2 w-20"
+        />
+        <span className="text-xs text-muted-foreground">hours (0 = always)</span>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={() => { setRaw(String(value)); setEditing(true); }}
+      disabled={disabled}
+      className="text-xs text-muted-foreground hover:text-foreground transition-colors underline underline-offset-2 decoration-dashed"
+    >
+      {sessionLabel(value)}
+    </button>
+  );
+}
+
 function SecurityTab() {
   const qc = useQueryClient();
   const { data: authConfig, isLoading } = useQuery({
@@ -2047,6 +2730,12 @@ function SecurityTab() {
     staleTime: 10000,
   });
 
+  const { data: passkeyData, refetch: refetchPasskeys } = useQuery({
+    queryKey: ['passkey-credentials'],
+    queryFn: uiAuth.passkeyCredentials,
+    staleTime: 10000,
+  });
+
   const blockSsrf = securitySettings?.['security.blockPrivateIpSsrf'] === true;
 
   const updateSecuritySetting = useMutation({
@@ -2055,22 +2744,28 @@ function SecurityTab() {
     onError: (e: Error) => toast({ title: 'Save failed', description: e.message, variant: 'destructive' }),
   });
 
+  // ── Password state ────────────────────────────────────────────────────────
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [currentPassword, setCurrentPassword] = useState('');
   const [showPw, setShowPw] = useState(false);
+
+  // ── TOTP state ────────────────────────────────────────────────────────────
   const [totpSetupData, setTotpSetupData] = useState<{ secret: string; otpauthUrl: string; setupNonce: string } | null>(null);
   const [totpCode, setTotpCode] = useState('');
   const [disableTotpPassword, setDisableTotpPassword] = useState('');
-  const [loginEnabled, setLoginEnabled] = useState(false);
 
-  useEffect(() => {
-    if (authConfig) setLoginEnabled(authConfig.enabled);
-  }, [authConfig]);
+  // ── Passkey state ─────────────────────────────────────────────────────────
+  const [passkeyName, setPasskeyName] = useState('');
+  const [registeringPasskey, setRegisteringPasskey] = useState(false);
+  const [deletingPasskeyId, setDeletingPasskeyId] = useState<number | null>(null);
 
+  const invalidateConfig = () => qc.invalidateQueries({ queryKey: ['ui-auth-config'] });
+
+  // ── Mutations ─────────────────────────────────────────────────────────────
   const saveConfig = useMutation({
     mutationFn: (body: Parameters<typeof uiAuth.updateConfig>[0]) => uiAuth.updateConfig(body),
-    onSuccess: () => { toast({ title: 'Security settings saved', variant: 'success' }); qc.invalidateQueries({ queryKey: ['ui-auth-config'] }); setPassword(''); setConfirmPassword(''); setCurrentPassword(''); },
+    onSuccess: () => { toast({ title: 'Saved', variant: 'success' }); invalidateConfig(); setPassword(''); setConfirmPassword(''); setCurrentPassword(''); },
     onError: (e: Error) => toast({ title: 'Save failed', description: e.message, variant: 'destructive' }),
   });
 
@@ -2081,164 +2776,189 @@ function SecurityTab() {
 
   const verifyTotp = useMutation({
     mutationFn: () => uiAuth.totpVerify(totpCode, totpSetupData?.setupNonce ?? ''),
-    onSuccess: () => {
-      toast({ title: '2FA enabled', variant: 'success' });
-      setTotpSetupData(null); setTotpCode('');
-      qc.invalidateQueries({ queryKey: ['ui-auth-config'] });
-    },
+    onSuccess: () => { toast({ title: '2FA enabled', variant: 'success' }); setTotpSetupData(null); setTotpCode(''); invalidateConfig(); },
     onError: (e: Error) => toast({ title: 'Invalid code', description: e.message, variant: 'destructive' }),
   });
 
   const disableTotp = useMutation({
     mutationFn: () => uiAuth.totpDisable(disableTotpPassword),
-    onSuccess: () => {
-      toast({ title: '2FA disabled' });
-      setDisableTotpPassword('');
-      qc.invalidateQueries({ queryKey: ['ui-auth-config'] });
-    },
+    onSuccess: () => { toast({ title: '2FA disabled' }); setDisableTotpPassword(''); invalidateConfig(); },
     onError: (e: Error) => toast({ title: 'Failed to disable 2FA', description: e.message, variant: 'destructive' }),
   });
 
   const handleSavePassword = () => {
-    if (password && password !== confirmPassword) {
-      toast({ title: 'Passwords do not match', variant: 'destructive' }); return;
-    }
-    if (password && password.length < 8) {
-      toast({ title: 'Password must be at least 8 characters', variant: 'destructive' }); return;
-    }
-    saveConfig.mutate({ password: password || undefined, currentPassword: currentPassword || undefined });
+    if (password && password !== confirmPassword) { toast({ title: 'Passwords do not match', variant: 'destructive' }); return; }
+    if (password && password.length < 8) { toast({ title: 'Password must be at least 8 characters', variant: 'destructive' }); return; }
+    saveConfig.mutate({ password: { newPassword: password || undefined, currentPassword: currentPassword || undefined } });
   };
 
-  const handleToggleLogin = () => {
-    if (!loginEnabled && !authConfig?.hasPassword && !password) {
-      toast({ title: 'Set a password first', variant: 'destructive' }); return;
+  const handleRegisterPasskey = async () => {
+    setRegisteringPasskey(true);
+    try {
+      const options = await uiAuth.passkeyRegisterBegin();
+      const credential = await startRegistration({ optionsJSON: options as unknown as PublicKeyCredentialCreationOptionsJSON });
+      await uiAuth.passkeyRegisterFinish(credential as unknown as Record<string, unknown>, passkeyName || 'Passkey');
+      toast({ title: 'Passkey registered', variant: 'success' });
+      setPasskeyName('');
+      refetchPasskeys();
+      invalidateConfig();
+    } catch (e) {
+      if (e instanceof Error && e.name === 'NotAllowedError') {
+        toast({ title: 'Registration cancelled', variant: 'destructive' });
+      } else {
+        toast({ title: 'Passkey registration failed', description: (e as Error).message, variant: 'destructive' });
+      }
     }
-    saveConfig.mutate({ enabled: !loginEnabled, password: password || undefined });
+    setRegisteringPasskey(false);
+  };
+
+  const handleDeletePasskey = async (id: number) => {
+    setDeletingPasskeyId(id);
+    try {
+      await uiAuth.passkeyDeleteCredential(id);
+      toast({ title: 'Passkey removed' });
+      refetchPasskeys();
+      invalidateConfig();
+    } catch (e) {
+      toast({ title: 'Failed to remove passkey', description: (e as Error).message, variant: 'destructive' });
+    }
+    setDeletingPasskeyId(null);
   };
 
   if (isLoading) return <div className="text-xs text-muted-foreground">Loading…</div>;
 
+  const pw    = authConfig?.password;
+  const totp  = authConfig?.totp;
+  const pk    = authConfig?.passkey;
+  const passkeys: PasskeyCredential[] = passkeyData?.credentials ?? [];
+
   return (
     <div className="space-y-6 max-w-lg">
 
-      {/* Login toggle */}
-      <div className="rounded-xl border border-border bg-secondary/20 p-4">
+      {/* ── Password login ──────────────────────────────────────────────── */}
+      <div className="rounded-xl border border-border bg-secondary/20 p-4 space-y-4">
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
-              <Lock className="w-4 h-4 text-muted-foreground" />
+              <Lock className={cn('w-4 h-4', pw?.enabled ? 'text-primary' : 'text-muted-foreground')} />
               <p className="text-sm font-semibold">Password login</p>
             </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              {loginEnabled
-                ? 'The UI requires a password to access. API keys are unaffected.'
-                : 'The UI is accessible without login. Recommended only on private/local networks.'}
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {pw?.enabled
+                ? 'Requires a password to access the UI.'
+                : 'Password login is disabled.'}
             </p>
+            {pw?.enabled && (
+              <div className="mt-1">
+                <SessionDurationField
+                  value={pw.sessionDurationHours}
+                  onChange={(v) => saveConfig.mutate({ password: { sessionDurationHours: v } })}
+                  disabled={saveConfig.isPending}
+                />
+              </div>
+            )}
           </div>
-          <MiniToggle checked={loginEnabled} onChange={handleToggleLogin} />
+          <MiniToggle
+            checked={pw?.enabled ?? false}
+            onChange={(v) => saveConfig.mutate({ password: { enabled: v } })}
+            disabled={saveConfig.isPending}
+          />
         </div>
-        {!authConfig?.hasPassword && !loginEnabled && (
-          <p className="text-[11px] text-primary mt-3 flex items-center gap-1.5">
-            <AlertTriangle className="w-3 h-3" /> Set a password below before enabling login
+        {!pw?.hasPassword && !pw?.enabled && (
+          <p className="text-[11px] text-primary flex items-center gap-1.5">
+            <AlertTriangle className="w-3 h-3" /> Set a password below before enabling
           </p>
         )}
-      </div>
 
-      {/* Password */}
-      <div className="space-y-3">
-        <div>
-          <p className="text-sm font-semibold">{authConfig?.hasPassword ? 'Change password' : 'Set password'}</p>
-          <p className="text-xs text-muted-foreground mt-0.5">Minimum 8 characters</p>
-        </div>
+        {/* Set/change password form */}
+        <div className="space-y-3 pt-1 border-t border-border/50">
+          <p className="text-xs font-medium">{pw?.hasPassword ? 'Change password' : 'Set password'}</p>
 
-        {authConfig?.hasPassword && (
-          <div className="space-y-1.5">
-            <label className="text-xs text-muted-foreground">Current password</label>
+          {pw?.hasPassword && (
             <div className="relative">
               <input type={showPw ? 'text' : 'password'} value={currentPassword}
                 onChange={(e) => setCurrentPassword(e.target.value)}
-                placeholder="Current password" className="input-warm pr-10 w-full" />
+                placeholder="Current password" className="input-warm pr-10 w-full text-xs" />
               <button type="button" onClick={() => setShowPw(!showPw)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors">
-                {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                {showPw ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
               </button>
             </div>
-          </div>
-        )}
+          )}
 
-        <div className="grid grid-cols-2 gap-3">
-          <div className="space-y-1.5">
-            <label className="text-xs text-muted-foreground">New password</label>
+          <div className="grid grid-cols-2 gap-2">
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
-              placeholder="New password" className="input-warm w-full" />
-          </div>
-          <div className="space-y-1.5">
-            <label className="text-xs text-muted-foreground">Confirm</label>
+              placeholder="New password" className="input-warm w-full text-xs" />
             <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)}
-              placeholder="Confirm password" className="input-warm w-full"
+              placeholder="Confirm" className="input-warm w-full text-xs"
               onKeyDown={(e) => { if (e.key === 'Enter') handleSavePassword(); }} />
           </div>
-        </div>
 
-        <button onClick={handleSavePassword} disabled={saveConfig.isPending || (!password && !currentPassword)} className="btn-primary text-xs">
-          {saveConfig.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
-          {authConfig?.hasPassword ? 'Update Password' : 'Set Password'}
-        </button>
+          <button onClick={handleSavePassword} disabled={saveConfig.isPending || (!password && !currentPassword)} className="btn-primary text-xs">
+            {saveConfig.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+            {pw?.hasPassword ? 'Update Password' : 'Set Password'}
+          </button>
+        </div>
       </div>
 
-      {/* 2FA */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
+      {/* ── TOTP 2FA ────────────────────────────────────────────────────── */}
+      <div className="rounded-xl border border-border bg-secondary/20 p-4 space-y-4">
+        <div className="flex items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
-              <ShieldCheck className={cn('w-4 h-4', authConfig?.totpEnabled ? 'text-emerald-400' : 'text-muted-foreground')} />
-              <p className="text-sm font-semibold">Two-factor authentication (TOTP)</p>
+              <ShieldCheck className={cn('w-4 h-4', totp?.totpEnabled ? 'text-emerald-400' : 'text-muted-foreground')} />
+              <p className="text-sm font-semibold">TOTP two-factor authentication</p>
             </div>
             <p className="text-xs text-muted-foreground mt-0.5">
-              {authConfig?.totpEnabled ? 'Active — using an authenticator app' : 'Not enabled'}
+              {totp?.totpEnabled
+                ? 'Active — required after password login.'
+                : 'Adds a time-based OTP step after password login.'}
             </p>
-          </div>
-          {authConfig?.totpEnabled ? (
-            <div className="flex flex-col items-end gap-1.5">
-              <div className="flex gap-1.5 items-center">
-                <input
-                  type="password"
-                  value={disableTotpPassword}
-                  onChange={(e) => setDisableTotpPassword(e.target.value)}
-                  placeholder="Confirm password"
-                  className="input-warm text-xs py-1.5 px-2 w-36"
+            {totp?.enabled && (
+              <div className="mt-1">
+                <SessionDurationField
+                  value={totp.sessionDurationHours}
+                  onChange={(v) => saveConfig.mutate({ totp: { sessionDurationHours: v } })}
+                  disabled={saveConfig.isPending}
                 />
-                <button
-                  onClick={() => disableTotp.mutate()}
+              </div>
+            )}
+          </div>
+          {totp?.totpEnabled ? (
+            <div className="flex flex-col items-end gap-1.5 shrink-0">
+              <div className="flex gap-1.5 items-center">
+                <input type="password" value={disableTotpPassword}
+                  onChange={(e) => setDisableTotpPassword(e.target.value)}
+                  placeholder="Current password" className="input-warm text-xs py-1.5 px-2 w-32" />
+                <button onClick={() => disableTotp.mutate()}
                   disabled={disableTotp.isPending || !disableTotpPassword}
-                  className="btn-danger text-xs py-1.5 px-3"
-                >
+                  className="btn-danger text-xs py-1.5 px-3">
                   {disableTotp.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Disable'}
                 </button>
               </div>
-              <p className="text-[10px] text-muted-foreground">Enter your password to confirm</p>
+              <p className="text-[10px] text-muted-foreground">Enter password to confirm</p>
             </div>
           ) : !totpSetupData ? (
-            <button onClick={() => setupTotp.mutate()} disabled={setupTotp.isPending || !authConfig?.hasPassword}
-              className="btn-secondary text-xs py-1.5 px-3 gap-1.5">
+            <button onClick={() => setupTotp.mutate()}
+              disabled={setupTotp.isPending || !pw?.hasPassword}
+              title={!pw?.hasPassword ? 'Set a password first' : undefined}
+              className="btn-secondary text-xs py-1.5 px-3 gap-1.5 shrink-0">
               <QrCode className="w-3.5 h-3.5" /> Set up
             </button>
           ) : null}
         </div>
 
         {/* TOTP setup flow */}
-        {totpSetupData && !authConfig?.totpEnabled && (
+        {totpSetupData && !totp?.totpEnabled && (
           <motion.div initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }}
-            className="rounded-xl border border-border bg-secondary/20 p-4 space-y-4"
+            className="rounded-lg border border-border bg-background/40 p-4 space-y-4"
           >
             <p className="text-sm font-semibold">Set up authenticator</p>
-            <ol className="text-xs text-muted-foreground space-y-2 list-decimal pl-4">
+            <ol className="text-xs text-muted-foreground space-y-1.5 list-decimal pl-4">
               <li>Open your authenticator app (Google Authenticator, Authy, 1Password, etc.)</li>
               <li>Scan the QR code or enter the secret key manually</li>
               <li>Enter the 6-digit code below to confirm</li>
             </ol>
-
-            {/* QR code via a public API — safe since it's just encoding the URI */}
             <div className="flex flex-col items-center gap-3 py-2">
               <img
                 src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(totpSetupData.otpauthUrl)}`}
@@ -2252,37 +2972,104 @@ function SecurityTab() {
                 </code>
               </div>
             </div>
-
-            <div className="space-y-2">
-              <input
-                type="text" inputMode="numeric" pattern="[0-9]*" maxLength={6}
-                value={totpCode} onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, ''))}
-                placeholder="000000"
-                className="input-warm w-full text-center text-lg font-mono tracking-[0.4em]"
-                autoFocus
-              />
-              <div className="flex gap-2">
-                <button onClick={() => { setTotpSetupData(null); setTotpCode(''); }} className="btn-secondary text-xs flex-1">Cancel</button>
-                <button onClick={() => verifyTotp.mutate()} disabled={totpCode.length !== 6 || verifyTotp.isPending} className="btn-primary text-xs flex-1">
-                  {verifyTotp.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
-                  Verify & Enable
-                </button>
-              </div>
+            <input type="text" inputMode="numeric" pattern="[0-9]*" maxLength={6}
+              value={totpCode} onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, ''))}
+              placeholder="000000"
+              className="input-warm w-full text-center text-lg font-mono tracking-[0.4em]"
+              autoFocus
+            />
+            <div className="flex gap-2">
+              <button onClick={() => { setTotpSetupData(null); setTotpCode(''); }} className="btn-secondary text-xs flex-1">Cancel</button>
+              <button onClick={() => verifyTotp.mutate()} disabled={totpCode.length !== 6 || verifyTotp.isPending} className="btn-primary text-xs flex-1">
+                {verifyTotp.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                Verify & Enable
+              </button>
             </div>
           </motion.div>
         )}
       </div>
 
-      {/* Session info */}
-      {loginEnabled && (
-        <div className="rounded-xl border border-border bg-secondary/20 p-4 flex items-start gap-3">
-          <Lock className="w-4 h-4 text-muted-foreground flex-shrink-0 mt-0.5" />
-          <div className="text-xs text-muted-foreground">
-            Session lasts <span className="text-foreground font-medium">7 days</span> from last login.
-            Logging out or changing the password immediately invalidates the current session.
+      {/* ── Passkeys ────────────────────────────────────────────────────── */}
+      <div className="rounded-xl border border-border bg-secondary/20 p-4 space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <Fingerprint className={cn('w-4 h-4', pk?.enabled ? 'text-blue-400' : 'text-muted-foreground')} />
+              <p className="text-sm font-semibold">Passkey login</p>
+            </div>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {pk?.enabled
+                ? `${pk.count} passkey${pk.count !== 1 ? 's' : ''} registered — passwordless sign-in enabled.`
+                : 'Passwordless sign-in using device biometrics or a hardware key.'}
+            </p>
+            {pk?.enabled && (
+              <div className="mt-1">
+                <SessionDurationField
+                  value={pk.sessionDurationHours}
+                  onChange={(v) => saveConfig.mutate({ passkey: { sessionDurationHours: v } })}
+                  disabled={saveConfig.isPending}
+                />
+              </div>
+            )}
           </div>
+          <MiniToggle
+            checked={pk?.enabled ?? false}
+            onChange={(v) => saveConfig.mutate({ passkey: { enabled: v } })}
+            disabled={saveConfig.isPending || (!(pk?.enabled) && (pk?.count ?? 0) === 0)}
+          />
         </div>
-      )}
+
+        {/* Registered passkeys list */}
+        {passkeys.length > 0 && (
+          <div className="space-y-2">
+            {passkeys.map((cred) => (
+              <div key={cred.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-background/30 px-3 py-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Fingerprint className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium truncate">{cred.name || 'Passkey'}</p>
+                    <p className="text-[10px] text-muted-foreground">
+                      Added {cred.createdAt ? new Date(cred.createdAt).toLocaleDateString() : '—'}
+                      {cred.lastUsedAt ? ` · Last used ${new Date(cred.lastUsedAt).toLocaleDateString()}` : ''}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => handleDeletePasskey(cred.id)}
+                  disabled={deletingPasskeyId === cred.id}
+                  className="btn-ghost text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10 py-1 px-2 shrink-0"
+                >
+                  {deletingPasskeyId === cred.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Register new passkey */}
+        <div className="flex gap-2 pt-1 border-t border-border/50">
+          <input
+            type="text"
+            value={passkeyName}
+            onChange={(e) => setPasskeyName(e.target.value)}
+            placeholder="Passkey name (optional)"
+            className="input-warm text-xs flex-1"
+          />
+          <button
+            onClick={handleRegisterPasskey}
+            disabled={registeringPasskey}
+            className="btn-secondary text-xs py-1.5 px-3 gap-1.5 shrink-0"
+          >
+            {registeringPasskey ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+            {registeringPasskey ? 'Waiting…' : 'Register Passkey'}
+          </button>
+        </div>
+        {(pk?.count ?? 0) === 0 && (
+          <p className="text-[11px] text-primary flex items-center gap-1.5">
+            <AlertTriangle className="w-3 h-3" /> Register a passkey above before enabling passkey login
+          </p>
+        )}
+      </div>
 
       {/* Network security */}
       <div className="rounded-xl border border-border bg-secondary/20 p-4">
@@ -4931,13 +5718,14 @@ const SOUND_OPTIONS: Array<{ value: SoundStyle; label: string }> = [
   { value: 'none',    label: 'None (silent)' },
 ];
 
-function SoundSelect({ value, onChange }: { value: SoundStyle; onChange: (v: SoundStyle) => void }) {
+function SoundSelect({ value, onChange, disabled }: { value: SoundStyle; onChange: (v: SoundStyle) => void; disabled?: boolean }) {
   return (
     <div className="flex items-center gap-1.5">
       <select
         value={value}
         onChange={(e) => onChange(e.target.value as SoundStyle)}
-        className="text-xs bg-secondary border border-border rounded-lg px-2 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
+        disabled={disabled}
+        className="text-xs bg-secondary border border-border rounded-lg px-2 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50 disabled:opacity-40 disabled:cursor-not-allowed"
       >
         {SOUND_OPTIONS.map((o) => (
           <option key={o.value} value={o.value}>{o.label}</option>
@@ -4945,7 +5733,7 @@ function SoundSelect({ value, onChange }: { value: SoundStyle; onChange: (v: Sou
       </select>
       <button
         onClick={() => playSound(value)}
-        disabled={value === 'none'}
+        disabled={disabled || value === 'none'}
         title={value === 'none' ? 'No sound to preview' : 'Preview sound'}
         className="flex items-center justify-center w-6 h-6 rounded-md text-muted-foreground hover:text-foreground hover:bg-white/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
       >
@@ -4966,7 +5754,6 @@ function NotificationsTab() {
     const next = { ...sounds, ...patch };
     await api.updateSettings({ notifications: { sounds: next } });
     qc.invalidateQueries({ queryKey: ['settings'] });
-    toast({ title: 'Sound settings saved', variant: 'success' });
   };
 
   const rows: Array<{ key: keyof Omit<NotificationSoundSettings, 'enabled'>; label: string; desc: string }> = [
@@ -5002,23 +5789,22 @@ function NotificationsTab() {
       </div>
 
       {/* Per-type sound selection */}
-      {sounds.enabled && (
-        <div className="space-y-1">
-          {rows.map(({ key, label, desc }) => (
-            <div key={key} className="flex items-center gap-3 py-3 px-4 rounded-xl hover:bg-white/[0.02] transition-colors">
-              <Bell className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium">{label}</p>
-                <p className="text-xs text-muted-foreground">{desc}</p>
-              </div>
-              <SoundSelect
-                value={sounds[key]}
-                onChange={(v) => save({ [key]: v })}
-              />
+      <div className="space-y-1">
+        {rows.map(({ key, label, desc }) => (
+          <div key={key} className={cn('flex items-center gap-3 py-3 px-4 rounded-xl transition-colors', sounds.enabled ? 'hover:bg-white/[0.02]' : 'opacity-50')}>
+            <Bell className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium">{label}</p>
+              <p className="text-xs text-muted-foreground">{desc}</p>
             </div>
-          ))}
-        </div>
-      )}
+            <SoundSelect
+              value={sounds[key]}
+              onChange={(v) => save({ [key]: v })}
+              disabled={!sounds.enabled}
+            />
+          </div>
+        ))}
+      </div>
 
       {/* Reset to defaults */}
       <div className="flex justify-end">
@@ -5035,14 +5821,13 @@ function NotificationsTab() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Obsidian Vault Tab
+// Obsidian Vault Tab — multi-vault list + detail panel
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ── Helpers for SSH deploy key deep links ─────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function inferDeployKeyUrl(remoteUrl: string): { platform: 'github' | 'gitlab' | null; url: string | null } {
   try {
-    // SSH: git@github.com:org/repo.git
     const sshMatch = remoteUrl.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
     if (sshMatch) {
       const host = sshMatch[1];
@@ -5051,7 +5836,6 @@ function inferDeployKeyUrl(remoteUrl: string): { platform: 'github' | 'gitlab' |
       if (host.includes('gitlab')) return { platform: 'gitlab', url: `https://gitlab.com/${repoPath}/-/settings/repository#js-deploy-keys-settings` };
       return { platform: null, url: null };
     }
-    // HTTPS: https://github.com/org/repo.git
     const url = new URL(remoteUrl);
     const repoPath = url.pathname.replace(/^\//, '').replace(/\.git$/, '');
     if (url.hostname.includes('github')) return { platform: 'github', url: `https://github.com/${repoPath}/settings/keys` };
@@ -5062,7 +5846,6 @@ function inferDeployKeyUrl(remoteUrl: string): { platform: 'github' | 'gitlab' |
   }
 }
 
-// Clone phase ordering for the progress indicator
 const CLONE_PHASES = [
   { key: 'connecting', label: 'Connecting' },
   { key: 'cloning', label: 'Cloning' },
@@ -5070,87 +5853,68 @@ const CLONE_PHASES = [
   { key: 'finalizing', label: 'Finalizing' },
 ];
 
-function ObsidianVaultTab() {
+// ── Per-vault detail panel ────────────────────────────────────────────────────
+
+function VaultDetailPanel({ vault, onDeleted }: { vault: ObsidianVaultConfigRow; onDeleted: () => void }) {
   const qc = useQueryClient();
-  const connStatus = useConnectionStore((s) => s.statuses['obsidian']);
-  const status = connStatus?.status ?? 'disconnected';
-  const clonePhase = connStatus?.phase ?? null;
+  const vaultId = vault.id;
 
-  const { data: configData, isLoading: configLoading, refetch: refetchConfig } = useQuery({
-    queryKey: ['obsidian-config'],
-    queryFn: () => api.obsidianConfig(),
-    staleTime: 10000,
-  });
+  // Live connection status for this specific vault from the WS store
+  const allStatuses = useConnectionStore((s) => s.statuses);
+  const vaultStatusKey = `obsidian:${vaultId}` as keyof typeof allStatuses;
+  const connStatus = (allStatuses[vaultStatusKey] as { status: string; mode?: string; error?: string; phase?: string } | undefined)
+    ?? vault.connectionStatus;
+  const status = (connStatus?.status ?? 'disconnected') as string;
+  const clonePhase = (connStatus as { phase?: string } | undefined)?.phase ?? null;
 
-  const vault = configData?.vault as ObsidianVaultConfigRow | undefined;
-  const configured = configData?.configured ?? false;
-
-  // Track whether a clone was started in this session (to prevent button flickering
-  // while waiting for WS status update after the instant API response)
   const [cloneInitiated, setCloneInitiated] = useState(false);
-
-  // Reset cloneInitiated if connection status transitions away from connecting
   useEffect(() => {
-    if (status === 'connected' || status === 'error') {
-      setCloneInitiated(false);
-    }
+    if (status === 'connected' || status === 'error') setCloneInitiated(false);
   }, [status]);
 
-  // Form state — initialised from vault on first load only (not on every refetch).
-  // We track the vault id we last seeded from so that switching to a different vault
-  // config triggers a re-seed, but background refetches of the same vault don't
-  // clobber in-flight user edits.
-  const seededVaultIdRef = React.useRef<number | null>(null);
-  const [name, setName] = useState('');
-  const [remoteUrl, setRemoteUrl] = useState('');
-  const [authType, setAuthType] = useState<'https' | 'ssh'>('https');
+  const seededVaultIdRef = useRef<number | null>(null);
+  const [name, setName] = useState(vault.name);
+  const [remoteUrl, setRemoteUrl] = useState(vault.remoteUrl);
+  const [authType, setAuthType] = useState<'https' | 'ssh'>(vault.authType);
   const [httpsToken, setHttpsToken] = useState('');
-  const [branch, setBranch] = useState('main');
+  const [branch, setBranch] = useState(vault.branch);
   const [showToken, setShowToken] = useState(false);
-  const [sshPublicKey, setSshPublicKey] = useState('');
+  const [sshPublicKey, setSshPublicKey] = useState(vault.sshPublicKey ?? '');
   const [sshFingerprint, setSshFingerprint] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; error?: string } | null>(null);
 
-  // Seed form fields when vault data first arrives or the vault id changes.
-  // Deliberately NOT listing individual field setters as deps — we only want
-  // this to run when the backing vault record itself changes.
+  // Re-seed when switching to a different vault
   useEffect(() => {
-    if (vault && vault.id !== seededVaultIdRef.current) {
+    if (vault.id !== seededVaultIdRef.current) {
       seededVaultIdRef.current = vault.id;
       setName(vault.name);
       setRemoteUrl(vault.remoteUrl);
       setAuthType(vault.authType);
       setBranch(vault.branch);
       setSshPublicKey(vault.sshPublicKey ?? '');
+      setHttpsToken('');
+      setTestResult(null);
+      setSshFingerprint(null);
     }
   }, [vault]);
 
-  // Keep sshPublicKey in sync when the server updates it (e.g. after generate).
-  // We only apply the server value when local state is empty to avoid clobbering
-  // a just-generated key that's already been set into local state.
   useEffect(() => {
-    if (vault?.sshPublicKey && !sshPublicKey) {
-      setSshPublicKey(vault.sshPublicKey);
+    if (vault.hasSshPrivateKey && !sshFingerprint) {
+      api.getObsidianSshFingerprint(vaultId).then((r) => setSshFingerprint(r.fingerprint)).catch(() => {});
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vault?.sshPublicKey]);
+  }, [vault.hasSshPrivateKey, vaultId]);
 
-  // Fetch the fingerprint for the stored key on load (when a key exists).
-  useEffect(() => {
-    if (vault?.hasSshPrivateKey && !sshFingerprint) {
-      api.getObsidianSshFingerprint()
-        .then((r) => setSshFingerprint(r.fingerprint))
-        .catch(() => {});
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vault?.hasSshPrivateKey]);
-
-  // Test connection state — only cleared by explicit user action (field edits or save),
-  // not by background refetches.
-  const [testResult, setTestResult] = useState<{ success: boolean; error?: string } | null>(null);
+  const { data: syncData, refetch: refetchSync } = useQuery({
+    queryKey: ['obsidian-sync-status', vaultId],
+    queryFn: () => api.obsidianSyncStatus(vaultId),
+    staleTime: 10000,
+    refetchInterval: 15000,
+  });
 
   const saveConfig = useMutation({
-    mutationFn: () => api.saveObsidianConfig({
+    mutationFn: () => api.updateObsidianVault(vaultId, {
       name,
       remote_url: remoteUrl,
       auth_type: authType,
@@ -5160,85 +5924,65 @@ function ObsidianVaultTab() {
     onSuccess: () => {
       toast({ title: 'Configuration saved' });
       setTestResult(null);
-      setHttpsToken(''); // clear token field — it's now saved server-side
-      refetchConfig();
-      qc.invalidateQueries({ queryKey: ['obsidian-config'] });
+      setHttpsToken('');
+      qc.invalidateQueries({ queryKey: ['obsidian-vaults'] });
     },
     onError: (e: Error) => toast({ title: e.message }),
   });
 
   const testConnection = useMutation({
-    mutationFn: () => api.testObsidianConnection(),
+    mutationFn: () => api.testObsidianConnection(vaultId),
     onSuccess: (data) => setTestResult(data),
     onError: (e: Error) => setTestResult({ success: false, error: e.message }),
   });
 
   const cloneVault = useMutation({
-    mutationFn: () => api.cloneObsidianVault(),
+    mutationFn: () => api.cloneObsidianVault(vaultId),
     onSuccess: () => {
       setCloneInitiated(true);
-      setTimeout(() => {
-        refetchConfig();
-        qc.invalidateQueries({ queryKey: ['connections'] });
-      }, 3000);
+      setTimeout(() => qc.invalidateQueries({ queryKey: ['obsidian-vaults'] }), 3000);
     },
     onError: (e: Error) => toast({ title: e.message }),
   });
 
   const syncVault = useMutation({
-    mutationFn: () => api.syncObsidianVault(),
+    mutationFn: () => api.syncObsidianVault(vaultId),
     onSuccess: () => {
       toast({ title: 'Sync started' });
-      setTimeout(() => refetchConfig(), 3000);
+      setTimeout(() => { refetchSync(); qc.invalidateQueries({ queryKey: ['obsidian-vaults'] }); }, 3000);
     },
     onError: (e: Error) => toast({ title: e.message }),
   });
 
   const generateSshKey = useMutation({
-    mutationFn: () => api.generateObsidianSshKey(),
+    mutationFn: () => api.generateObsidianSshKey(vaultId),
     onSuccess: (data) => {
       setSshPublicKey(data.publicKey);
       setSshFingerprint(data.fingerprint ?? null);
-      setTestResult(null); // new key means prior test result is stale
+      setTestResult(null);
       toast({ title: 'SSH key generated' });
-      refetchConfig();
+      qc.invalidateQueries({ queryKey: ['obsidian-vaults'] });
     },
     onError: (e: Error) => toast({ title: e.message }),
   });
 
   const deleteVault = useMutation({
-    mutationFn: () => api.deleteObsidianConfig(false),
+    mutationFn: () => api.deleteObsidianVault(vaultId, false),
     onSuccess: () => {
-      toast({ title: 'Vault configuration removed' });
-      setCloneInitiated(false);
-      setTestResult(null);
-      // Reset seed guard so the form can be seeded fresh if a new vault is configured
-      seededVaultIdRef.current = null;
-      setName('');
-      setRemoteUrl('');
-      setAuthType('https');
-      setBranch('main');
-      setSshPublicKey('');
-      setSshFingerprint(null);
-      setHttpsToken('');
-      refetchConfig();
-      qc.invalidateQueries({ queryKey: ['connections'] });
+      toast({ title: 'Vault removed' });
+      qc.invalidateQueries({ queryKey: ['obsidian-vaults'] });
+      onDeleted();
     },
     onError: (e: Error) => toast({ title: e.message }),
   });
 
   const copyPublicKey = () => {
-    copyToClipboard(sshPublicKey).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }).catch(() => {});
+    copyToClipboard(sshPublicKey).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }).catch(() => {});
   };
 
-  // Derive deploy key deep link from current remote URL
   const deployKeyInfo = inferDeployKeyUrl(remoteUrl);
 
-  // Whether the form has unsaved changes vs what's saved in the vault
-  const hasUnsavedChanges = configured && vault && (
+  const hasUnsavedChanges = (
     name !== vault.name ||
     remoteUrl !== vault.remoteUrl ||
     authType !== vault.authType ||
@@ -5246,55 +5990,30 @@ function ObsidianVaultTab() {
     httpsToken !== ''
   );
 
-  // Determine whether the Connect section shows a cloning in-progress state
-  const isCloning = cloneInitiated || (status === 'connecting' && connStatus?.mode === 'cloning');
+  const isCloning = cloneInitiated || (status === 'connecting' && clonePhase != null);
   const currentPhaseIndex = clonePhase
     ? CLONE_PHASES.findIndex((p) => p.key === clonePhase)
     : (isCloning ? 0 : -1);
 
-  if (configLoading) {
-    return (
-      <div className="flex items-center justify-center py-8">
-        <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-0">
-
-      {/* ── Section 1: Repository ── */}
+      {/* Section 1: Repository */}
       <div className="space-y-4 pb-5">
         <div className="flex items-center gap-2 mb-1">
           <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/15 text-primary text-[10px] font-bold flex-shrink-0">1</span>
           <h4 className="text-xs font-semibold text-foreground uppercase tracking-wide">Repository</h4>
         </div>
-
         <div className="space-y-3 pl-7">
           <div className="grid grid-cols-[1fr_auto] gap-3 items-end">
             <div className="space-y-1.5">
               <label className="block text-xs font-medium text-muted-foreground">Vault Name</label>
-              <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="my-vault"
-                className="input-warm"
-              />
-              <p className="text-[11px] text-muted-foreground/60">Short identifier — used as the local folder name.</p>
+              <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="my-vault" className="input-warm" />
             </div>
             <div className="space-y-1.5">
               <label className="block text-xs font-medium text-muted-foreground">Branch</label>
-              <input
-                type="text"
-                value={branch}
-                onChange={(e) => setBranch(e.target.value)}
-                placeholder="main"
-                className="input-warm w-28"
-              />
+              <input type="text" value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" className="input-warm w-28" />
             </div>
           </div>
-
           <div className="space-y-1.5">
             <label className="block text-xs font-medium text-muted-foreground">Remote URL</label>
             <input
@@ -5311,55 +6030,38 @@ function ObsidianVaultTab() {
 
       <div className="border-t border-white/5 mb-5" />
 
-      {/* ── Section 2: Authentication ── */}
+      {/* Section 2: Authentication */}
       <div className="space-y-4 pb-5">
         <div className="flex items-center gap-2 mb-1">
           <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/15 text-primary text-[10px] font-bold flex-shrink-0">2</span>
           <h4 className="text-xs font-semibold text-foreground uppercase tracking-wide">Authentication</h4>
         </div>
-
         <div className="space-y-3 pl-7">
-          {/* Auth type toggle */}
           <div className="flex gap-2">
             <button
               onClick={() => {
                 setAuthType('https');
                 setTestResult(null);
-                // Convert git@host:org/repo.git → https://host/org/repo.git
                 const sshMatch = remoteUrl.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
                 if (sshMatch) setRemoteUrl(`https://${sshMatch[1]}/${sshMatch[2]}.git`);
               }}
-              className={cn(
-                'flex-1 px-3 py-2 rounded-xl border text-sm font-medium transition-all',
-                authType === 'https'
-                  ? 'bg-primary/10 border-primary/30 text-primary'
-                  : 'border-white/10 text-muted-foreground hover:border-white/20',
-              )}
-            >
-              HTTPS / Token
-            </button>
+              className={cn('flex-1 px-3 py-2 rounded-xl border text-sm font-medium transition-all',
+                authType === 'https' ? 'bg-primary/10 border-primary/30 text-primary' : 'border-white/10 text-muted-foreground hover:border-white/20')}
+            >HTTPS / Token</button>
             <button
               onClick={() => {
                 setAuthType('ssh');
                 setTestResult(null);
-                // Convert https://host/org/repo.git → git@host:org/repo.git
                 try {
                   if (remoteUrl.startsWith('http')) {
                     const u = new URL(remoteUrl);
-                    const repoPath = u.pathname.replace(/^\//, '').replace(/\.git$/, '');
-                    setRemoteUrl(`git@${u.hostname}:${repoPath}.git`);
+                    setRemoteUrl(`git@${u.hostname}:${u.pathname.replace(/^\//, '').replace(/\.git$/, '')}.git`);
                   }
-                } catch { /* unparseable URL — leave as-is */ }
+                } catch { /* leave as-is */ }
               }}
-              className={cn(
-                'flex-1 px-3 py-2 rounded-xl border text-sm font-medium transition-all',
-                authType === 'ssh'
-                  ? 'bg-primary/10 border-primary/30 text-primary'
-                  : 'border-white/10 text-muted-foreground hover:border-white/20',
-              )}
-            >
-              SSH Key
-            </button>
+              className={cn('flex-1 px-3 py-2 rounded-xl border text-sm font-medium transition-all',
+                authType === 'ssh' ? 'bg-primary/10 border-primary/30 text-primary' : 'border-white/10 text-muted-foreground hover:border-white/20')}
+            >SSH Key</button>
           </div>
 
           {authType === 'https' && (
@@ -5370,72 +6072,45 @@ function ObsidianVaultTab() {
                   type={showToken ? 'text' : 'password'}
                   value={httpsToken}
                   onChange={(e) => { setHttpsToken(e.target.value); setTestResult(null); }}
-                  placeholder={vault?.hasHttpsToken ? '••••••••••••••••' : 'ghp_...'}
+                  placeholder={vault.hasHttpsToken ? '••••••••••••••••' : 'ghp_...'}
                   className="input-warm pr-10 font-mono"
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowToken(!showToken)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                >
+                <button type="button" onClick={() => setShowToken(!showToken)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
                   {showToken ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                 </button>
               </div>
               <p className="text-[11px] text-muted-foreground/60">
-                {vault?.hasHttpsToken
-                  ? 'A token is already saved. Enter a new one to replace it.'
-                  : 'Create a GitHub/GitLab PAT with repo read/write scope.'}
+                {vault.hasHttpsToken ? 'A token is already saved. Enter a new one to replace it.' : 'Create a GitHub/GitLab PAT with repo read/write scope.'}
               </p>
             </div>
           )}
 
           {authType === 'ssh' && (
             <div className="space-y-3">
-              {/* SSH key display */}
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
                   <label className="block text-xs font-medium text-muted-foreground">SSH Public Key</label>
-                  <button
-                    onClick={() => generateSshKey.mutate()}
-                    disabled={generateSshKey.isPending}
-                    className="flex items-center gap-1 text-[11px] text-primary hover:text-primary/80 transition-colors"
-                  >
+                  <button onClick={() => generateSshKey.mutate()} disabled={generateSshKey.isPending}
+                    className="flex items-center gap-1 text-[11px] text-primary hover:text-primary/80 transition-colors">
                     {generateSshKey.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
                     {sshPublicKey ? 'Regenerate key' : 'Generate key'}
                   </button>
                 </div>
-
                 {sshPublicKey ? (
                   <div className="space-y-1.5">
                     <div className="relative group">
-                      <textarea
-                        readOnly
-                        value={sshPublicKey}
-                        rows={2}
-                        className="w-full bg-black/20 border border-white/10 rounded-xl p-3 pr-10 text-[11px] font-mono text-foreground/60 resize-none focus:outline-none"
-                      />
-                      <button
-                        onClick={copyPublicKey}
-                        className="absolute right-2.5 top-2.5 p-1 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
-                        title="Copy public key"
-                      >
+                      <textarea readOnly value={sshPublicKey} rows={2}
+                        className="w-full bg-black/20 border border-white/10 rounded-xl p-3 pr-10 text-[11px] font-mono text-foreground/60 resize-none focus:outline-none" />
+                      <button onClick={copyPublicKey} className="absolute right-2.5 top-2.5 p-1 rounded-lg bg-white/5 hover:bg-white/10 transition-colors" title="Copy public key">
                         {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-muted-foreground" />}
                       </button>
                     </div>
-                    {sshFingerprint && (
-                      <p className="text-[11px] font-mono text-muted-foreground/60 px-1 select-all">
-                        Fingerprint: {sshFingerprint}
-                      </p>
-                    )}
+                    {sshFingerprint && <p className="text-[11px] font-mono text-muted-foreground/60 px-1 select-all">Fingerprint: {sshFingerprint}</p>}
                   </div>
                 ) : (
-                  <div className="bg-black/20 border border-dashed border-white/10 rounded-xl p-4 text-xs text-muted-foreground text-center">
-                    No SSH key generated yet.
-                  </div>
+                  <div className="bg-black/20 border border-dashed border-white/10 rounded-xl p-4 text-xs text-muted-foreground text-center">No SSH key generated yet.</div>
                 )}
               </div>
-
-              {/* Deploy key instructions */}
               {sshPublicKey && (
                 <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 space-y-2">
                   <p className="text-xs font-medium text-amber-400/90">Add this key to your git host</p>
@@ -5443,24 +6118,16 @@ function ObsidianVaultTab() {
                     <li>Copy the public key above</li>
                     <li>
                       {deployKeyInfo.url ? (
-                        <a
-                          href={deployKeyInfo.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-amber-400 hover:text-amber-300 underline underline-offset-2 transition-colors"
-                        >
+                        <a href={deployKeyInfo.url} target="_blank" rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-amber-400 hover:text-amber-300 underline underline-offset-2 transition-colors">
                           Open {deployKeyInfo.platform === 'github' ? 'GitHub' : 'GitLab'} deploy keys
                           <ExternalLink className="w-2.5 h-2.5" />
                         </a>
                       ) : (
-                        <a
-                          href="https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors"
-                        >
-                          Open your repository's deploy keys settings
-                          <ExternalLink className="w-2.5 h-2.5" />
+                        <a href="https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys"
+                          target="_blank" rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground underline underline-offset-2 transition-colors">
+                          Open your repository&apos;s deploy keys settings<ExternalLink className="w-2.5 h-2.5" />
                         </a>
                       )}
                     </li>
@@ -5472,53 +6139,32 @@ function ObsidianVaultTab() {
             </div>
           )}
 
-          {/* Save + Test row */}
           <div className="flex items-center gap-2 pt-1">
             <button
               onClick={() => saveConfig.mutate()}
-              disabled={saveConfig.isPending || !name || !remoteUrl || (configured && !hasUnsavedChanges)}
+              disabled={saveConfig.isPending || !name || !remoteUrl || !hasUnsavedChanges}
               className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
             >
               {saveConfig.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
-              {hasUnsavedChanges ? 'Save Changes' : configured ? 'Saved' : 'Save Configuration'}
+              {hasUnsavedChanges ? 'Save Changes' : 'Saved'}
             </button>
-
-            {configured && !hasUnsavedChanges && (
-              <button
-                onClick={() => testConnection.mutate()}
-                disabled={testConnection.isPending}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl border border-white/10 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors disabled:opacity-50"
-              >
-                {testConnection.isPending
-                  ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  : testResult?.success
-                    ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                    : testResult?.success === false
-                      ? <XCircle className="w-3.5 h-3.5 text-red-400" />
-                      : <Play className="w-3.5 h-3.5" />
-                }
+            {!hasUnsavedChanges && (
+              <button onClick={() => testConnection.mutate()} disabled={testConnection.isPending}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl border border-white/10 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors disabled:opacity-50">
+                {testConnection.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  : testResult?.success ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  : testResult?.success === false ? <XCircle className="w-3.5 h-3.5 text-red-400" />
+                  : <Play className="w-3.5 h-3.5" />}
                 Test Connection
               </button>
             )}
           </div>
 
-          {/* Test result inline feedback */}
           {testResult && (
-            <div className={cn(
-              'flex items-start gap-2 p-3 rounded-xl text-xs',
-              testResult.success
-                ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400'
-                : 'bg-red-500/10 border border-red-500/20 text-red-400',
-            )}>
-              {testResult.success
-                ? <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
-                : <XCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
-              }
-              <span>
-                {testResult.success
-                  ? 'Repository is accessible. Ready to clone.'
-                  : testResult.error ?? 'Connection failed.'}
-              </span>
+            <div className={cn('flex items-start gap-2 p-3 rounded-xl text-xs',
+              testResult.success ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400' : 'bg-red-500/10 border border-red-500/20 text-red-400')}>
+              {testResult.success ? <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" /> : <XCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />}
+              <span>{testResult.success ? 'Repository is accessible. Ready to clone.' : testResult.error ?? 'Connection failed.'}</span>
             </div>
           )}
         </div>
@@ -5526,29 +6172,18 @@ function ObsidianVaultTab() {
 
       <div className="border-t border-white/5 mb-5" />
 
-      {/* ── Section 3: Connect ── */}
+      {/* Section 3: Connect */}
       <div className="space-y-4 pb-5">
         <div className="flex items-center gap-2 mb-1">
-          <span className={cn(
-            'flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold flex-shrink-0',
-            status === 'connected' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-primary/15 text-primary',
-          )}>3</span>
+          <span className={cn('flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold flex-shrink-0',
+            status === 'connected' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-primary/15 text-primary')}>3</span>
           <h4 className="text-xs font-semibold text-foreground uppercase tracking-wide">Connect</h4>
           {status === 'connected' && (
-            <span className="text-[10px] font-medium text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full ml-1">
-              Connected
-            </span>
+            <span className="text-[10px] font-medium text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full ml-1">Connected</span>
           )}
         </div>
-
         <div className="pl-7">
-          {!configured ? (
-            // Not yet configured — prompt to complete steps above
-            <div className="rounded-xl border border-white/8 bg-white/3 p-4 text-center">
-              <p className="text-xs text-muted-foreground">Complete steps 1 and 2 above, then save your configuration to continue.</p>
-            </div>
-          ) : isCloning ? (
-            // Cloning in progress — show phase indicator
+          {isCloning ? (
             <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 space-y-4">
               <div className="flex items-center gap-2">
                 <Loader2 className="w-4 h-4 animate-spin text-primary flex-shrink-0" />
@@ -5559,16 +6194,11 @@ function ObsidianVaultTab() {
                   const isDone = currentPhaseIndex > index;
                   const isCurrent = currentPhaseIndex === index;
                   return (
-                    <div key={phase.key} className={cn(
-                      'flex items-center gap-2.5 text-xs transition-colors',
-                      isDone ? 'text-emerald-400' : isCurrent ? 'text-foreground' : 'text-muted-foreground/40',
-                    )}>
-                      {isDone
-                        ? <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
-                        : isCurrent
-                          ? <Loader2 className="w-3.5 h-3.5 flex-shrink-0 animate-spin text-primary" />
-                          : <div className="w-3.5 h-3.5 flex-shrink-0 rounded-full border border-white/15" />
-                      }
+                    <div key={phase.key} className={cn('flex items-center gap-2.5 text-xs transition-colors',
+                      isDone ? 'text-emerald-400' : isCurrent ? 'text-foreground' : 'text-muted-foreground/40')}>
+                      {isDone ? <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+                        : isCurrent ? <Loader2 className="w-3.5 h-3.5 flex-shrink-0 animate-spin text-primary" />
+                        : <div className="w-3.5 h-3.5 flex-shrink-0 rounded-full border border-white/15" />}
                       <span className={isCurrent ? 'font-medium' : ''}>{phase.label}</span>
                     </div>
                   );
@@ -5577,48 +6207,41 @@ function ObsidianVaultTab() {
               <p className="text-[11px] text-muted-foreground/60">This may take a minute for large vaults.</p>
             </div>
           ) : status === 'connected' ? (
-            // Connected — show status + actions
             <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 space-y-3">
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <div className="space-y-1">
                   <div className="flex items-center gap-2">
                     <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
-                    <span className="text-sm font-medium text-foreground">{vault?.name}</span>
+                    <span className="text-sm font-medium text-foreground">{vault.name}</span>
                   </div>
                   <div className="flex items-center gap-3 text-[11px] text-muted-foreground pl-6">
-                    {vault?.lastSyncedAt && (
+                    {syncData?.lastSyncedAt && (
                       <span className="flex items-center gap-1">
                         <CheckCircle2 className="w-2.5 h-2.5 text-emerald-500" />
-                        Synced {timeAgo(vault.lastSyncedAt)}
+                        Synced {timeAgo(syncData.lastSyncedAt)}
                       </span>
                     )}
-                    {vault?.lastCommitHash && (
+                    {syncData?.lastCommitHash && (
                       <span className="flex items-center gap-1 font-mono">
                         <GitBranch className="w-2.5 h-2.5" />
-                        {vault.lastCommitHash.slice(0, 8)}
+                        {syncData.lastCommitHash.slice(0, 8)}
                       </span>
                     )}
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => syncVault.mutate()}
-                    disabled={syncVault.isPending}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors disabled:opacity-50"
-                  >
+                  <button onClick={() => syncVault.mutate()} disabled={syncVault.isPending}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors disabled:opacity-50">
                     <RefreshCw className={cn('w-3 h-3', syncVault.isPending && 'animate-spin')} />
                     Sync Now
                   </button>
-                  <a
-                    href="/vault"
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/10 border border-primary/20 text-xs font-medium text-primary hover:bg-primary/15 transition-colors"
-                  >
+                  <a href="/vault" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/10 border border-primary/20 text-xs font-medium text-primary hover:bg-primary/15 transition-colors">
                     <BookOpen className="w-3 h-3" />
                     Open Vault
                   </a>
                 </div>
               </div>
-              {vault?.syncError && (
+              {vault.syncError && (
                 <div className="flex items-start gap-1.5 text-[11px] text-red-400 pt-1 border-t border-white/5">
                   <XCircle className="w-3 h-3 flex-shrink-0 mt-0.5" />
                   <span>Last sync error: {vault.syncError}</span>
@@ -5626,30 +6249,25 @@ function ObsidianVaultTab() {
               )}
             </div>
           ) : status === 'error' ? (
-            // Error state
             <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-4 space-y-3">
               <div className="flex items-start gap-2">
                 <XCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
                 <div className="space-y-1 flex-1">
                   <p className="text-sm font-medium text-foreground">Connection failed</p>
-                  {connStatus?.error && (
-                    <p className="text-[11px] text-red-400/80 font-mono">{connStatus.error}</p>
+                  {(connStatus as { error?: string } | undefined)?.error && (
+                    <p className="text-[11px] text-red-400/80 font-mono">{(connStatus as { error?: string }).error}</p>
                   )}
                 </div>
               </div>
               <div className="flex gap-2 pt-1">
-                <button
-                  onClick={() => { setCloneInitiated(true); cloneVault.mutate(); }}
-                  disabled={cloneVault.isPending}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
-                >
+                <button onClick={() => { setCloneInitiated(true); cloneVault.mutate(); }} disabled={cloneVault.isPending}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors">
                   <RotateCcw className="w-3 h-3" />
                   Retry Clone
                 </button>
               </div>
             </div>
           ) : (
-            // Not yet cloned
             <div className="rounded-xl border border-white/8 bg-white/3 p-4 space-y-3">
               <div className="flex items-start gap-3">
                 <div className="w-8 h-8 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center flex-shrink-0 mt-0.5">
@@ -5657,51 +6275,240 @@ function ObsidianVaultTab() {
                 </div>
                 <div className="space-y-1">
                   <p className="text-sm font-medium text-foreground">Ready to clone</p>
-                  <p className="text-[11px] text-muted-foreground">
-                    Conduit will clone your repository locally and keep it in sync automatically every 5 minutes.
-                  </p>
+                  <p className="text-[11px] text-muted-foreground">Conduit will clone your repository locally and keep it in sync every 5 minutes.</p>
                 </div>
               </div>
               <button
                 onClick={() => { setCloneInitiated(true); cloneVault.mutate(); }}
-                disabled={cloneVault.isPending || hasUnsavedChanges === true}
+                disabled={cloneVault.isPending || hasUnsavedChanges}
                 className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
                 title={hasUnsavedChanges ? 'Save your configuration changes first' : undefined}
               >
                 <GitBranch className="w-4 h-4" />
                 Clone Vault
               </button>
-              {hasUnsavedChanges && (
-                <p className="text-[11px] text-amber-400/80">Save your configuration changes before cloning.</p>
-              )}
+              {hasUnsavedChanges && <p className="text-[11px] text-amber-400/80">Save your configuration changes before cloning.</p>}
             </div>
           )}
         </div>
       </div>
 
       {/* Danger zone */}
-      {configured && (
-        <>
-          <div className="border-t border-white/5 mb-5" />
-          <div className="border border-red-500/20 rounded-xl p-4 space-y-3">
-            <h4 className="text-xs font-semibold text-red-400">Danger Zone</h4>
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs font-medium text-foreground">Remove vault configuration</p>
-                <p className="text-[11px] text-muted-foreground mt-0.5">Removes the config from Conduit. The local clone is kept on disk.</p>
-              </div>
-              <button
-                onClick={() => deleteVault.mutate()}
-                disabled={deleteVault.isPending}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/30 text-xs text-red-400 hover:bg-red-500/10 transition-colors"
-              >
-                {deleteVault.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-                Remove
+      <div className="border-t border-white/5 mb-5" />
+      <div className="border border-red-500/20 rounded-xl p-4 space-y-3">
+        <h4 className="text-xs font-semibold text-red-400">Danger Zone</h4>
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-xs font-medium text-foreground">Remove this vault</p>
+            <p className="text-[11px] text-muted-foreground mt-0.5">Removes config from Conduit. The local clone is kept on disk.</p>
+          </div>
+          <button onClick={() => deleteVault.mutate()} disabled={deleteVault.isPending}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/30 text-xs text-red-400 hover:bg-red-500/10 transition-colors">
+            {deleteVault.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+            Remove
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── New vault form ─────────────────────────────────────────────────────────────
+
+function NewVaultForm({ onCreated }: { onCreated: (vault: ObsidianVaultConfigRow) => void }) {
+  const qc = useQueryClient();
+  const [name, setName] = useState('');
+  const [remoteUrl, setRemoteUrl] = useState('');
+  const [branch, setBranch] = useState('main');
+  const [authType, setAuthType] = useState<'https' | 'ssh'>('https');
+  const [httpsToken, setHttpsToken] = useState('');
+  const [showToken, setShowToken] = useState(false);
+
+  const createVault = useMutation({
+    mutationFn: () => api.createObsidianVault({
+      name,
+      remote_url: remoteUrl,
+      auth_type: authType,
+      https_token: httpsToken || undefined,
+      branch,
+    }),
+    onSuccess: (data) => {
+      toast({ title: `Vault "${data.vault.name}" created` });
+      qc.invalidateQueries({ queryKey: ['obsidian-vaults'] });
+      onCreated(data.vault);
+    },
+    onError: (e: Error) => toast({ title: e.message }),
+  });
+
+  return (
+    <div className="space-y-4 p-4">
+      <div className="space-y-3">
+        <div className="grid grid-cols-[1fr_auto] gap-3 items-end">
+          <div className="space-y-1.5">
+            <label className="block text-xs font-medium text-muted-foreground">Vault Name</label>
+            <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="my-vault" className="input-warm" />
+          </div>
+          <div className="space-y-1.5">
+            <label className="block text-xs font-medium text-muted-foreground">Branch</label>
+            <input type="text" value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" className="input-warm w-28" />
+          </div>
+        </div>
+        <div className="space-y-1.5">
+          <label className="block text-xs font-medium text-muted-foreground">Remote URL</label>
+          <input
+            type="text"
+            value={remoteUrl}
+            onChange={(e) => setRemoteUrl(e.target.value)}
+            placeholder="https://github.com/user/vault.git or git@github.com:user/vault.git"
+            className="input-warm font-mono text-xs"
+          />
+        </div>
+        <div className="flex gap-2">
+          <button onClick={() => setAuthType('https')}
+            className={cn('flex-1 px-3 py-2 rounded-xl border text-sm font-medium transition-all',
+              authType === 'https' ? 'bg-primary/10 border-primary/30 text-primary' : 'border-white/10 text-muted-foreground hover:border-white/20')}>
+            HTTPS / Token
+          </button>
+          <button onClick={() => setAuthType('ssh')}
+            className={cn('flex-1 px-3 py-2 rounded-xl border text-sm font-medium transition-all',
+              authType === 'ssh' ? 'bg-primary/10 border-primary/30 text-primary' : 'border-white/10 text-muted-foreground hover:border-white/20')}>
+            SSH Key
+          </button>
+        </div>
+        {authType === 'https' && (
+          <div className="space-y-1.5">
+            <label className="block text-xs font-medium text-muted-foreground">Personal Access Token</label>
+            <div className="relative">
+              <input type={showToken ? 'text' : 'password'} value={httpsToken} onChange={(e) => setHttpsToken(e.target.value)}
+                placeholder="ghp_..." className="input-warm pr-10 font-mono" />
+              <button type="button" onClick={() => setShowToken(!showToken)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                {showToken ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
               </button>
             </div>
           </div>
-        </>
-      )}
+        )}
+        {authType === 'ssh' && (
+          <p className="text-[11px] text-muted-foreground/60 px-1">Save the vault first, then generate an SSH key in the vault&apos;s detail panel.</p>
+        )}
+      </div>
+      <button
+        onClick={() => createVault.mutate()}
+        disabled={createVault.isPending || !name || !remoteUrl}
+        className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+      >
+        {createVault.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+        Add Vault
+      </button>
+    </div>
+  );
+}
+
+// ── Main ObsidianVaultTab ─────────────────────────────────────────────────────
+
+function ObsidianVaultTab() {
+  const { data: vaultsData, isLoading } = useQuery({
+    queryKey: ['obsidian-vaults'],
+    queryFn: () => api.listObsidianVaults(),
+    staleTime: 10000,
+  });
+
+  const vaults = vaultsData?.vaults ?? [];
+  const [selectedId, setSelectedId] = useState<number | 'new' | null>(null);
+
+  // Auto-select first vault or 'new' when data loads
+  useEffect(() => {
+    if (!isLoading && selectedId === null) {
+      setSelectedId(vaults.length > 0 ? vaults[0].id : 'new');
+    }
+  }, [isLoading, vaults, selectedId]);
+
+  const selectedVault = selectedId !== null && selectedId !== 'new'
+    ? vaults.find((v) => v.id === selectedId) ?? null
+    : null;
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex gap-0 min-h-[420px]">
+      {/* Left: vault list */}
+      <div className="w-48 flex-shrink-0 border-r border-white/8 flex flex-col">
+        <div className="px-3 py-2 border-b border-white/8 flex items-center justify-between">
+          <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Vaults</span>
+          <button
+            onClick={() => setSelectedId('new')}
+            className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+            title="Add vault"
+          >
+            <Plus className="w-3.5 h-3.5" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto py-1">
+          {vaults.length === 0 && (
+            <p className="px-3 py-2 text-[11px] text-muted-foreground italic">No vaults yet</p>
+          )}
+          {vaults.map((vault) => {
+            const connSt = vault.connectionStatus?.status ?? 'disconnected';
+            const isSelected = selectedId === vault.id;
+            return (
+              <button
+                key={vault.id}
+                onClick={() => setSelectedId(vault.id)}
+                className={cn(
+                  'w-full flex items-center gap-2 px-3 py-2 text-left text-xs transition-colors',
+                  isSelected ? 'bg-primary/10 text-primary' : 'text-foreground hover:bg-white/5',
+                )}
+              >
+                <span className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0',
+                  connSt === 'connected' ? 'bg-emerald-500' : connSt === 'error' ? 'bg-red-500' : connSt === 'connecting' ? 'bg-amber-500' : 'bg-muted-foreground/30'
+                )} />
+                <span className="truncate font-medium">{vault.name}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="border-t border-white/8 p-2">
+          <button
+            onClick={() => setSelectedId('new')}
+            className={cn(
+              'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs transition-colors',
+              selectedId === 'new' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-white/5 hover:text-foreground',
+            )}
+          >
+            <Plus className="w-3.5 h-3.5 flex-shrink-0" />
+            Add Vault
+          </button>
+        </div>
+      </div>
+
+      {/* Right: detail / new form */}
+      <div className="flex-1 min-w-0 overflow-y-auto">
+        {selectedId === 'new' && (
+          <NewVaultForm
+            onCreated={(vault) => setSelectedId(vault.id)}
+          />
+        )}
+        {selectedVault && (
+          <div className="p-4">
+            <VaultDetailPanel
+              key={selectedVault.id}
+              vault={selectedVault}
+              onDeleted={() => setSelectedId(vaults.length > 1 ? vaults.find((v) => v.id !== selectedVault.id)?.id ?? 'new' : 'new')}
+            />
+          </div>
+        )}
+        {selectedId !== 'new' && !selectedVault && vaults.length === 0 && (
+          <div className="flex flex-col items-center justify-center h-full gap-3 text-center p-8">
+            <BookOpen className="w-8 h-8 text-muted-foreground/30" />
+            <p className="text-sm text-muted-foreground">No vaults configured. Click Add Vault to get started.</p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

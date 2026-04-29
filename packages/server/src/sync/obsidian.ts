@@ -68,10 +68,11 @@ export interface ObsidianPatchEdit {
   content?: string;
 }
 
-// Write actions — go through the outbox, executed on approval
+// Write actions — go through the outbox, executed on approval.
+// vaultId identifies which vault to target (required for multi-vault setups).
 export type ObsidianWriteAction =
-  | { action: 'create_file'; path: string; content: string }
-  | { action: 'write_file'; path: string; content: string }
+  | { action: 'create_file'; path: string; content: string; vaultId?: number }
+  | { action: 'write_file'; path: string; content: string; vaultId?: number }
   | {
       action: 'patch_file';
       path: string;
@@ -83,9 +84,10 @@ export type ObsidianWriteAction =
        * than once) the whole action is aborted with an error.
        */
       edits: ObsidianPatchEdit[];
+      vaultId?: number;
     }
-  | { action: 'rename_file'; oldPath: string; newPath: string }
-  | { action: 'delete_file'; path: string };
+  | { action: 'rename_file'; oldPath: string; newPath: string; vaultId?: number }
+  | { action: 'delete_file'; path: string; vaultId?: number };
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 

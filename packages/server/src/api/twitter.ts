@@ -9,12 +9,14 @@
 
 import { Router } from 'express';
 import { getDb } from '../db/client.js';
-import { twitterDms, outbox, permissions, settings, accounts, contacts } from '../db/schema.js';
+import { twitterDms, outbox, permissions, settings, accounts, contacts, apiKeyPermissions } from '../db/schema.js';
+import type { TwitterFineGrained } from '../db/schema.js';
 import { desc, eq, sql, and } from 'drizzle-orm';
 import { optionalAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
 import { getConnectionManager } from '../connections/manager.js';
 import { broadcast } from '../websocket/hub.js';
 import type { TwitterAction, TwitterCreds } from '../sync/twitter.js';
+import { parseFgConfig } from './permissions-utils.js';
 
 const router = Router();
 const CREDS_KEY = 'credentials.twitter';
@@ -465,16 +467,40 @@ router.post('/sync', optionalAuth, async (req, res) => {
 
 // ── Actions ───────────────────────────────────────────────────────────────────
 
-router.post('/actions', optionalAuth, (req, res) => {
-  const authedReq = req as AuthedRequest;
-  const action = req.body as TwitterAction;
-
-  if (!action?.action) return res.status(400).json({ error: 'action is required' });
-
+/**
+ * Helper: create a Twitter outbox item with permission checks and optional auto-dispatch.
+ * Returns the outbox item ID and status.
+ */
+function queueTwitterAction(
+  action: TwitterAction,
+  authedReq: AuthedRequest,
+): { outboxId: number; status: string } {
   const db = getDb();
   const perm = db.select().from(permissions).where(eq(permissions.service, 'twitter')).get();
   if (!perm?.sendEnabled) {
-    return res.status(403).json({ error: 'Twitter actions are not enabled' });
+    throw Object.assign(new Error('Twitter actions are not enabled'), { statusCode: 403 });
+  }
+
+  // For API key actors, check fine-grained Twitter permissions
+  if (authedReq.actor === 'api' && authedReq.apiKey?.id) {
+    const db = getDb();
+    const global = db.select().from(permissions).where(eq(permissions.service, 'twitter')).get();
+    const override = db.select().from(apiKeyPermissions)
+      .where(and(eq(apiKeyPermissions.apiKeyId, authedReq.apiKey.id), eq(apiKeyPermissions.service, 'twitter')))
+      .get();
+    const fg: TwitterFineGrained | null = (parseFgConfig(override?.fineGrainedConfig ?? global?.fineGrainedConfig) as TwitterFineGrained | null);
+    if (fg) {
+      if (action.action === 'tweet' || action.action === 'reply' || action.action === 'quote') {
+        if (fg.allowTweets === false) {
+          throw Object.assign(new Error('Tweet posting is not allowed for this API key'), { statusCode: 403 });
+        }
+      }
+      if (action.action === 'dm') {
+        if (fg.allowDmReplies === false) {
+          throw Object.assign(new Error('DM sending is not allowed for this API key'), { statusCode: 403 });
+        }
+      }
+    }
   }
 
   const status = perm.requireApproval ? 'pending' : 'approved';
@@ -513,7 +539,53 @@ router.post('/actions', optionalAuth, (req, res) => {
     });
   }
 
-  res.json({ success: true, outboxItemId: outboxId, status });
+  return { outboxId, status };
+}
+
+router.post('/actions', optionalAuth, (req, res) => {
+  const authedReq = req as AuthedRequest;
+  const action = req.body as TwitterAction;
+
+  if (!action?.action) return res.status(400).json({ error: 'action is required' });
+
+  try {
+    const { outboxId, status } = queueTwitterAction(action, authedReq);
+    res.json({ success: true, outboxItemId: outboxId, status });
+  } catch (e) {
+    const err = e as Error & { statusCode?: number };
+    res.status(err.statusCode || 500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/twitter/tweet
+ * Convenience endpoint to post a tweet (or threaded reply) through the outbox.
+ * Body: { text: string, replyToId?: string }
+ *
+ * Respects the `allowTweets` fine-grained permission for API key actors.
+ * Obeys the global `requireApproval` setting (goes to outbox pending state when true).
+ */
+router.post('/tweet', optionalAuth, (req, res) => {
+  const authedReq = req as AuthedRequest;
+  const { text, replyToId } = req.body as { text?: string; replyToId?: string };
+
+  if (!text?.trim()) {
+    return res.status(400).json({ error: 'text is required' });
+  }
+
+  const action: TwitterAction = {
+    action: replyToId ? 'reply' : 'tweet',
+    text: text.trim(),
+    ...(replyToId ? { replyToId } : {}),
+  };
+
+  try {
+    const { outboxId, status } = queueTwitterAction(action, authedReq);
+    res.json({ success: true, outboxItemId: outboxId, status });
+  } catch (e) {
+    const err = e as Error & { statusCode?: number };
+    res.status(err.statusCode || 500).json({ error: err.message });
+  }
 });
 
 export default router;

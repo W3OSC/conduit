@@ -16,6 +16,7 @@ const SETTINGS_WHITELIST = new Set([
   'apiPort',
   'uiPort',
   'incrementalIntervalMinutes',
+  'notifications',
   'security.blockPrivateIpSsrf',
   'security.sshStrictHostKeyChecking',
   'security.knownHosts',

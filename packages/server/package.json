@@ -14,7 +14,9 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@marsaud/smb2": "^0.18.0",
     "@notionhq/client": "^5.17.0",
+    "@simplewebauthn/server": "^13.3.0",
     "@slack/socket-mode": "^2.0.6",
     "@slack/web-api": "^7.15.0",
     "agent-twitter-client": "^0.0.18",

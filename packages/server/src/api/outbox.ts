@@ -1,13 +1,124 @@
 import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { getDb } from '../db/client.js';
-import { outbox, permissions } from '../db/schema.js';
+import { outbox, permissions, apiKeyPermissions } from '../db/schema.js';
+import type {
+  SlackFineGrained, DiscordFineGrained, TelegramFineGrained,
+  GmailFineGrained, CalendarFineGrained, NotionFineGrained, ObsidianFineGrained, SmbFineGrained,
+  ServiceFineGrained,
+} from '../db/schema.js';
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { optionalAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
 import { getConnectionManager } from '../connections/manager.js';
 import { broadcast } from '../websocket/hub.js';
 
 const router = Router();
+
+// ── Fine-grained write enforcement ───────────────────────────────────────────
+
+function parseFgConfig(raw: string | null | undefined): ServiceFineGrained | null {
+  if (!raw) return null;
+  try { return JSON.parse(raw) as ServiceFineGrained; } catch { return null; }
+}
+
+/**
+ * Resolve effective fine-grained config for an actor:
+ *  - UI actor → global permissions row
+ *  - API actor → override ?? global
+ */
+function resolveWriteFineGrained(service: string, apiKeyId: number | null | undefined): ServiceFineGrained | null {
+  const db = getDb();
+  const global = db.select().from(permissions).where(eq(permissions.service, service)).get();
+  const globalFg = parseFgConfig(global?.fineGrainedConfig);
+  if (!apiKeyId) return globalFg;
+
+  const override = db.select().from(apiKeyPermissions)
+    .where(and(eq(apiKeyPermissions.apiKeyId, apiKeyId), eq(apiKeyPermissions.service, service)))
+    .get();
+  if (!override) return globalFg;
+  const overrideFg = parseFgConfig(override.fineGrainedConfig);
+  return overrideFg ?? globalFg;
+}
+
+/**
+ * Check whether `recipientId` is permitted for a write operation on `service`.
+ * Returns null if allowed, or an error message string if denied.
+ *
+ * Only enforced for API key actors. UI actors are unrestricted on write.
+ * An empty allowlist (null / empty array) means "all recipients allowed".
+ */
+function checkWriteAllowlist(
+  service: string,
+  recipientId: string,
+  apiKeyId: number | null | undefined,
+): string | null {
+  if (!apiKeyId) return null; // UI actor — unrestricted
+
+  const fg = resolveWriteFineGrained(service, apiKeyId);
+  if (!fg) return null; // no fine-grained config — unrestricted
+
+  // Extract the write allowlist for this service
+  let allowList: string[] | undefined;
+
+  switch (service) {
+    case 'slack':
+      allowList = (fg as SlackFineGrained).writeChannelIds;
+      break;
+    case 'discord':
+      // Permit if recipient matches either an allowed channel or allowed guild
+      // For Discord, recipientId is the channelId
+      allowList = (fg as DiscordFineGrained).writeChannelIds;
+      if (allowList && allowList.length > 0 && allowList.includes(recipientId)) return null;
+      allowList = (fg as DiscordFineGrained).writeGuildIds;
+      break;
+    case 'telegram':
+      allowList = (fg as TelegramFineGrained).writeChatIds;
+      break;
+    case 'gmail':
+      allowList = (fg as GmailFineGrained).writeLabelIds;
+      break;
+    case 'calendar':
+      allowList = (fg as CalendarFineGrained).writeCalendarIds;
+      break;
+    case 'notion': {
+      // For Notion, parse the content to get db/page ids
+      allowList = [
+        ...((fg as NotionFineGrained).writeDatabaseIds ?? []),
+        ...((fg as NotionFineGrained).writePageIds ?? []),
+      ];
+      break;
+    }
+    case 'obsidian':
+      // For Obsidian, check path prefix allowlist
+      allowList = (fg as ObsidianFineGrained).writePaths;
+      if (allowList && allowList.length > 0) {
+        const allowed = allowList.some((prefix) => recipientId.startsWith(prefix));
+        return allowed ? null : `Write to path "${recipientId}" is not permitted for this API key`;
+      }
+      return null;
+    case 'smb': {
+      // For SMB, check both writeEnabled toggle and path prefix allowlist
+      const smbFg = fg as SmbFineGrained;
+      if (smbFg.writeEnabled === false) {
+        return `Write access to SMB is disabled for this API key`;
+      }
+      const smbWritePaths = smbFg.writePaths;
+      if (smbWritePaths && smbWritePaths.length > 0) {
+        const allowed = smbWritePaths.some((prefix) => recipientId.startsWith(prefix));
+        return allowed ? null : `Write to path "${recipientId}" is not permitted for this API key on smb`;
+      }
+      return null;
+    }
+    default:
+      return null;
+  }
+
+  if (!allowList || allowList.length === 0) return null; // empty list = unrestricted
+  if (!allowList.includes(recipientId)) {
+    return `Sending to "${recipientId}" is not permitted for this API key on ${service}`;
+  }
+  return null;
+}
 
 // ── Shared dispatch helper ────────────────────────────────────────────────────
 
@@ -31,6 +142,8 @@ async function dispatchOutboxItem(
     await manager.executeNotionAction(JSON.parse(content) as Parameters<typeof manager.executeNotionAction>[0]);
   } else if (source === 'obsidian') {
     await manager.executeObsidianAction(JSON.parse(content) as Parameters<typeof manager.executeObsidianAction>[0]);
+  } else if (source === 'smb') {
+    await manager.executeSmbAction(JSON.parse(content) as Parameters<typeof manager.executeSmbAction>[0]);
   } else {
     await manager.sendMessage(source as 'slack' | 'discord' | 'telegram', recipientId, content);
   }
@@ -82,6 +195,13 @@ router.post('/', optionalAuth, async (req, res) => {
   const perm = db.select().from(permissions).where(eq(permissions.service, source)).get();
   if (!perm?.sendEnabled) {
     res.status(403).json({ error: `Sending is not enabled for ${source}` });
+    return;
+  }
+
+  // Fine-grained write allowlist check (API key actors only)
+  const writeErr = checkWriteAllowlist(source, recipient_id, authedReq.apiKey?.id);
+  if (writeErr) {
+    res.status(403).json({ error: writeErr });
     return;
   }
 
@@ -146,6 +266,15 @@ router.post('/batch', optionalAuth, async (req, res) => {
   if (!perm?.sendEnabled) {
     res.status(403).json({ error: `Sending is not enabled for ${source}` });
     return;
+  }
+
+  // Fine-grained write allowlist check for batch (check all recipients)
+  for (const recipient of recipient_ids) {
+    const writeErr = checkWriteAllowlist(source, recipient.id, authedReq.apiKey?.id);
+    if (writeErr) {
+      res.status(403).json({ error: writeErr });
+      return;
+    }
   }
 
   const batchId = randomUUID();
@@ -217,6 +346,12 @@ router.post('/batch/multi', optionalAuth, async (req, res) => {
     const perm = db.select().from(permissions).where(eq(permissions.service, op.source)).get();
     if (!perm?.sendEnabled) {
       res.status(403).json({ error: `Sending is not enabled for ${op.source} (operations[${i}])` });
+      return;
+    }
+    // Fine-grained write allowlist check (API key actors only)
+    const writeErr = checkWriteAllowlist(op.source, op.recipient_id, authedReq.apiKey?.id);
+    if (writeErr) {
+      res.status(403).json({ error: `${writeErr} (operations[${i}])` });
       return;
     }
   }

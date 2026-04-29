@@ -61,19 +61,66 @@ async function uiAuthRequest<T>(path: string, options?: RequestInit): Promise<T>
   return res.json() as Promise<T>;
 }
 
+// ── UI Auth types ─────────────────────────────────────────────────────────────
+
+export interface UiAuthMethodStatus {
+  enabled: boolean;
+  sessionDurationHours: number;
+}
+
+export interface UiAuthStatus {
+  anyEnabled: boolean;
+  authenticated: boolean;
+  methods: {
+    password: UiAuthMethodStatus & { hasPassword: boolean };
+    totp: UiAuthMethodStatus & { totpEnabled: boolean };
+    passkey: UiAuthMethodStatus & { count: number };
+  };
+}
+
+export interface UiAuthConfig {
+  password: UiAuthMethodStatus & { hasPassword: boolean };
+  totp: UiAuthMethodStatus & { totpEnabled: boolean };
+  passkey: UiAuthMethodStatus & { count: number };
+}
+
+export interface PasskeyCredential {
+  id: number;
+  credentialId: string;
+  name: string | null;
+  aaguid: string | null;
+  createdAt: string | null;
+  lastUsedAt: string | null;
+}
+
 export const uiAuth = {
-  status: () => uiAuthRequest<{ enabled: boolean; totpEnabled: boolean; authenticated: boolean; configured: boolean }>('/status'),
-  config: () => uiAuthRequest<{ enabled: boolean; totpEnabled: boolean; hasPassword: boolean }>('/config'),
-  updateConfig: (body: { enabled?: boolean; password?: string; currentPassword?: string }) =>
-    uiAuthRequest<{ success: boolean; enabled: boolean; totpEnabled: boolean }>('/config', { method: 'PUT', body: JSON.stringify(body) }),
+  status: () => uiAuthRequest<UiAuthStatus>('/status'),
+  config: () => uiAuthRequest<UiAuthConfig>('/config'),
+  updateConfig: (body: {
+    password?: { enabled?: boolean; sessionDurationHours?: number; newPassword?: string; currentPassword?: string };
+    totp?: { sessionDurationHours?: number };
+    passkey?: { enabled?: boolean; sessionDurationHours?: number };
+  }) => uiAuthRequest<{ success: boolean }>('/config', { method: 'PUT', body: JSON.stringify(body) }),
+
   login: (password: string) =>
     uiAuthRequest<{ success: boolean; totpRequired: boolean }>('/login', { method: 'POST', body: JSON.stringify({ password }) }),
   loginTotp: (code: string) =>
     uiAuthRequest<{ success: boolean }>('/login/totp', { method: 'POST', body: JSON.stringify({ code }) }),
   logout: () => uiAuthRequest<{ success: boolean }>('/logout', { method: 'POST' }),
+
   totpSetup: () => uiAuthRequest<{ secret: string; otpauthUrl: string; setupNonce: string }>('/totp/setup', { method: 'POST' }),
   totpVerify: (code: string, setupNonce: string) => uiAuthRequest<{ success: boolean }>('/totp/verify', { method: 'POST', body: JSON.stringify({ code, setupNonce }) }),
   totpDisable: (password: string) => uiAuthRequest<{ success: boolean }>('/totp', { method: 'DELETE', body: JSON.stringify({ password }) }),
+
+  passkeyRegisterBegin: () => uiAuthRequest<Record<string, unknown>>('/passkey/register/begin', { method: 'POST' }),
+  passkeyRegisterFinish: (response: Record<string, unknown>, name?: string) =>
+    uiAuthRequest<{ success: boolean }>('/passkey/register/finish', { method: 'POST', body: JSON.stringify({ response, name }) }),
+  passkeyLoginBegin: () => uiAuthRequest<Record<string, unknown>>('/passkey/login/begin', { method: 'POST' }),
+  passkeyLoginFinish: (response: Record<string, unknown>) =>
+    uiAuthRequest<{ success: boolean }>('/passkey/login/finish', { method: 'POST', body: JSON.stringify({ response }) }),
+  passkeyCredentials: () => uiAuthRequest<{ credentials: PasskeyCredential[] }>('/passkey/credentials'),
+  passkeyDeleteCredential: (id: number) =>
+    uiAuthRequest<{ success: boolean }>(`/passkey/credentials/${id}`, { method: 'DELETE' }),
 };
 
 export const api = {
@@ -286,10 +333,21 @@ export const api = {
   // Per-key permissions
   keyPermissions: (keyId: number) =>
     request<KeyPermissionsResponse>(`/permissions/keys/${keyId}`),
-  updateKeyPermission: (keyId: number, service: string, perms: Partial<KeyServicePerm>) =>
+  updateKeyPermission: (keyId: number, service: string, perms: Partial<KeyServicePerm & { fineGrainedConfig?: ServiceFineGrained | null }>) =>
     request<{ success: boolean }>(`/permissions/keys/${keyId}/${service}`, {
       method: 'PUT', body: JSON.stringify(perms),
     }),
+
+  // Resource listing (for fine-grained permissions UI multi-selects)
+  slackChannels: () => request<{ channels: SlackChannel[] }>('/slack/channels'),
+  telegramChats: () => request<{ chats: TelegramChat[] }>('/telegram/chats'),
+  // Notion databases as simple {id, name} list (derived from notionSearch)
+  notionDatabasesList: () =>
+    request<NotionSearchResponse>('/notion/search', {
+      method: 'POST',
+      body: JSON.stringify({ filter: { property: 'object', value: 'data_source' } }),
+    }),
+  // Note: discordGuilds, gmailLabels, calendarList, obsidianFiles already exist above
 
   // Google Auth — multi-account
   googleStatus: () => request<GoogleAuthStatus>('/google/status'),
@@ -426,30 +484,35 @@ export const api = {
   sendAiMessage: (sessionId: string, content: string) =>
     request<AiMessage>(`/ai/sessions/${sessionId}/messages`, { method: 'POST', body: JSON.stringify({ content }) }),
 
-  // ── Obsidian Vault ───────────────────────────────────────────────────────────
-  obsidianConfig: () => request<ObsidianConfigResponse>('/obsidian/config'),
-  saveObsidianConfig: (body: ObsidianConfigInput) =>
-    request<ObsidianConfigResponse>('/obsidian/config', { method: 'POST', body: JSON.stringify(body) }),
-  deleteObsidianConfig: (deleteLocal = false) =>
-    request<{ success: boolean }>('/obsidian/config', { method: 'DELETE', body: JSON.stringify({ delete_local: deleteLocal }) }),
-  generateObsidianSshKey: () =>
-    request<{ publicKey: string; fingerprint: string | null }>('/obsidian/config/generate-ssh-key', { method: 'POST' }),
-  getObsidianSshKey: () =>
-    request<{ publicKey: string }>('/obsidian/config/ssh-key'),
-  getObsidianSshFingerprint: () =>
-    request<{ fingerprint: string | null }>('/obsidian/config/ssh-fingerprint'),
-  cloneObsidianVault: () =>
-    request<{ success: boolean; message: string }>('/obsidian/config/clone', { method: 'POST' }),
-  testObsidianConnection: () =>
-    request<{ success: boolean; error?: string }>('/obsidian/config/test', { method: 'POST' }),
-  obsidianSyncStatus: () =>
-    request<ObsidianSyncStatus>('/obsidian/sync/status'),
-  syncObsidianVault: () =>
-    request<{ success: boolean; message: string }>('/obsidian/sync', { method: 'POST' }),
-  obsidianFiles: () =>
-    request<{ files: VaultFileEntry[] }>('/obsidian/files'),
-  obsidianReadFile: (filePath: string) =>
-    request<{ path: string; content: string }>(`/obsidian/files/${encodeURIComponent(filePath)}`),
+  // ── Obsidian Vaults (multi-vault) ────────────────────────────────────────────
+  listObsidianVaults: () =>
+    request<{ vaults: ObsidianVaultConfigRow[] }>('/obsidian/vaults'),
+  createObsidianVault: (body: ObsidianConfigInput) =>
+    request<{ vault: ObsidianVaultConfigRow }>('/obsidian/vaults', { method: 'POST', body: JSON.stringify(body) }),
+  getObsidianVault: (id: number) =>
+    request<{ vault: ObsidianVaultConfigRow }>(`/obsidian/vaults/${id}`),
+  updateObsidianVault: (id: number, body: Partial<ObsidianConfigInput>) =>
+    request<{ vault: ObsidianVaultConfigRow }>(`/obsidian/vaults/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteObsidianVault: (id: number, deleteLocal = false) =>
+    request<{ success: boolean }>(`/obsidian/vaults/${id}`, { method: 'DELETE', body: JSON.stringify({ delete_local: deleteLocal }) }),
+  generateObsidianSshKey: (id: number) =>
+    request<{ publicKey: string; fingerprint: string | null }>(`/obsidian/vaults/${id}/generate-ssh-key`, { method: 'POST' }),
+  getObsidianSshKey: (id: number) =>
+    request<{ publicKey: string }>(`/obsidian/vaults/${id}/ssh-key`),
+  getObsidianSshFingerprint: (id: number) =>
+    request<{ fingerprint: string | null }>(`/obsidian/vaults/${id}/ssh-fingerprint`),
+  cloneObsidianVault: (id: number) =>
+    request<{ success: boolean; message: string }>(`/obsidian/vaults/${id}/clone`, { method: 'POST' }),
+  testObsidianConnection: (id: number) =>
+    request<{ success: boolean; error?: string }>(`/obsidian/vaults/${id}/test`, { method: 'POST' }),
+  obsidianSyncStatus: (id: number) =>
+    request<ObsidianSyncStatus>(`/obsidian/vaults/${id}/sync-status`),
+  syncObsidianVault: (id: number) =>
+    request<{ success: boolean; message: string }>(`/obsidian/vaults/${id}/sync`, { method: 'POST' }),
+  obsidianFiles: (id: number) =>
+    request<{ files: VaultFileEntry[] }>(`/obsidian/vaults/${id}/files`),
+  obsidianReadFile: (id: number, filePath: string) =>
+    request<{ path: string; content: string }>(`/obsidian/vaults/${id}/files/${encodeURIComponent(filePath)}`),
 
   // ── Notion ───────────────────────────────────────────────────────────────────
   /** Search the Notion workspace. Pass no query to get top-level pages. */
@@ -689,6 +752,79 @@ export interface BatchOutboxItem {
   content: string;
 }
 
+// ─── Fine-grained permission config types ─────────────────────────────────────
+
+export interface SlackFineGrained {
+  readChannelIds?: string[];
+  writeChannelIds?: string[];
+}
+
+export interface DiscordFineGrained {
+  readGuildIds?: string[];
+  readChannelIds?: string[];
+  writeGuildIds?: string[];
+  writeChannelIds?: string[];
+}
+
+export interface TelegramFineGrained {
+  readChatIds?: string[];
+  readFolderIds?: string[];
+  writeChatIds?: string[];
+}
+
+export interface GmailFineGrained {
+  readLabelIds?: string[];
+  writeLabelIds?: string[];
+}
+
+export interface CalendarFineGrained {
+  readCalendarIds?: string[];
+  writeCalendarIds?: string[];
+}
+
+export interface TwitterFineGrained {
+  readDms?: boolean;
+  readTimeline?: boolean;
+  allowTweets?: boolean;
+  allowDmReplies?: boolean;
+}
+
+export interface NotionFineGrained {
+  readDatabaseIds?: string[];
+  readPageIds?: string[];
+  writeDatabaseIds?: string[];
+  writePageIds?: string[];
+}
+
+export interface ObsidianFineGrained {
+  readPaths?: string[];
+  writePaths?: string[];
+}
+
+export type ServiceFineGrained =
+  | SlackFineGrained
+  | DiscordFineGrained
+  | TelegramFineGrained
+  | GmailFineGrained
+  | CalendarFineGrained
+  | TwitterFineGrained
+  | NotionFineGrained
+  | ObsidianFineGrained;
+
+// ─── Resource listing types (for fine-grained permissions UI) ─────────────────
+
+export interface SlackChannel {
+  id: string;
+  name: string;
+  type: 'im' | 'mpim' | 'public_channel' | 'private_channel';
+}
+
+export interface TelegramChat {
+  id: string;
+  name: string;
+  type: string;
+}
+
 export interface Permission {
   id: number;
   service: string;
@@ -697,6 +833,7 @@ export interface Permission {
   requireApproval: boolean;
   directSendFromUi: boolean;
   markReadEnabled: boolean;
+  fineGrainedConfig: ServiceFineGrained | null;
   updatedAt?: string;
 }
 
@@ -1081,10 +1218,12 @@ export interface KeyServicePerm {
   readEnabled: boolean;
   sendEnabled: boolean;
   requireApproval: boolean;
+  fineGrainedConfig: ServiceFineGrained | null;  // resolved effective value
   overrides: {
     readEnabled:     boolean | null;
     sendEnabled:     boolean | null;
     requireApproval: boolean | null;
+    fineGrainedConfig: ServiceFineGrained | null; // null = inheriting from global
   };
 }
 
@@ -1199,8 +1338,16 @@ export interface ObsidianVaultConfigRow {
   updatedAt: string | null;
   hasHttpsToken: boolean;
   hasSshPrivateKey: boolean;
+  /** Live connection status from the manager — present in list/get responses */
+  connectionStatus?: {
+    status: 'connected' | 'disconnected' | 'connecting' | 'error';
+    mode?: string;
+    error?: string;
+    displayName?: string;
+  };
 }
 
+/** @deprecated Use listObsidianVaults / getObsidianVault instead */
 export interface ObsidianConfigResponse {
   configured: boolean;
   vault?: ObsidianVaultConfigRow;
@@ -1217,7 +1364,7 @@ export interface ObsidianConfigInput {
 }
 
 export interface ObsidianSyncStatus {
-  configured: boolean;
+  vaultId?: number;
   syncStatus?: string;
   lastSyncedAt?: string | null;
   lastCommitHash?: string | null;

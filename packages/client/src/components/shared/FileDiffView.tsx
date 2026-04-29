@@ -16,6 +16,8 @@ export interface PatchEdit {
 interface FileDiffViewProps {
   /** Vault-relative path to the file being written. */
   filePath: string;
+  /** Vault ID — required for multi-vault setups. */
+  vaultId: number;
   /**
    * The new content that will be written (write_file / create_file).
    * Leave empty when using patchEdits.
@@ -230,13 +232,13 @@ function applyPatchEdits(original: string, edits: PatchEdit[]): { result: string
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function FileDiffView({ filePath, newContent = '', isNewFile = false, patchEdits }: FileDiffViewProps) {
+export function FileDiffView({ filePath, vaultId, newContent = '', isNewFile = false, patchEdits }: FileDiffViewProps) {
   const isPatch = !!patchEdits && patchEdits.length > 0;
 
   // Fetch the current file contents from the vault (skip for new files; always fetch for patches)
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['obsidian-file', filePath],
-    queryFn: () => api.obsidianReadFile(filePath),
+    queryKey: ['obsidian-file', vaultId, filePath],
+    queryFn: () => api.obsidianReadFile(vaultId, filePath),
     enabled: !isNewFile,
     retry: false,
     throwOnError: false,

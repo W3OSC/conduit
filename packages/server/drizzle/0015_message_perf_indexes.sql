@@ -6,12 +6,12 @@
 
 CREATE INDEX IF NOT EXISTS `discord_messages_channel_ts`
   ON `discord_messages` (`channel_id`, `timestamp`);
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS `slack_messages_channel_ts`
   ON `slack_messages` (`channel_id`, `timestamp`);
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS `telegram_messages_chat_ts`
   ON `telegram_messages` (`chat_id`, `timestamp`);
-
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS `twitter_dms_conv_ts`
   ON `twitter_dms` (`conversation_id`, `created_at`);

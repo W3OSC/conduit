@@ -110,8 +110,36 @@
     {
       "idx": 15,
       "version": "6",
-      "when": 1745253600000,
+      "when": 1777315863367,
       "tag": "0015_message_perf_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1777315863368,
+      "tag": "0016_passkey_credentials",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1777402263366,
+      "tag": "0017_fine_grained_permissions",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1777488663366,
+      "tag": "0018_obsidian_multi_vault",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1777575063366,
+      "tag": "0019_smb_share_config",
       "breakpoints": true
     }
   ]

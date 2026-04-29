@@ -21,6 +21,7 @@ import twitterRouter from './twitter.js';
 import meetNotesRouter from './meet-notes.js';
 import notionRouter from './notion.js';
 import obsidianRouter from './obsidian.js';
+import smbRouter from './smb.js';
 import openapiRouter from './openapi.js';
 import aiRouter from './ai.js';
 import updateRouter from './update.js';
@@ -118,6 +119,7 @@ router.post('/connections/:service/disconnect', optionalAuth, async (req, res) =
   else if (service === 'gmail' || service === 'calendar') manager.disconnectAllGmailAccounts();
   else if (service === 'twitter') manager.getTwitter()?.disconnect();
   else if (service === 'notion') manager.getNotion()?.disconnect();
+  else if (service === 'smb') manager.disconnectAllSmbShares();
   res.json({ success: true });
 });
 
@@ -248,6 +250,7 @@ router.use('/twitter', twitterRouter);
 router.use('/meet-notes', meetNotesRouter);
 router.use('/notion', notionRouter);
 router.use('/obsidian', obsidianRouter);
+router.use('/smb', smbRouter);
 router.use('/ai', aiRouter);
 router.use('/update', updateRouter);
 router.use('/', openapiRouter);

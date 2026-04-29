@@ -165,6 +165,48 @@ router.get('/discord/guilds', optionalAuth, (_req, res) => {
   res.json(result);
 });
 
+// ── Slack channel list ─────────────────────────────────────────────────────────
+// Returns all channels/DMs/MPDMs the connected Slack user is a member of.
+// Used by the fine-grained permissions UI to populate the channel multi-select.
+
+router.get('/slack/channels', optionalAuth, async (_req, res) => {
+  const manager = getConnectionManager();
+  const slack = manager.getSlack();
+  if (!slack) {
+    return res.status(503).json({ error: 'Slack not connected' });
+  }
+  try {
+    const channels = await slack.getChannels();
+    res.json({ channels: channels.map((c) => ({ id: c.id, name: c.name, type: c.type })) });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ── Telegram chat list ────────────────────────────────────────────────────────
+// Returns all Telegram dialogs the connected account can see.
+// Used by the fine-grained permissions UI to populate the chat multi-select.
+
+router.get('/telegram/chats', optionalAuth, async (_req, res) => {
+  const manager = getConnectionManager();
+  const telegram = manager.getTelegram();
+  if (!telegram) {
+    return res.status(503).json({ error: 'Telegram not connected' });
+  }
+  try {
+    const chats = await telegram.getChats();
+    res.json({
+      chats: chats.map((c) => ({
+        id: c.chat_id,
+        name: c.name,
+        type: c.chat_type,
+      })),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
 router.post('/discord/sync-guilds', optionalAuth, async (req, res) => {
   const { guildIds } = req.body as { guildIds: string[] };
   if (!Array.isArray(guildIds)) {

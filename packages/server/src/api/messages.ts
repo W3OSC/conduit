@@ -4,8 +4,13 @@ import {
   telegramMessages, discordMessages, slackMessages, twitterDms, gmailMessages,
   syncState, syncRuns, errorLog, contacts, accounts, settings,
 } from '../db/schema.js';
-import { eq, and, desc, like, gte, lte, sql, isNull } from 'drizzle-orm';
+import { eq, and, desc, like, gte, lte, sql, isNull, inArray } from 'drizzle-orm';
 import { optionalAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
+import {
+  filterReadIds, filterGmailByLabels, resolveTwitterReadPerms, resolveEffectiveFineGrained,
+  isReadPermitted,
+} from './permissions-utils.js';
+import type { DiscordFineGrained } from '../db/schema.js';
 
 // ── Contact enrichment cache (per request) ────────────────────────────────────
 // Build a map of (source + platformId) → { displayName, avatarUrl } from the
@@ -193,7 +198,9 @@ router.get('/status', optionalAuth, (req, res) => {
  * Gmail:    flat thread list
  */
 router.get('/chats', optionalAuth, async (req, res) => {
+  const authedReq = req as AuthedRequest;
   const db = getDb();
+  const apiKeyId = authedReq.apiKey?.id ?? null;
 
   interface ChatEntry {
     id: string; name: string; source: string;
@@ -219,12 +226,25 @@ router.get('/chats', optionalAuth, async (req, res) => {
   {
     const dcCache = buildContactCache(db, 'discord');
     // Get all distinct channels with their latest message info
-    const channels = db.selectDistinct({
+    const allDiscordChannels = db.selectDistinct({
       channelId: discordMessages.channelId,
       channelName: discordMessages.channelName,
       guildId: discordMessages.guildId,
       guildName: discordMessages.guildName,
     }).from(discordMessages).all();
+
+    // Fine-grained read enforcement: filter channels and guilds for API key actors
+    const discordFg = apiKeyId
+      ? resolveEffectiveFineGrained('discord', apiKeyId) as DiscordFineGrained | null
+      : null;
+    const allowedDiscordChannels = discordFg?.readChannelIds;
+    const allowedDiscordGuilds = discordFg?.readGuildIds;
+    const channels = allDiscordChannels.filter((ch) => {
+      if (!apiKeyId) return true;
+      if (allowedDiscordChannels?.length && !allowedDiscordChannels.includes(ch.channelId)) return false;
+      if (allowedDiscordGuilds?.length && ch.guildId && !allowedDiscordGuilds.includes(ch.guildId)) return false;
+      return true;
+    });
 
     const dmChats: ChatEntry[] = [];
     const guilds = new Map<string, { name: string; channels: ChatEntry[] }>();
@@ -307,10 +327,18 @@ router.get('/chats', optionalAuth, async (req, res) => {
   // ── Slack ───────────────────────────────────────────────────────────────────
   {
     const slackCache = buildContactCache(db, 'slack');
-    const channels = db.selectDistinct({
+    const allSlackChannels = db.selectDistinct({
       channelId: slackMessages.channelId,
       channelName: slackMessages.channelName,
     }).from(slackMessages).all();
+
+    // Fine-grained read enforcement
+    const allowedSlackChannels = apiKeyId
+      ? (resolveEffectiveFineGrained('slack', apiKeyId) as import('../db/schema.js').SlackFineGrained | null)?.readChannelIds
+      : undefined;
+    const channels = allowedSlackChannels?.length
+      ? allSlackChannels.filter((ch) => allowedSlackChannels.includes(ch.channelId))
+      : allSlackChannels;
 
     // Build a map of channelId → { messageCount, latestTs } directly from messages
     // so sort order reflects actual message activity, not sync time
@@ -465,7 +493,15 @@ router.get('/chats', optionalAuth, async (req, res) => {
     const channelChats: ChatEntry[] = [];
     const folderBuckets = new Map<string, { label: string; chats: ChatEntry[] }>();
 
+    // Fine-grained Telegram read enforcement
+    const allowedTgChats = apiKeyId
+      ? (resolveEffectiveFineGrained('telegram', apiKeyId) as import('../db/schema.js').TelegramFineGrained | null)?.readChatIds
+      : undefined;
+
     for (const [chatIdNum, ch] of tgChatMap) {
+      // Skip chats not in the allowlist
+      if (allowedTgChats?.length && !allowedTgChats.includes(String(chatIdNum))) continue;
+
       const stats = tgStatsMap.get(chatIdNum);
 
       const contact = tgCache.contacts.get(String(chatIdNum));
@@ -533,8 +569,11 @@ router.get('/chats', optionalAuth, async (req, res) => {
 
   // ── Twitter ─────────────────────────────────────────────────────────────────
   {
+    const { readDms: twitterReadDms } = resolveTwitterReadPerms(apiKeyId);
     const twCache = buildContactCache(db, 'twitter');
-    const twConvs = db.selectDistinct({ conversationId: twitterDms.conversationId }).from(twitterDms).all();
+    const twConvs = twitterReadDms
+      ? db.selectDistinct({ conversationId: twitterDms.conversationId }).from(twitterDms).all()
+      : [];
     if (twConvs.length) {
       const dmChats: ChatEntry[] = twConvs.map((c) => {
         const allMsgs = db.select().from(twitterDms)
@@ -575,7 +614,25 @@ router.get('/chats', optionalAuth, async (req, res) => {
 
   // ── Gmail ───────────────────────────────────────────────────────────────────
   {
-    const gmThreads = db.selectDistinct({ threadId: gmailMessages.threadId }).from(gmailMessages).all();
+    const gmailFg = apiKeyId
+      ? resolveEffectiveFineGrained('gmail', apiKeyId) as import('../db/schema.js').GmailFineGrained | null
+      : null;
+    const allowedGmailLabels = gmailFg?.readLabelIds;
+
+    const allGmThreads = db.selectDistinct({ threadId: gmailMessages.threadId }).from(gmailMessages).all();
+    // For Gmail, label filtering is applied per-thread (not per thread ID)
+    const gmThreads = allGmThreads.filter((t) => {
+      if (!apiKeyId || !allowedGmailLabels?.length) return true;
+      // Fetch labels for the first/last message in this thread
+      const msgLabels = db.select({ labels: gmailMessages.labels })
+        .from(gmailMessages).where(eq(gmailMessages.threadId, t.threadId)).limit(1).get();
+      if (!msgLabels?.labels) return false;
+      try {
+        const labelArr = JSON.parse(msgLabels.labels) as string[];
+        return labelArr.some((l) => allowedGmailLabels.includes(l));
+      } catch { return false; }
+    });
+
     if (gmThreads.length) {
       const flatChats: ChatEntry[] = gmThreads.map((t) => {
         const lastMsg = db.select().from(gmailMessages)
@@ -605,6 +662,22 @@ router.get('/messages', optionalAuth, (req, res) => {
   const { source, chat_id, limit = '50', before, after, around, include_meta } = req.query as Record<string, string>;
   const lim = Math.min(parseInt(limit) || 50, 500);
   const half = Math.floor(lim / 2);
+  const apiKeyId = authedReq.apiKey?.id ?? null;
+
+  // Fine-grained read enforcement: if a specific chat_id and source are requested,
+  // check that the API key is allowed to read from that chat/channel.
+  if (chat_id && source && apiKeyId) {
+    if (source === 'twitter') {
+      const { readDms } = resolveTwitterReadPerms(apiKeyId);
+      if (!readDms) {
+        res.status(403).json({ error: 'DM access is not permitted for this API key' });
+        return;
+      }
+    } else if (!isReadPermitted(source, chat_id, apiKeyId)) {
+      res.status(403).json({ error: `Reading from "${chat_id}" is not permitted for this API key on ${source}` });
+      return;
+    }
+  }
 
   const results: unknown[] = [];
 
