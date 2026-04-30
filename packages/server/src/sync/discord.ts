@@ -10,8 +10,7 @@ import {
   syncDiscordContacts, upsertContact, upsertContactFromMessage, getContactCriteria,
 } from './contacts.js';
 import { buildMutedChannelsMap, type GuildMuteSettings } from './discord-mute.js';
-import { persistMuteState, seedReadState, broadcastUnreadForChat, computeAllUnreads } from './unread.js';
-import { broadcastUnread } from '../websocket/hub.js';
+import { persistMuteState } from './unread.js';
 
 // Minimal Discord client interface we need
 interface DiscordMessage {
@@ -214,10 +213,9 @@ export class DiscordSync {
       data: { source: 'discord', messageId, channelId, channelName, guildId, guildName, authorId, authorName, content, timestamp, attachments: attachmentsJson },
     });
 
-    // Push updated unread count for this chat to all clients.
-    // broadcastUnreadForChat reads chat_read_state and chat_mute_state from the DB
-    // and computes the real count — no client-side increment needed.
-    broadcastUnreadForChat('discord', channelId);
+    // Discord unread tracking is intentionally disabled — Discord's selfbot API
+    // does not expose a reliable per-channel read cursor, so we cannot mirror
+    // the platform's unread state accurately. No unread badge is shown for Discord.
 
     if (result.changes > 0) {
       if (authorId && authorId !== this.accountInfo?.userId) {
@@ -362,16 +360,16 @@ export class DiscordSync {
   }
 
   /**
-   * Compute mute state from live guild.settings, persist to chat_mute_state,
-   * then broadcast authoritative unread counts (computed from DB message counts
-   * vs chat_read_state) to all connected clients.
+   * Sync mute state from live guild.settings and persist to chat_mute_state.
+   *
+   * NOTE: Discord unread counts are intentionally NOT tracked. Discord's selfbot
+   * API does not expose a reliable per-channel read cursor, so we cannot mirror
+   * the platform's unread state accurately. Only mute state is synced.
    *
    * Called after: initial sync, userGuildSettingsUpdate event.
    */
   async fetchUnreadCounts(): Promise<void> {
     try {
-      const db = getDb();
-
       // Build channelId → isMuted map from live guild settings
       const guildsIterable = this.client.guilds.cache as unknown as Map<
         string,
@@ -384,23 +382,7 @@ export class DiscordSync {
         [...mutedChannels.entries()].map(([chatId, isMuted]) => ({ source: 'discord', chatId, isMuted })),
       );
 
-      // Seed read state: Discord's selfbot API does not expose a reliable
-      // per-channel read cursor, so we treat the sync as a fresh start —
-      // all known Discord channels are seeded as "read now". Only messages
-      // that arrive as live events after this point will count as unread.
-      // We collect channel IDs from both the mute map (guild channels) and
-      // the messages table (DMs and any channels not in a guild cache).
-      const now = new Date().toISOString();
-      const channelIds = new Set<string>(mutedChannels.keys());
-      const dmChats = db.selectDistinct({ channelId: discordMessages.channelId })
-        .from(discordMessages).all();
-      for (const { channelId } of dmChats) channelIds.add(channelId);
-
-      seedReadState([...channelIds].map((chatId) => ({ source: 'discord', chatId, lastReadAt: now })));
-
-      // Broadcast authoritative counts for all chats (all services)
-      const updates = computeAllUnreads();
-      if (updates.length > 0) broadcastUnread(updates);
+      // No unread count broadcasting for Discord — see note above.
     } catch (e) {
       console.error('[discord] fetchUnreadCounts error:', e);
     }

@@ -22,11 +22,15 @@ import {
   gmailMessages, calendarEvents, twitterDms,
   syncState, syncRuns, settings, contacts, meetNotes,
   chatReadState, chatMuteState,
+  aiSessions, aiMessages, aiToolCalls,
+  auditLog, outbox, errorLog,
+  discordChannelMuteState,
 } from '../db/schema.js';
 import { eq, and, like } from 'drizzle-orm';
 import { optionalAuth } from '../auth/middleware.js';
 import { getConnectionManager, type ServiceName } from '../connections/manager.js';
 import { broadcast } from '../websocket/hub.js';
+import { getSqlite } from '../db/client.js';
 
 const router = Router();
 
@@ -140,6 +144,61 @@ router.post('/service/gmail/reset/:email', optionalAuth, async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   }
+});
+
+// ── Reset all app data ────────────────────────────────────────────────────────
+// Wipes all synced/generated data while preserving credentials and configuration.
+// Preserved: settings, accounts, permissions, api_keys, api_key_permissions,
+//            obsidian_vault_config, smb_share_config, passkey_credentials,
+//            __drizzle_migrations
+// Wiped: all messages, contacts, AI sessions, audit log, outbox, sync state, etc.
+
+router.post('/reset-app-data', optionalAuth, (req, res) => {
+  const db = getDb();
+  const sqlite = getSqlite();
+
+  const wipeAll = sqlite.transaction(() => {
+    // Messages
+    db.delete(telegramMessages).run();
+    db.delete(discordMessages).run();
+    db.delete(slackMessages).run();
+    db.delete(gmailMessages).run();
+    db.delete(calendarEvents).run();
+    db.delete(twitterDms).run();
+    db.delete(meetNotes).run();
+
+    // Contacts, read/mute state
+    db.delete(contacts).run();
+    db.delete(chatReadState).run();
+    db.delete(chatMuteState).run();
+    db.delete(discordChannelMuteState).run();
+
+    // Sync history
+    db.delete(syncState).run();
+    db.delete(syncRuns).run();
+
+    // AI
+    db.delete(aiSessions).run();
+    db.delete(aiMessages).run();
+    db.delete(aiToolCalls).run();
+
+    // Operational
+    db.delete(auditLog).run();
+    db.delete(outbox).run();
+    db.delete(errorLog).run();
+
+    // Incremental sync tokens stored in settings (gmail historyId, calendar syncToken)
+    db.delete(settings).where(like(settings.key, 'gmail.historyId.%')).run();
+    db.delete(settings).where(like(settings.key, 'calendar.syncToken.%')).run();
+  });
+
+  wipeAll();
+
+  // Notify all connected clients to refresh
+  broadcast({ type: 'sync:progress', data: { service: 'all', status: 'idle' } });
+
+  console.log('[reset] All app data wiped');
+  res.json({ success: true, message: 'All app data cleared. Credentials and configuration preserved.' });
 });
 
 // ── Discord guild management ───────────────────────────────────────────────────

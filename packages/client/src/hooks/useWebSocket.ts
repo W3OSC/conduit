@@ -220,15 +220,20 @@ export function useWebSocket() {
         case 'ai:token': {
           const d = event.data as {
             sessionId: string; messageId: string; delta: string; done: boolean;
-            toolCalls?: Array<{ name: string; input: unknown; output?: unknown }>;
           };
           const store = useAiChatStore.getState();
           // Always append the delta first (the final chunk may carry the last token)
-          store.appendToken(d.sessionId, d.messageId, d.delta, d.toolCalls);
+          store.appendToken(d.sessionId, d.messageId, d.delta);
           if (store.waiting[d.sessionId]) store.setWaiting(d.sessionId, false);
           if (d.done) {
             store.finalizeStream(d.sessionId, d.messageId);
           }
+          break;
+        }
+
+        case 'ai:toolcall': {
+          const d = event.data as { sessionId: string; toolCall: import('../lib/api').AiToolCall };
+          useAiChatStore.getState().addToolCall(d.sessionId, d.toolCall);
           break;
         }
 

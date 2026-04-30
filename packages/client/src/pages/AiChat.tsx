@@ -31,11 +31,6 @@ function formatTime(ts: string | null): string {
   return d.toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-function parseToolCalls(raw: string | null): AiToolCall[] {
-  if (!raw) return [];
-  try { return JSON.parse(raw); } catch { return []; }
-}
-
 // ─── Tool call helpers ────────────────────────────────────────────────────────
 
 function getToolCallIcon(name: string): LucideIcon {
@@ -69,110 +64,69 @@ function countLabel(n: number, singular: string, plural?: string): string {
   return `${n} ${n === 1 ? singular : (plural ?? singular + 's')}`;
 }
 
-function outputCount(output: unknown, noun: string, plural?: string): string {
-  if (output === undefined || output === null) return '';
-  // Array output — count items
-  if (Array.isArray(output)) return ` · ${countLabel(output.length, noun, plural)}`;
-  // Object with a known count/total field
-  if (typeof output === 'object') {
-    const obj = output as Record<string, unknown>;
-    const msgs = obj.messages; const itms = obj.items;
-    const n = obj.total ?? obj.count ?? obj.resultCount
-      ?? (Array.isArray(msgs) ? msgs.length : undefined)
-      ?? (Array.isArray(itms) ? itms.length : undefined);
-    if (typeof n === 'number') return ` · ${countLabel(n, noun, plural)}`;
-    // Check nested array properties
-    for (const key of ['messages', 'items', 'events', 'contacts', 'emails', 'results', 'files', 'pages', 'tweets', 'dms', 'threads', 'labels']) {
-      if (Array.isArray(obj[key])) return ` · ${countLabel((obj[key] as unknown[]).length, noun, plural)}`;
-    }
-  }
-  return '';
-}
 
-function getToolCallSummary(name: string, input: unknown, output?: unknown): string {
+function getToolCallSummary(name: string, input: unknown, output?: string | null): string {
+  // Server-detected tool calls supply a pre-built compact output string.
+  // Use it as the primary description when available.
+  if (output) return output;
+
   const inp = (input ?? {}) as Record<string, unknown>;
 
-  // ── Messages / Chats ──────────────────────────────────────────────────────
-  if (name === 'getMessages' || name === 'searchMessages') {
-    const qStr = q(inp.query ?? inp.search ?? inp.q);
-    const counts = outputCount(output, 'message');
-    return qStr ? `Searched messages for ${qStr}${counts}` : `Retrieved messages${counts}`;
+  // ── Server-detected names (derived from HTTP method + path) ───────────────
+  if (name === 'getChats')          return 'Listed chats';
+  if (name === 'getMessages') {
+    const src = str(inp['source'] ?? '');
+    const chat = str(inp['chat_id'] ?? '');
+    return src ? `Read ${src} messages${chat ? ` in ${chat}` : ''}` : 'Read messages';
   }
-  if (name === 'getChats') {
-    const counts = outputCount(output, 'chat');
-    return `Listed chats${counts}`;
+  if (name === 'getActivity')       return 'Read activity feed';
+  if (name === 'searchMessages') {
+    const qStr = q(inp['q'] ?? inp['query'] ?? '');
+    return qStr ? `Searched messages for ${qStr}` : 'Searched messages';
   }
-  if (name === 'markChatRead') return 'Marked chat as read';
-
-  // ── Contacts ──────────────────────────────────────────────────────────────
-  if (name === 'listContacts') {
-    const counts = outputCount(output, 'contact');
-    return `Listed contacts${counts}`;
+  if (name === 'getContacts')       return 'Listed contacts';
+  if (name === 'getContact')        return 'Looked up contact';
+  if (name === 'getContactHistory') return 'Retrieved contact message history';
+  if (name === 'getEmails') {
+    const qStr = q(inp['q'] ?? '');
+    return qStr ? `Searched emails for ${qStr}` : 'Listed emails';
   }
-  if (name === 'getContact') return `Looked up contact${inp.contactId ? ` ${q(inp.contactId)}` : ''}`;
-  if (name === 'getContactHistory') return `Retrieved contact message history`;
-  if (name === 'messageContact') {
-    const preview = q(inp.content ?? inp.text ?? inp.message);
-    return preview ? `Sent message: ${preview}` : 'Sent a message to a contact';
+  if (name === 'getEmail')           return 'Retrieved email';
+  if (name === 'getEmailBody')       return 'Read email body';
+  if (name === 'getEmailThread')     return 'Read email thread';
+  if (name === 'getEmailLabels')     return 'Listed email labels';
+  if (name === 'getCalendarEvents')  return 'Listed calendar events';
+  if (name === 'getCalendarEvent')   return 'Retrieved calendar event';
+  if (name === 'getCalendars')       return 'Listed calendars';
+  if (name === 'listVaultFiles')     return 'Listed vault files';
+  if (name === 'readVaultFile') {
+    const path = q((inp['routeParams'] as Record<string, unknown> | undefined)?.['path'] ?? '');
+    return path ? `Read vault file ${path}` : 'Read vault file';
   }
-  if (name === 'getContactDmChannel') return 'Got DM channel for contact';
 
   // ── Outbox ────────────────────────────────────────────────────────────────
-  if (name === 'listOutbox') {
-    const counts = outputCount(output, 'item');
-    return `Listed outbox${counts}`;
-  }
   if (name === 'createOutboxItem') {
-    const preview = q(inp.content ?? inp.text ?? inp.subject);
+    const preview = q(inp['content'] ?? inp['text'] ?? inp['subject']);
     return preview ? `Queued message: ${preview}` : 'Created outbox item';
   }
-  if (name === 'getOutboxItem') return 'Retrieved outbox item';
-  if (name === 'updateOutboxItem') return 'Updated outbox item';
-  if (name === 'deleteOutboxItem') return 'Deleted outbox item';
   if (name === 'createOutboxBatch' || name === 'createOutboxBatchMulti') {
-    const batchItems = Array.isArray(inp.messages) ? inp.messages.length : (Array.isArray(inp.items) ? inp.items.length : null);
+    const batchItems = Array.isArray(inp['messages']) ? inp['messages'].length : (Array.isArray(inp['items']) ? inp['items'].length : null);
     return batchItems !== null ? `Queued ${countLabel(batchItems, 'message')} in batch` : 'Created outbox batch';
   }
 
-  // ── Gmail ─────────────────────────────────────────────────────────────────
-  if (name === 'listGmailMessages') {
-    const qStr = q(inp.query ?? inp.q);
-    const counts = outputCount(output, 'email');
-    return qStr ? `Searched Gmail for ${qStr}${counts}` : `Listed Gmail messages${counts}`;
-  }
-  if (name === 'getGmailMessage') return 'Retrieved Gmail message';
-  if (name === 'getGmailBody') return 'Read Gmail message body';
-  if (name === 'getGmailThread') {
-    const counts = outputCount(output, 'message');
-    return `Read Gmail thread${counts}`;
-  }
+  // ── Gmail actions ─────────────────────────────────────────────────────────
   if (name === 'gmailAction') {
-    const action = str(inp.action ?? inp.type).toLowerCase();
-    if (action.includes('reply')) return 'Replied to Gmail message';
-    if (action.includes('send')) return 'Sent Gmail message';
-    if (action.includes('archive')) return 'Archived Gmail message';
-    if (action.includes('delete') || action.includes('trash')) return 'Deleted Gmail message';
-    if (action.includes('label')) return 'Labelled Gmail message';
+    const action = str(inp['action'] ?? inp['type']).toLowerCase();
+    if (action.includes('reply')) return 'Replied to email';
+    if (action.includes('send')) return 'Sent email';
+    if (action.includes('archive')) return 'Archived email';
+    if (action.includes('delete') || action.includes('trash')) return 'Deleted email';
     return action ? `Gmail: ${action}` : 'Performed Gmail action';
   }
-  if (name === 'listGmailLabels') {
-    const counts = outputCount(output, 'label');
-    return `Listed Gmail labels${counts}`;
-  }
 
-  // ── Calendar ──────────────────────────────────────────────────────────────
-  if (name === 'listCalendars') {
-    const counts = outputCount(output, 'calendar');
-    return `Listed calendars${counts}`;
-  }
-  if (name === 'listCalendarEvents') {
-    const counts = outputCount(output, 'event');
-    const from = q(inp.timeMin ?? inp.from ?? inp.start);
-    return from ? `Listed calendar events from ${from}${counts}` : `Listed calendar events${counts}`;
-  }
-  if (name === 'getCalendarEvent') return 'Retrieved calendar event';
+  // ── Calendar actions ──────────────────────────────────────────────────────
   if (name === 'calendarAction') {
-    const action = str(inp.action ?? inp.type).toLowerCase();
+    const action = str(inp['action'] ?? inp['type']).toLowerCase();
     if (action.includes('create')) return 'Created calendar event';
     if (action.includes('update') || action.includes('patch')) return 'Updated calendar event';
     if (action.includes('delete')) return 'Deleted calendar event';
@@ -181,29 +135,8 @@ function getToolCallSummary(name: string, input: unknown, output?: unknown): str
   }
 
   // ── Twitter ───────────────────────────────────────────────────────────────
-  if (name === 'getTwitterFeed') {
-    const counts = outputCount(output, 'tweet');
-    return `Retrieved Twitter feed${counts}`;
-  }
-  if (name === 'searchTwitter') {
-    const qStr = q(inp.query ?? inp.q);
-    const counts = outputCount(output, 'tweet');
-    return qStr ? `Searched Twitter for ${qStr}${counts}` : `Searched Twitter${counts}`;
-  }
-  if (name === 'getTwitterMentions') {
-    const counts = outputCount(output, 'mention');
-    return `Retrieved Twitter mentions${counts}`;
-  }
-  if (name === 'listTwitterDMs') {
-    const counts = outputCount(output, 'DM', 'DMs');
-    return `Listed Twitter DMs${counts}`;
-  }
-  if (name === 'getTwitterDMConversation') {
-    const counts = outputCount(output, 'message');
-    return `Retrieved Twitter DM conversation${counts}`;
-  }
   if (name === 'twitterAction') {
-    const action = str(inp.action ?? inp.type).toLowerCase();
+    const action = str(inp['action'] ?? inp['type']).toLowerCase();
     if (action.includes('tweet') || action.includes('post')) return 'Posted a tweet';
     if (action.includes('reply')) return 'Replied to a tweet';
     if (action.includes('retweet')) return 'Retweeted';
@@ -212,79 +145,14 @@ function getToolCallSummary(name: string, input: unknown, output?: unknown): str
     if (action.includes('dm') || action.includes('message')) return 'Sent a Twitter DM';
     return action ? `Twitter: ${action}` : 'Performed Twitter action';
   }
-  if (name === 'getTwitterTweet') return 'Retrieved tweet';
-  if (name === 'getTwitterTweetThread') {
-    const counts = outputCount(output, 'tweet');
-    return `Retrieved tweet thread${counts}`;
-  }
-  if (name === 'getTwitterMe') return 'Retrieved Twitter profile';
-  if (name === 'getTwitterUserProfile') return `Looked up Twitter user${q(inp.username) ? ` ${q(inp.username)}` : ''}`;
-  if (name === 'getTwitterUserTweets') {
-    const counts = outputCount(output, 'tweet');
-    return `Retrieved user tweets${counts}`;
-  }
-  if (name === 'getTwitterUserFollowers') {
-    const counts = outputCount(output, 'follower');
-    return `Retrieved followers${counts}`;
-  }
-  if (name === 'getTwitterUserFollowing') {
-    const counts = outputCount(output, 'following');
-    return `Retrieved following list${counts}`;
-  }
-  if (name === 'getTwitterTrends') {
-    const counts = outputCount(output, 'trend');
-    return `Retrieved Twitter trends${counts}`;
-  }
 
   // ── Notion ────────────────────────────────────────────────────────────────
   if (name === 'createNotionPage') {
-    const title = q(inp.title ?? inp.name);
+    const title = q(inp['title'] ?? inp['name']);
     return title ? `Created Notion page ${title}` : 'Created Notion page';
-  }
-  if (name === 'getNotionPage') return 'Retrieved Notion page';
-  if (name === 'updateNotionPage') return 'Updated Notion page';
-  if (name === 'listNotionDatabases') {
-    const counts = outputCount(output, 'database');
-    return `Listed Notion databases${counts}`;
-  }
-  if (name === 'queryNotionDatabase') {
-    const counts = outputCount(output, 'result');
-    return `Queried Notion database${counts}`;
-  }
-  if (name === 'searchNotion') {
-    const qStr = q(inp.query ?? inp.q);
-    const counts = outputCount(output, 'result');
-    return qStr ? `Searched Notion for ${qStr}${counts}` : `Searched Notion${counts}`;
-  }
-  if (name === 'getNotionBlock') return 'Retrieved Notion block';
-  if (name === 'getNotionBlockChildren') {
-    const counts = outputCount(output, 'block');
-    return `Retrieved Notion block children${counts}`;
-  }
-
-  // ── Obsidian / Vault ──────────────────────────────────────────────────────
-  if (name === 'listObsidianFiles') {
-    const counts = outputCount(output, 'file');
-    return `Listed vault files${counts}`;
-  }
-  if (name === 'readObsidianFile') {
-    const path = q(inp.path ?? inp.filePath ?? inp.file);
-    return path ? `Read vault file ${path}` : 'Read vault file';
-  }
-
-  // ── System / Status ───────────────────────────────────────────────────────
-  if (name === 'getActivity') {
-    const counts = outputCount(output, 'event');
-    return `Retrieved activity log${counts}`;
-  }
-  if (name === 'getStatus') return 'Checked Conduit status';
-  if (name === 'getConnections') {
-    const counts = outputCount(output, 'connection');
-    return `Listed connections${counts}`;
   }
 
   // ── Fallback ──────────────────────────────────────────────────────────────
-  // Convert camelCase to a readable phrase
   return name.replace(/([A-Z])/g, ' $1').trim().toLowerCase();
 }
 
@@ -292,17 +160,14 @@ function getToolCallSummary(name: string, input: unknown, output?: unknown): str
 
 interface ToolCallActivityRowProps {
   toolCall: AiToolCall;
-  pending?: boolean;
 }
 
-function ToolCallActivityRow({ toolCall, pending = false }: ToolCallActivityRowProps) {
+function ToolCallActivityRow({ toolCall }: ToolCallActivityRowProps) {
   const [open, setOpen] = useState(false);
   const Icon = getToolCallIcon(toolCall.name);
   const summary = getToolCallSummary(toolCall.name, toolCall.input, toolCall.output);
-  const hasOutput = toolCall.output !== undefined;
-  const outputStr = hasOutput
-    ? (typeof toolCall.output === 'string' ? toolCall.output : JSON.stringify(toolCall.output, null, 2))
-    : '';
+  const hasOutput = !!toolCall.output;
+  const outputStr = toolCall.output ?? '';
   const inputStr = JSON.stringify(toolCall.input, null, 2);
 
   return (
@@ -328,11 +193,7 @@ function ToolCallActivityRow({ toolCall, pending = false }: ToolCallActivityRowP
             {summary}
           </span>
           <div className="flex-shrink-0 flex items-center gap-1.5">
-            {pending ? (
-              <Loader2 className="w-3 h-3 text-amber-500/80 animate-spin" />
-            ) : (
-              <CheckCircle2 className="w-3 h-3 text-emerald-500/80" />
-            )}
+            <CheckCircle2 className="w-3 h-3 text-emerald-500/80" />
             {open
               ? <ChevronDown className="w-3 h-3 text-muted-foreground/40" />
               : <ChevronRight className="w-3 h-3 text-muted-foreground/40 group-hover:text-muted-foreground/70 transition-colors" />
@@ -706,10 +567,12 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
 
   const {
     messages: allMessages,
+    toolCalls: allToolCalls,
     streaming,
     waiting,
     errors,
     setMessages,
+    setToolCalls,
     setError,
     setWaiting,
     addMessage,
@@ -718,6 +581,7 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
   } = useAiChatStore();
 
   const sessionMessages = allMessages[session.id] ?? [];
+  const sessionToolCalls = allToolCalls[session.id] ?? [];
   const streamState = streaming[session.id] ?? null;
   const isWaiting = waiting[session.id] ?? false;
   const sessionError = errors[session.id] ?? null;
@@ -725,12 +589,16 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
   const { isLoading } = useQuery({
     queryKey: ['ai-messages', session.id],
     queryFn: async () => {
-      const res = await api.aiMessages(session.id);
-      setMessages(session.id, res.messages);
+      const [msgRes, tcRes] = await Promise.all([
+        api.aiMessages(session.id),
+        api.aiToolCalls(session.id),
+      ]);
+      setMessages(session.id, msgRes.messages);
+      setToolCalls(session.id, tcRes.toolCalls);
       // After merging the DB snapshot, check whether any streamed messages
       // were missed (e.g. WS was disconnected) and recover them.
-      reconcileFromDb(session.id, res.messages);
-      return res;
+      reconcileFromDb(session.id, msgRes.messages);
+      return msgRes;
     },
     // Always treat the cache as stale so that re-fetches (e.g. triggered by a
     // WS reconnect) actually hit the server and pick up any missed messages.
@@ -747,6 +615,12 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
     });
     return unsubscribe;
   }, [session.id, queryClient]);
+
+  // Keep keyboard focus on the composer input whenever the session changes or
+  // the component mounts, so the user can type immediately without clicking.
+  useEffect(() => {
+    composerRef.current?.focus();
+  }, [session.id]);
 
   // Auto-scroll
   useEffect(() => {
@@ -784,44 +658,47 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
       sessionId: session.id,
       role: 'user',
       content,
-      toolCalls: null,
       streaming: false,
       createdAt: new Date().toISOString(),
     };
     addMessage(session.id, optimisticMsg);
     sendMutation.mutate(content);
-    if (composerRef.current) composerRef.current.style.height = 'auto';
+    if (composerRef.current) {
+      composerRef.current.style.height = 'auto';
+      composerRef.current.focus();
+    }
   };
 
   type ChatItem =
-    | { type: 'message'; msg: AiMessage }
-    | { type: 'toolcall'; toolCall: AiToolCall; pending: boolean; key: string }
-    | { type: 'streaming'; state: typeof streamState }
-    | { type: 'thinking' };
+    | { type: 'message'; msg: AiMessage; key: string }
+    | { type: 'toolcall'; toolCall: AiToolCall; key: string }
+    | { type: 'streaming'; state: typeof streamState; key: string }
+    | { type: 'thinking'; key: string };
 
-  const items: ChatItem[] = [];
-  // Exclude in-flight assistant rows — the live { type: 'streaming' } bubble
-  // below already renders them; including them here would cause a duplicate
-  // blank bubble while the stream is active.
-  for (const msg of sessionMessages.filter((m) => !m.streaming)) {
-    // Inject tool call rows before each assistant message that has them
-    if (msg.role === 'assistant') {
-      const tcs = parseToolCalls(msg.toolCalls);
-      for (let i = 0; i < tcs.length; i++) {
-        items.push({ type: 'toolcall', toolCall: tcs[i], pending: false, key: `${msg.id}-tc-${i}` });
-      }
-    }
-    items.push({ type: 'message', msg });
-  }
-  // During streaming: inject live tool call rows (pending state) before the streaming bubble
+  // Build a time-ordered list of all settled messages and tool calls.
+  // Exclude in-flight (streaming: true) assistant rows — the live 'streaming'
+  // bubble below already renders them.
+  const settledMessages = sessionMessages.filter((m) => !m.streaming);
+
+  type Sortable = { ts: string; item: ChatItem };
+  const sortables: Sortable[] = [
+    ...settledMessages.map((msg) => ({
+      ts: msg.createdAt ?? '',
+      item: { type: 'message' as const, msg, key: msg.id },
+    })),
+    ...sessionToolCalls.map((tc) => ({
+      ts: tc.createdAt,
+      item: { type: 'toolcall' as const, toolCall: tc, key: tc.id },
+    })),
+  ];
+  sortables.sort((a, b) => a.ts.localeCompare(b.ts));
+
+  const items: ChatItem[] = sortables.map((s) => s.item);
+
   if (isStreaming && streamState) {
-    const liveTcs = streamState.toolCalls ?? [];
-    for (let i = 0; i < liveTcs.length; i++) {
-      items.push({ type: 'toolcall', toolCall: liveTcs[i], pending: liveTcs[i].output === undefined, key: `stream-tc-${i}` });
-    }
-    items.push({ type: 'streaming', state: streamState });
+    items.push({ type: 'streaming', state: streamState, key: 'streaming' });
   }
-  if (!isStreaming && isWaiting) items.push({ type: 'thinking' });
+  if (!isStreaming && isWaiting) items.push({ type: 'thinking', key: 'thinking' });
 
   const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
@@ -890,7 +767,6 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
                   <ToolCallActivityRow
                     key={item.key}
                     toolCall={item.toolCall}
-                    pending={item.pending}
                   />
                 );
               }
@@ -900,7 +776,6 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
                   sessionId: session.id,
                   role: 'assistant',
                   content: item.state.content,
-                  toolCalls: null,
                   streaming: true,
                   createdAt: new Date().toISOString(),
                 };

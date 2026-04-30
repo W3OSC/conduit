@@ -22,6 +22,7 @@ export interface WsEvent {
     | 'ai:token'          // AI streaming token
     | 'ai:message'        // AI message complete
     | 'ai:error'          // AI error
+    | 'ai:toolcall'       // AI API access recorded
     | 'update:available'  // new git commits available upstream
     | 'ping'
     | 'error';

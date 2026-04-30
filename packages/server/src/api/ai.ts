@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { randomBytes } from 'crypto';
 import { eq, desc, asc } from 'drizzle-orm';
 import { getDb } from '../db/client.js';
-import { aiSessions, aiMessages, settings } from '../db/schema.js';
+import { aiSessions, aiMessages, aiToolCalls, settings } from '../db/schema.js';
 import { optionalAuth, apiKeyAuth, type AuthedRequest } from '../auth/middleware.js';
 import { broadcast, onNextBroadcast, collectBroadcast } from '../websocket/hub.js';
 import { validateWebhookUrl } from '../auth/ssrf.js';
@@ -211,7 +211,9 @@ You are connected to this Conduit instance via API. Use the API to read context 
 **OpenAPI Spec:** ${baseUrl}/api/openapi.json
 
 ## What You Can Access
-Include the header \`X-API-Key: <your-api-key>\` on every request. Your API key was provisioned for you in Conduit → Settings → Permissions.
+Include these headers on every Conduit API request:
+- \`X-API-Key: <your-api-key>\` — your API key, provisioned in Conduit → Settings → Permissions
+- \`X-Session-Id: ${sessionId}\` — your current session ID, so Conduit can log your activity in the chat
 
 ${allowed.join('\n')}${deniedSection}
 
@@ -223,8 +225,7 @@ Request body:
 \`\`\`json
 {
   "delta": "token text here",
-  "done": false,
-  "toolCalls": []
+  "done": false
 }
 \`\`\`
 
@@ -581,6 +582,33 @@ router.get('/sessions/:id/messages', optionalAuth, (req, res) => {
   res.json({ session, messages });
 });
 
+// ── GET /ai/sessions/:id/tool-calls ──────────────────────────────────────────
+// Returns all tool calls (AI API accesses) for a session, ordered by time.
+
+router.get('/sessions/:id/tool-calls', optionalAuth, (req, res) => {
+  const db = getDb();
+  const { id } = req.params as { id: string };
+  const session = db.select().from(aiSessions).where(eq(aiSessions.id, id)).get();
+  if (!session) { res.status(404).json({ error: 'Session not found' }); return; }
+
+  const limit = Math.min(parseInt((req.query['limit'] as string) || '200'), 500);
+  const calls = db
+    .select()
+    .from(aiToolCalls)
+    .where(eq(aiToolCalls.sessionId, id))
+    .orderBy(asc(aiToolCalls.createdAt))
+    .limit(limit)
+    .all();
+
+  // Parse input JSON for each call
+  const toolCalls = calls.map((c) => ({
+    ...c,
+    input: (() => { try { return JSON.parse(c.input); } catch { return c.input; } })(),
+  }));
+
+  res.json({ toolCalls });
+});
+
 // ── POST /ai/sessions/:id/messages ────────────────────────────────────────────
 // User sends a message. Stored, broadcast over WS, forwarded to AI webhook.
 
@@ -704,8 +732,7 @@ router.post('/sessions/:id/stream', apiKeyAuth(true), (req, res) => {
       })
       .join('');
   }
-  const done         = body['done'] === true;
-  const toolCalls    = Array.isArray(body['toolCalls'])        ? body['toolCalls'] : null;
+  const done          = body['done'] === true;
   const existingMsgId = typeof body['messageId'] === 'string' ? body['messageId'] : undefined;
 
   let msgId = existingMsgId;
@@ -719,7 +746,6 @@ router.post('/sessions/:id/stream', apiKeyAuth(true), (req, res) => {
         sessionId: id,
         role:      'assistant',
         content:   delta,
-        toolCalls: toolCalls ? JSON.stringify(toolCalls) : null,
         streaming: !done,
         createdAt: new Date().toISOString(),
       }).run();
@@ -729,7 +755,6 @@ router.post('/sessions/:id/stream', apiKeyAuth(true), (req, res) => {
         db.update(aiMessages)
           .set({
             content:   existing.content + delta,
-            toolCalls: toolCalls ? JSON.stringify(toolCalls) : existing.toolCalls,
             streaming: !done,
           })
           .where(eq(aiMessages.id, msgId))
@@ -742,7 +767,7 @@ router.post('/sessions/:id/stream', apiKeyAuth(true), (req, res) => {
 
   broadcast({
     type: 'ai:token',
-    data: { sessionId: id, messageId: msgId, delta, done, toolCalls: toolCalls ?? undefined },
+    data: { sessionId: id, messageId: msgId, delta, done },
   });
 
   res.json({ success: true, messageId: msgId });

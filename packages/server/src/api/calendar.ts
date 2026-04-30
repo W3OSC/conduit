@@ -7,7 +7,7 @@ import { Router } from 'express';
 import { getDb } from '../db/client.js';
 import { calendarEvents, outbox, permissions } from '../db/schema.js';
 import { and, eq, gte, lte, sql } from 'drizzle-orm';
-import { optionalAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
+import { optionalAuth, writeAuditLog, trackAiCall, type AuthedRequest } from '../auth/middleware.js';
 import { getConnectionManager } from '../connections/manager.js';
 import { broadcast } from '../websocket/hub.js';
 import type { CalendarAction } from '../sync/google-calendar.js';
@@ -28,7 +28,7 @@ router.get('/status', optionalAuth, (req, res) => {
 });
 
 // GET /api/calendar/calendars
-router.get('/calendars', optionalAuth, async (req, res) => {
+router.get('/calendars', optionalAuth, trackAiCall, async (req, res) => {
   const manager = getConnectionManager();
   const calendar = manager.getCalendar();
   if (!calendar) return res.status(503).json({ error: 'Calendar not connected' });
@@ -42,7 +42,7 @@ router.get('/calendars', optionalAuth, async (req, res) => {
 });
 
 // GET /api/calendar/events
-router.get('/events', optionalAuth, (req, res) => {
+router.get('/events', optionalAuth, trackAiCall, (req, res) => {
   const { from, to, calendarId, limit = '200' } = req.query as Record<string, string>;
   const db = getDb();
 
@@ -64,7 +64,7 @@ router.get('/events', optionalAuth, (req, res) => {
 });
 
 // GET /api/calendar/events/:id
-router.get('/events/:id', optionalAuth, (req, res) => {
+router.get('/events/:id', optionalAuth, trackAiCall, (req, res) => {
   const db = getDb();
   const event = db.select().from(calendarEvents)
     .where(eq(calendarEvents.eventId, req.params['id'] as string))

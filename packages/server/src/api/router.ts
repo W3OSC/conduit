@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { getConnectionManager, type ServiceName } from '../connections/manager.js';
 import { optionalAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
-import { computeAllUnreads, markChatRead, markAllChatsRead } from '../sync/unread.js';
+import { computeAllUnreads, markChatRead, markChatUnread, markAllChatsRead } from '../sync/unread.js';
 import messagesRouter from './messages.js';
 import outboxRouter from './outbox.js';
 import permissionsRouter from './permissions.js';
@@ -153,44 +153,32 @@ router.get('/unread', optionalAuth, (_req, res) => {
 });
 
 // POST /api/unread/:source/:chatId/read — mark a chat as read.
-// Always writes chat_read_state (server-side persistence, no permission check needed).
-// If markReadEnabled is true for this service, also calls the platform API.
+// Always writes chat_read_state (server-side persistence).
+// Also mirrors the read state to the platform so other clients see it too.
 router.post('/unread/:source/:chatId/read', optionalAuth, async (req, res) => {
   const source = req.params['source'] as string;
   const chatId = req.params['chatId'] as string;
 
-  // Always persist read state server-side
+  // Persist read state server-side (no-op for discord)
   markChatRead(source, chatId);
 
-  // Also mark read on the platform if the permission is enabled
-  const db = (await import('../db/client.js')).getDb();
-  const { permissions } = await import('../db/schema.js');
-  const { eq: eqFn } = await import('drizzle-orm');
-  const perm = db.select().from(permissions).where(eqFn(permissions.service, source)).get();
-
-  if (perm?.markReadEnabled) {
-    const manager = getConnectionManager();
-    try {
-      if (source === 'slack') await manager.getSlack()?.markChannelRead(chatId);
-      else if (source === 'discord') await manager.getDiscord()?.markChannelRead(chatId);
-      else if (source === 'telegram') await manager.getTelegram()?.markChatRead(chatId);
-    } catch { /* best-effort platform call */ }
-  }
+  // Mirror read state to the platform (best-effort, non-blocking)
+  const manager = getConnectionManager();
+  try {
+    if (source === 'slack') await manager.getSlack()?.markChannelRead(chatId);
+    else if (source === 'telegram') await manager.getTelegram()?.markChatRead(chatId);
+    // Discord: no reliable read ACK API for selfbots; skip
+  } catch { /* best-effort platform call */ }
 
   res.json({ success: true });
 });
 
 // POST /api/unread/all/read — mark ALL chats across all services as read.
-// Persists read state in DB, broadcasts count=0, and calls platform APIs where enabled.
+// Persists read state in DB, broadcasts count=0, and mirrors to platform APIs.
 router.post('/unread/all/read', optionalAuth, async (req, res) => {
   const entries = markAllChatsRead();
 
-  // Also mark read on platforms where the permission is enabled (best-effort)
-  const db = (await import('../db/client.js')).getDb();
-  const { permissions } = await import('../db/schema.js');
-  const perms = db.select().from(permissions).all();
-  const permMap = new Map(perms.map((p) => [p.service, p]));
-
+  // Mirror read state to platforms (best-effort, non-blocking)
   const manager = getConnectionManager();
   const bySource = new Map<string, string[]>();
   for (const { source, chatId } of entries) {
@@ -200,12 +188,11 @@ router.post('/unread/all/read', optionalAuth, async (req, res) => {
   }
 
   for (const [source, chatIds] of bySource) {
-    if (!permMap.get(source)?.markReadEnabled) continue;
     for (const chatId of chatIds) {
       try {
         if (source === 'slack') await manager.getSlack()?.markChannelRead(chatId);
-        else if (source === 'discord') await manager.getDiscord()?.markChannelRead(chatId);
         else if (source === 'telegram') await manager.getTelegram()?.markChatRead(chatId);
+        // Discord: no reliable read ACK API for selfbots; skip
       } catch { /* best-effort platform call */ }
     }
   }
@@ -213,21 +200,23 @@ router.post('/unread/all/read', optionalAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-// POST /api/unread/:source/:chatId/unread — mark a chat as unread (reset read cursor).
-// Clears the chat_read_state row so all messages count as unread again.
-router.post('/unread/:source/:chatId/unread', optionalAuth, (req, res) => {
+// POST /api/unread/:source/:chatId/unread — mark a chat as unread.
+// Resets the read cursor locally and mirrors the unread state to the platform.
+router.post('/unread/:source/:chatId/unread', optionalAuth, async (req, res) => {
   const source = req.params['source'] as string;
   const chatId = req.params['chatId'] as string;
-  (async () => {
-    const { getDb } = await import('../db/client.js');
-    const { chatReadState } = await import('../db/schema.js');
-    const { and: andFn, eq: eqFn } = await import('drizzle-orm');
-    getDb().delete(chatReadState)
-      .where(andFn(eqFn(chatReadState.source, source), eqFn(chatReadState.chatId, chatId)))
-      .run();
-    const { broadcastUnreadForChat } = await import('../sync/unread.js');
-    broadcastUnreadForChat(source, chatId);
-  })().catch(() => {});
+
+  // Reset local read cursor and broadcast new count (no-op for discord)
+  markChatUnread(source, chatId);
+
+  // Mirror unread state to platform (best-effort, non-blocking)
+  const manager = getConnectionManager();
+  try {
+    if (source === 'slack') await manager.getSlack()?.markChannelUnread(chatId);
+    else if (source === 'telegram') await manager.getTelegram()?.markChatUnread(chatId);
+    // Discord: no reliable unread API for selfbots; skip
+  } catch { /* best-effort platform call */ }
+
   res.json({ success: true });
 });
 

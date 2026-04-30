@@ -29,7 +29,8 @@ import {
   type ObsidianVaultConfigRow, type PasskeyCredential, type ConnectionStatus,
   type ServiceFineGrained, type SlackFineGrained, type DiscordFineGrained, type TelegramFineGrained,
   type GmailFineGrained, type CalendarFineGrained, type TwitterFineGrained, type NotionFineGrained,
-  type ObsidianFineGrained, type SlackChannel, type TelegramChat, type GmailLabel,
+  type ObsidianFineGrained, type SmbFineGrained, type SmbShareRow,
+  type SlackChannel, type TelegramChat, type GmailLabel,
   type GoogleCalendarInfo, type VaultFileEntry,
 } from '@/lib/api';
 import { startRegistration } from '@simplewebauthn/browser';
@@ -1604,7 +1605,7 @@ function ApiKeysPanel() {
 // Permissions tab + Install tab + Security tab
 // ─────────────────────────────────────────────────────────────────────────────
 
-const ALL_SERVICES = ['slack', 'discord', 'telegram', 'gmail', 'calendar', 'twitter', 'notion', 'obsidian'] as const;
+const ALL_SERVICES = ['slack', 'discord', 'telegram', 'gmail', 'calendar', 'twitter', 'notion', 'obsidian', 'smb'] as const;
 
 const PERM_COLS: Array<{ key: 'readEnabled' | 'sendEnabled' | 'requireApproval'; label: string; description: string }> = [
   { key: 'readEnabled',     label: 'Read',     description: 'Can read messages and data' },
@@ -1653,13 +1654,13 @@ function MiniToggle({ checked, onChange, disabled }: { checked: boolean; onChang
 const SVC_LABEL: Record<string, string> = {
   slack: 'Slack', discord: 'Discord', telegram: 'Telegram',
   gmail: 'Gmail', calendar: 'Calendar', twitter: 'Twitter', notion: 'Notion',
-  obsidian: 'Obsidian',
+  obsidian: 'Obsidian', smb: 'SMB Share',
 };
 
 const SVC_COLOR: Record<string, string> = {
   slack: 'text-violet-400', discord: 'text-indigo-400', telegram: 'text-sky-400',
   gmail: 'text-red-400', calendar: 'text-primary', twitter: 'text-sky-300', notion: 'text-zinc-300',
-  obsidian: 'text-purple-300',
+  obsidian: 'text-purple-300', smb: 'text-amber-400',
 };
 
 // ── Permissions tab ───────────────────────────────────────────────────────────
@@ -2070,6 +2071,42 @@ function FineGrainedPanel({ service, config, onChange, isConnected }: FineGraine
           onChange={(ids) => upd({ writePaths: ids.length ? ids : undefined })}
           label="Write — allowed path prefixes" emptyLabel="All paths (unrestricted)"
           placeholder="Search paths…"
+        />
+      </div>
+    );
+  }
+
+  if (service === 'smb') {
+    const fg = config as SmbFineGrained | null;
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <MiniToggle
+            checked={fg?.readEnabled ?? true}
+            onChange={(v) => upd({ readEnabled: v })}
+          />
+          <span className="text-xs text-foreground">Read access enabled</span>
+        </div>
+        <div className="flex items-center gap-3">
+          <MiniToggle
+            checked={fg?.writeEnabled ?? false}
+            onChange={(v) => upd({ writeEnabled: v })}
+          />
+          <span className="text-xs text-foreground">Write access enabled</span>
+        </div>
+        <ResourceMultiSelect
+          items={[]}
+          selected={fg?.readPaths ?? []}
+          onChange={(ids) => upd({ readPaths: ids.length ? ids : undefined })}
+          label="Read — allowed path prefixes" emptyLabel="All paths (unrestricted)"
+          placeholder="e.g. documents/reports"
+        />
+        <ResourceMultiSelect
+          items={[]}
+          selected={fg?.writePaths ?? []}
+          onChange={(ids) => upd({ writePaths: ids.length ? ids : undefined })}
+          label="Write — allowed path prefixes" emptyLabel="All paths (unrestricted)"
+          placeholder="e.g. documents/uploads"
         />
       </div>
     );
@@ -3097,6 +3134,94 @@ function SecurityTab() {
           </p>
         )}
       </div>
+
+      {/* Danger zone */}
+      <ResetAppDataSection />
+    </div>
+  );
+}
+
+function ResetAppDataSection() {
+  const qc = useQueryClient();
+  const [confirming, setConfirming] = useState(false);
+
+  const reset = useMutation({
+    mutationFn: () => api.resetAppData(),
+    onSuccess: () => {
+      toast({ title: 'App data cleared', description: 'All messages, contacts, and history have been wiped. Credentials are intact.', variant: 'success' });
+      setConfirming(false);
+      // Invalidate all data queries so the UI reflects the empty state
+      qc.invalidateQueries();
+    },
+    onError: (e: Error) => {
+      toast({ title: 'Reset failed', description: e.message, variant: 'destructive' });
+      setConfirming(false);
+    },
+  });
+
+  return (
+    <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <Trash2 className="w-4 h-4 text-red-400" />
+        <h4 className="text-sm font-semibold text-red-400">Danger Zone</h4>
+      </div>
+
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <p className="text-xs font-medium text-foreground">Reset all app data</p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">
+            Wipes all synced messages, contacts, AI sessions, audit log, and outbox.
+            Connection credentials and configuration are preserved.
+          </p>
+        </div>
+        {!confirming && (
+          <button
+            onClick={() => setConfirming(true)}
+            className="flex-shrink-0 btn-danger text-xs"
+          >
+            Reset
+          </button>
+        )}
+      </div>
+
+      <AnimatePresence>
+        {confirming && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.15 }}
+            className="overflow-hidden"
+          >
+            <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 space-y-3">
+              <p className="text-xs text-red-300 flex items-start gap-2">
+                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                This will permanently delete all synced messages, contacts, AI chat history, the audit log, and all outbox items.
+                Your connection credentials and settings will not be affected.
+                This cannot be undone.
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setConfirming(false)}
+                  disabled={reset.isPending}
+                  className="flex-1 px-3 py-1.5 rounded-lg border border-border text-xs text-muted-foreground hover:bg-secondary/60 transition-colors disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => reset.mutate()}
+                  disabled={reset.isPending}
+                  className="flex-1 btn-danger text-xs py-1.5"
+                >
+                  {reset.isPending
+                    ? <><Loader2 className="w-3 h-3 animate-spin" /> Resetting…</>
+                    : 'Confirm reset'}
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -5821,6 +5946,388 @@ function NotificationsTab() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SMB Shares Tab — multi-share list + detail panel
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Per-share detail panel ────────────────────────────────────────────────────
+
+function SmbShareDetailPanel({ share, onDeleted }: { share: SmbShareRow; onDeleted: () => void }) {
+  const qc = useQueryClient();
+  const shareId = share.id;
+
+  const connStatus = share.connectionStatus;
+  const isConnected = connStatus?.status === 'connected';
+  const isConnecting = connStatus?.status === 'connecting';
+
+  const [name, setName] = useState(share.name);
+  const [host, setHost] = useState(share.host);
+  const [sharePath, setSharePath] = useState(share.share);
+  const [domain, setDomain] = useState(share.domain ?? '');
+  const [username, setUsername] = useState(share.username);
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const seededRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (share.id !== seededRef.current) {
+      seededRef.current = share.id;
+      setName(share.name);
+      setHost(share.host);
+      setSharePath(share.share);
+      setDomain(share.domain ?? '');
+      setUsername(share.username);
+      setPassword('');
+    }
+  }, [share]);
+
+  const hasUnsavedChanges =
+    name !== share.name ||
+    host !== share.host ||
+    sharePath !== share.share ||
+    domain !== (share.domain ?? '') ||
+    username !== share.username ||
+    password !== '';
+
+  const saveShare = useMutation({
+    mutationFn: () => api.updateSmbShare(shareId, {
+      name, host, share: sharePath,
+      domain: domain || null,
+      username,
+      ...(password ? { password } : {}),
+    }),
+    onSuccess: () => {
+      toast({ title: 'Share saved' });
+      setPassword('');
+      qc.invalidateQueries({ queryKey: ['smb-shares'] });
+    },
+    onError: (e: Error) => toast({ title: 'Save failed', description: e.message, variant: 'destructive' }),
+  });
+
+  const testShare = useMutation({
+    mutationFn: () => api.testSmbShare(shareId),
+    onSuccess: (data) => {
+      if (data.success) {
+        toast({ title: 'Connection successful', description: `Reached \\\\${share.host}\\${share.share}` });
+      } else {
+        toast({ title: 'Connection failed', description: data.error ?? 'Unknown error', variant: 'destructive' });
+      }
+    },
+    onError: (e: Error) => toast({ title: 'Test failed', description: e.message, variant: 'destructive' }),
+  });
+
+  const connectShare = useMutation({
+    mutationFn: () => api.connectSmbShare(shareId),
+    onSuccess: () => {
+      toast({ title: 'Connected' });
+      qc.invalidateQueries({ queryKey: ['smb-shares'] });
+    },
+    onError: (e: Error) => toast({ title: 'Connect failed', description: e.message, variant: 'destructive' }),
+  });
+
+  const disconnectShare = useMutation({
+    mutationFn: () => api.disconnectSmbShare(shareId),
+    onSuccess: () => {
+      toast({ title: 'Disconnected' });
+      qc.invalidateQueries({ queryKey: ['smb-shares'] });
+    },
+  });
+
+  const deleteShare = useMutation({
+    mutationFn: () => api.deleteSmbShare(shareId),
+    onSuccess: () => {
+      toast({ title: 'Share removed' });
+      qc.invalidateQueries({ queryKey: ['smb-shares'] });
+      onDeleted();
+    },
+    onError: (e: Error) => toast({ title: 'Delete failed', description: e.message, variant: 'destructive' }),
+  });
+
+  return (
+    <div className="space-y-5 p-4">
+      {/* Connection status row */}
+      <div className="flex items-center gap-3">
+        <span className={cn('w-2 h-2 rounded-full flex-shrink-0',
+          isConnected ? 'bg-emerald-500' : isConnecting ? 'bg-amber-500 animate-pulse' : connStatus?.status === 'error' ? 'bg-red-500' : 'bg-muted-foreground/30',
+        )} />
+        <span className="text-xs text-muted-foreground capitalize">
+          {connStatus?.status ?? 'disconnected'}
+          {connStatus?.error && ` — ${connStatus.error}`}
+        </span>
+        <div className="flex items-center gap-2 ml-auto">
+          <button
+            onClick={() => testShare.mutate()}
+            disabled={testShare.isPending || hasUnsavedChanges}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary text-xs font-medium text-foreground hover:bg-secondary/80 transition-colors disabled:opacity-50"
+          >
+            {testShare.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+            Test
+          </button>
+          {isConnected ? (
+            <button
+              onClick={() => disconnectShare.mutate()}
+              disabled={disconnectShare.isPending}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary text-xs font-medium text-foreground hover:bg-secondary/80 transition-colors disabled:opacity-50"
+            >
+              {disconnectShare.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Unplug className="w-3 h-3" />}
+              Disconnect
+            </button>
+          ) : (
+            <button
+              onClick={() => connectShare.mutate()}
+              disabled={connectShare.isPending || isConnecting || hasUnsavedChanges}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+            >
+              {connectShare.isPending || isConnecting ? <Loader2 className="w-3 h-3 animate-spin" /> : <PlugZap className="w-3 h-3" />}
+              Connect
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Fields */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="col-span-2 space-y-1">
+          <label className="block text-xs font-medium text-muted-foreground">Display Name</label>
+          <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="NAS Documents" className="input-warm" />
+        </div>
+        <div className="space-y-1">
+          <label className="block text-xs font-medium text-muted-foreground">Host / IP</label>
+          <input type="text" value={host} onChange={(e) => setHost(e.target.value)} placeholder="192.168.1.10" className="input-warm font-mono" />
+        </div>
+        <div className="space-y-1">
+          <label className="block text-xs font-medium text-muted-foreground">Share Name</label>
+          <input type="text" value={sharePath} onChange={(e) => setSharePath(e.target.value)} placeholder="documents" className="input-warm font-mono" />
+        </div>
+        <div className="space-y-1">
+          <label className="block text-xs font-medium text-muted-foreground">Domain <span className="text-muted-foreground/50">(optional)</span></label>
+          <input type="text" value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="WORKGROUP" className="input-warm font-mono" />
+        </div>
+        <div className="space-y-1">
+          <label className="block text-xs font-medium text-muted-foreground">Username</label>
+          <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="user" className="input-warm font-mono" />
+        </div>
+        <div className="col-span-2 space-y-1">
+          <label className="block text-xs font-medium text-muted-foreground">Password {share.hasPassword && <span className="text-muted-foreground/50">(enter to replace)</span>}</label>
+          <div className="relative">
+            <input
+              type={showPassword ? 'text' : 'password'}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder={share.hasPassword ? '••••••••••••••••' : 'password'}
+              className="input-warm pr-10 font-mono"
+            />
+            <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+              {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Actions row */}
+      <div className="flex items-center justify-between pt-1">
+        <button
+          onClick={() => deleteShare.mutate()}
+          disabled={deleteShare.isPending}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-50"
+        >
+          {deleteShare.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+          Remove
+        </button>
+        <button
+          onClick={() => saveShare.mutate()}
+          disabled={saveShare.isPending || !hasUnsavedChanges}
+          className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+        >
+          {saveShare.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+          Save
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── New share form ────────────────────────────────────────────────────────────
+
+function NewSmbShareForm({ onCreated }: { onCreated: (share: SmbShareRow) => void }) {
+  const qc = useQueryClient();
+  const [name, setName] = useState('');
+  const [host, setHost] = useState('');
+  const [sharePath, setSharePath] = useState('');
+  const [domain, setDomain] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+
+  const createShare = useMutation({
+    mutationFn: () => api.createSmbShare({ name, host, share: sharePath, domain: domain || null, username, password }),
+    onSuccess: (data) => {
+      toast({ title: `Share "${data.name}" added` });
+      qc.invalidateQueries({ queryKey: ['smb-shares'] });
+      onCreated(data);
+    },
+    onError: (e: Error) => toast({ title: 'Failed to add share', description: e.message, variant: 'destructive' }),
+  });
+
+  const canSubmit = name && host && sharePath && username && password;
+
+  return (
+    <div className="space-y-4 p-4">
+      <p className="text-xs text-muted-foreground">Configure a new SMB / Windows file share connection.</p>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="col-span-2 space-y-1">
+          <label className="block text-xs font-medium text-muted-foreground">Display Name</label>
+          <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="NAS Documents" className="input-warm" />
+        </div>
+        <div className="space-y-1">
+          <label className="block text-xs font-medium text-muted-foreground">Host / IP</label>
+          <input type="text" value={host} onChange={(e) => setHost(e.target.value)} placeholder="192.168.1.10" className="input-warm font-mono" />
+        </div>
+        <div className="space-y-1">
+          <label className="block text-xs font-medium text-muted-foreground">Share Name</label>
+          <input type="text" value={sharePath} onChange={(e) => setSharePath(e.target.value)} placeholder="documents" className="input-warm font-mono" />
+        </div>
+        <div className="space-y-1">
+          <label className="block text-xs font-medium text-muted-foreground">Domain <span className="text-muted-foreground/50">(optional)</span></label>
+          <input type="text" value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="WORKGROUP" className="input-warm font-mono" />
+        </div>
+        <div className="space-y-1">
+          <label className="block text-xs font-medium text-muted-foreground">Username</label>
+          <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="user" className="input-warm font-mono" />
+        </div>
+        <div className="col-span-2 space-y-1">
+          <label className="block text-xs font-medium text-muted-foreground">Password</label>
+          <div className="relative">
+            <input
+              type={showPassword ? 'text' : 'password'}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="password"
+              className="input-warm pr-10 font-mono"
+            />
+            <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+              {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+            </button>
+          </div>
+        </div>
+      </div>
+      <button
+        onClick={() => createShare.mutate()}
+        disabled={createShare.isPending || !canSubmit}
+        className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+      >
+        {createShare.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+        Add Share
+      </button>
+    </div>
+  );
+}
+
+// ── Main SmbSharesTab ─────────────────────────────────────────────────────────
+
+function SmbSharesTab() {
+  const { data: sharesData, isLoading } = useQuery({
+    queryKey: ['smb-shares'],
+    queryFn: () => api.listSmbShares(),
+    staleTime: 10000,
+  });
+
+  const shares = sharesData?.shares ?? [];
+  const [selectedId, setSelectedId] = useState<number | 'new' | null>(null);
+
+  useEffect(() => {
+    if (!isLoading && selectedId === null) {
+      setSelectedId(shares.length > 0 ? shares[0].id : 'new');
+    }
+  }, [isLoading, shares, selectedId]);
+
+  const selectedShare = selectedId !== null && selectedId !== 'new'
+    ? shares.find((s) => s.id === selectedId) ?? null
+    : null;
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex gap-0 min-h-[320px]">
+      {/* Left: share list */}
+      <div className="w-48 flex-shrink-0 border-r border-white/8 flex flex-col">
+        <div className="px-3 py-2 border-b border-white/8 flex items-center justify-between">
+          <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Shares</span>
+          <button
+            onClick={() => setSelectedId('new')}
+            className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+            title="Add share"
+          >
+            <Plus className="w-3.5 h-3.5" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto py-1">
+          {shares.length === 0 && (
+            <p className="px-3 py-2 text-[11px] text-muted-foreground italic">No shares yet</p>
+          )}
+          {shares.map((s) => {
+            const connSt = s.connectionStatus?.status ?? 'disconnected';
+            const isSelected = selectedId === s.id;
+            return (
+              <button
+                key={s.id}
+                onClick={() => setSelectedId(s.id)}
+                className={cn(
+                  'w-full flex items-center gap-2 px-3 py-2 text-left text-xs transition-colors',
+                  isSelected ? 'bg-primary/10 text-primary' : 'text-foreground hover:bg-white/5',
+                )}
+              >
+                <span className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0',
+                  connSt === 'connected' ? 'bg-emerald-500' : connSt === 'error' ? 'bg-red-500' : connSt === 'connecting' ? 'bg-amber-500 animate-pulse' : 'bg-muted-foreground/30',
+                )} />
+                <span className="truncate font-medium">{s.name}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="border-t border-white/8 p-2">
+          <button
+            onClick={() => setSelectedId('new')}
+            className={cn(
+              'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs transition-colors',
+              selectedId === 'new' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-white/5 hover:text-foreground',
+            )}
+          >
+            <Plus className="w-3.5 h-3.5 flex-shrink-0" />
+            Add Share
+          </button>
+        </div>
+      </div>
+
+      {/* Right: detail / new form */}
+      <div className="flex-1 min-w-0 overflow-y-auto">
+        {selectedId === 'new' && (
+          <NewSmbShareForm onCreated={(s) => setSelectedId(s.id)} />
+        )}
+        {selectedShare && (
+          <SmbShareDetailPanel
+            key={selectedShare.id}
+            share={selectedShare}
+            onDeleted={() => setSelectedId(shares.length > 1 ? shares.find((s) => s.id !== selectedShare.id)?.id ?? 'new' : 'new')}
+          />
+        )}
+        {selectedId !== 'new' && !selectedShare && shares.length === 0 && (
+          <div className="flex flex-col items-center justify-center h-full gap-3 text-center p-8">
+            <Server className="w-8 h-8 text-muted-foreground/30" />
+            <p className="text-sm text-muted-foreground">No shares configured. Click Add Share to get started.</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Obsidian Vault Tab — multi-vault list + detail panel
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -6519,14 +7026,14 @@ function ObsidianVaultTab() {
 
 // Legacy connection tab IDs that now live under the 'connections' tab — kept in
 // VALID_TABS so old /settings/<id> URLs redirect gracefully instead of 404-ing.
-type ConnectionSubTabId = 'messaging' | 'email-calendar' | 'ai' | 'vault' | 'install';
+type ConnectionSubTabId = 'messaging' | 'email-calendar' | 'ai' | 'files' | 'install';
 type TopTabId = 'connections' | 'permissions' | 'notifications' | 'security' | 'appearance';
-type TabId = TopTabId | 'settings' | ConnectionSubTabId; // 'settings' kept for backward-compat
+type TabId = TopTabId | 'settings' | ConnectionSubTabId | 'vault'; // 'settings'/'vault' kept for backward-compat
 
 const VALID_TABS = new Set<TabId>([
   'connections', 'permissions', 'notifications', 'security', 'appearance',
   // legacy / backward-compat aliases that map → 'connections'
-  'messaging', 'email-calendar', 'ai', 'vault', 'install', 'settings',
+  'messaging', 'email-calendar', 'ai', 'files', 'vault', 'install', 'settings',
 ]);
 
 // Sub-tabs shown inside the Connections section
@@ -6534,7 +7041,7 @@ const CONNECTION_SUB_TABS: { id: ConnectionSubTabId; label: string; icon: React.
   { id: 'messaging',      label: 'Messaging', icon: MessageSquareIcon },
   { id: 'email-calendar', label: 'Google',    icon: MailIcon },
   { id: 'ai',             label: 'AI',        icon: Bot },
-  { id: 'vault',          label: 'Vault',     icon: FileText },
+  { id: 'files',          label: 'Files',     icon: FileText },
   { id: 'install',        label: 'Install',   icon: Zap },
 ];
 
@@ -6544,7 +7051,8 @@ const LEGACY_TO_TOP: Partial<Record<TabId, TopTabId>> = {
   messaging: 'connections',
   'email-calendar': 'connections',
   ai: 'connections',
-  vault: 'connections',
+  files: 'connections',
+  vault: 'connections',  // backward-compat alias
   install: 'connections',
   settings: 'permissions',
 };
@@ -6554,7 +7062,8 @@ const LEGACY_TO_SUB: Partial<Record<TabId, ConnectionSubTabId>> = {
   messaging: 'messaging',
   'email-calendar': 'email-calendar',
   ai: 'ai',
-  vault: 'vault',
+  files: 'files',
+  vault: 'files',  // backward-compat alias
   install: 'install',
 };
 
@@ -6584,6 +7093,10 @@ export default function Connections() {
   // Connection sub-tab state — initialise from legacy URL param if present.
   const initialSubTab: ConnectionSubTabId = LEGACY_TO_SUB[tab as TabId] ?? 'messaging';
   const [activeConnTab, setActiveConnTab] = React.useState<ConnectionSubTabId>(initialSubTab);
+
+  // Collapsible state for multi-section tabs
+  const [smbOpen, setSmbOpen] = React.useState(true);
+  const [obsidianOpen, setObsidianOpen] = React.useState(true);
 
   const anyRunning = Object.values(syncProgress).some((p) => p?.status === 'running');
 
@@ -6680,7 +7193,6 @@ export default function Connections() {
                         <ServiceAccordion key={svc} service={svc} />
                       ))}
                       <TwitterAccordion />
-                      <NotionAccordion />
                     </>
                   )}
                   {activeConnTab === 'email-calendar' && (
@@ -6695,13 +7207,63 @@ export default function Connections() {
                       <div className="p-4"><AiConnectionTab /></div>
                     </div>
                   )}
-                  {activeConnTab === 'vault' && (
-                    <div className="card-warm overflow-hidden">
-                      <div className="px-4 py-3 border-b border-border bg-secondary/20">
-                        <h2 className="text-sm font-semibold">Obsidian Vault</h2>
-                        <p className="text-xs text-muted-foreground mt-0.5">Connect a git-synced Obsidian vault for AI-assisted note reading and editing</p>
+                  {activeConnTab === 'files' && (
+                    <div className="space-y-3">
+                      <div className="card-warm overflow-hidden">
+                        <button
+                          onClick={() => setSmbOpen(!smbOpen)}
+                          className={cn('w-full flex items-center gap-3 px-4 py-3 text-left transition-colors', smbOpen ? 'bg-card' : 'bg-card/50 hover:bg-card/80')}
+                        >
+                          <div className="flex-1 min-w-0">
+                            <h2 className="text-sm font-semibold">SMB / Network Shares</h2>
+                            <p className="text-xs text-muted-foreground mt-0.5">Connect Windows/Samba file shares for AI-assisted file reading and writing</p>
+                          </div>
+                          <ChevronDown className={cn('w-4 h-4 text-muted-foreground transition-transform duration-200', smbOpen && 'rotate-180')} />
+                        </button>
+                        <AnimatePresence initial={false}>
+                          {smbOpen && (
+                            <motion.div
+                              initial={{ height: 0, opacity: 0 }}
+                              animate={{ height: 'auto', opacity: 1 }}
+                              exit={{ height: 0, opacity: 0 }}
+                              transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+                              className="overflow-hidden"
+                            >
+                              <div className="border-t border-border">
+                                <div className="p-4"><SmbSharesTab /></div>
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
                       </div>
-                      <div className="p-4"><ObsidianVaultTab /></div>
+                      <div className="card-warm overflow-hidden">
+                        <button
+                          onClick={() => setObsidianOpen(!obsidianOpen)}
+                          className={cn('w-full flex items-center gap-3 px-4 py-3 text-left transition-colors', obsidianOpen ? 'bg-card' : 'bg-card/50 hover:bg-card/80')}
+                        >
+                          <div className="flex-1 min-w-0">
+                            <h2 className="text-sm font-semibold">Obsidian Vault</h2>
+                            <p className="text-xs text-muted-foreground mt-0.5">Connect a git-synced Obsidian vault for AI-assisted note reading and editing</p>
+                          </div>
+                          <ChevronDown className={cn('w-4 h-4 text-muted-foreground transition-transform duration-200', obsidianOpen && 'rotate-180')} />
+                        </button>
+                        <AnimatePresence initial={false}>
+                          {obsidianOpen && (
+                            <motion.div
+                              initial={{ height: 0, opacity: 0 }}
+                              animate={{ height: 'auto', opacity: 1 }}
+                              exit={{ height: 0, opacity: 0 }}
+                              transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+                              className="overflow-hidden"
+                            >
+                              <div className="border-t border-border">
+                                <div className="p-4"><ObsidianVaultTab /></div>
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
+                      <NotionAccordion />
                     </div>
                   )}
                   {activeConnTab === 'install' && (

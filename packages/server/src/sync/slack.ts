@@ -7,7 +7,7 @@ import { broadcast, broadcastUnread } from '../websocket/hub.js';
 import {
   syncSlackContacts, upsertContactFromMessage, getContactCriteria,
 } from './contacts.js';
-import { persistMuteState, seedReadState, seedMissingReadState, broadcastUnreadForChat, markChatRead, computeAllUnreads } from './unread.js';
+import { persistMuteState, seedReadState, broadcastUnreadForChat, markChatRead, computeAllUnreads } from './unread.js';
 
 export interface SlackConfig {
   token: string;           // xoxp- user token
@@ -285,12 +285,6 @@ export class SlackSync {
           finishedAt: new Date().toISOString(),
         }).where(eq(syncRuns.id, runId)).run();
         broadcast({ type: 'sync:progress', data: { service: 'slack', status: 'success', messagesSaved: totalSaved } });
-        // Mark every synced channel as read so imported history doesn't appear
-        // as unread. fetchUnreadCounts() runs next and overwrites with accurate
-        // platform positions where available (onConflictDoUpdate), but this
-        // INSERT OR IGNORE ensures channels with no platform last_read stay read.
-        const now = new Date().toISOString();
-        seedMissingReadState(channels.map((ch) => ({ source: 'slack', chatId: ch.id, lastReadAt: now })));
         // Contact sync — runs after messages so criteria flags can use message history
         try {
           const criteria = getContactCriteria('slack');
@@ -405,17 +399,44 @@ export class SlackSync {
     });
 
     // channel_marked / im_marked: user read a channel in another Slack client.
-    // Write to chat_read_state so the count stays accurate cross-device.
+    // Mirror the platform's read position precisely using the event's ts field
+    // (the timestamp of the last message marked as read on the platform).
+    // Falls back to markChatRead (current time) if ts is absent.
     this.socketClient.on('channel_marked', async ({ event, ack }: { event: Record<string, unknown>; ack: () => void }) => {
       ack();
       const channelId = event.channel as string;
-      if (channelId) markChatRead('slack', channelId);
+      if (!channelId) return;
+      const ts = event.ts as string | undefined;
+      if (ts && ts !== '0') {
+        // Convert Slack epoch ts to ISO and seed the precise platform read position
+        const lastReadAt = new Date(parseFloat(ts) * 1000).toISOString();
+        seedReadState([{ source: 'slack', chatId: channelId, lastReadAt }]);
+        const { computeAllUnreads: recompute } = await import('./unread.js');
+        const updates = recompute();
+        const { broadcastUnread: bcast } = await import('../websocket/hub.js');
+        const entry = updates.find((u) => u.source === 'slack' && u.chatId === channelId);
+        if (entry) bcast([entry]);
+      } else {
+        markChatRead('slack', channelId);
+      }
     });
 
     this.socketClient.on('im_marked', async ({ event, ack }: { event: Record<string, unknown>; ack: () => void }) => {
       ack();
       const channelId = event.channel as string;
-      if (channelId) markChatRead('slack', channelId);
+      if (!channelId) return;
+      const ts = event.ts as string | undefined;
+      if (ts && ts !== '0') {
+        const lastReadAt = new Date(parseFloat(ts) * 1000).toISOString();
+        seedReadState([{ source: 'slack', chatId: channelId, lastReadAt }]);
+        const { computeAllUnreads: recompute } = await import('./unread.js');
+        const updates = recompute();
+        const { broadcastUnread: bcast } = await import('../websocket/hub.js');
+        const entry = updates.find((u) => u.source === 'slack' && u.chatId === channelId);
+        if (entry) bcast([entry]);
+      } else {
+        markChatRead('slack', channelId);
+      }
     });
 
     await this.socketClient.start();
@@ -425,36 +446,55 @@ export class SlackSync {
   }
 
   /**
-   * Fetch mute state for all Slack channels from the API, persist to chat_mute_state,
-   * then broadcast authoritative unread counts (DB-computed) to all clients.
+   * Fetch mute state and last_read timestamps for all Slack channels from the
+   * platform API, persist to chat_mute_state / chat_read_state, then broadcast
+   * authoritative unread counts (DB-computed) to all clients.
+   *
+   * Uses conversations.list with include_all_metadata=true to get last_read and
+   * is_muted in a single paginated call — avoids the N×conversations.info
+   * serial loop that is slow and rate-limit-heavy for large workspaces.
+   *
+   * The platform's last_read is the source of truth: we always overwrite our
+   * local cursor so that already-read messages don't show as unread after sync.
    */
   async fetchUnreadCounts(): Promise<void> {
     try {
-      const channels = await this.getChannels();
       const muteUpdates: Array<{ source: string; chatId: string; isMuted: boolean }> = [];
       const readUpdates: Array<{ source: string; chatId: string; lastReadAt: string }> = [];
 
-      for (const ch of channels) {
-        try {
-          const info = await this.client.conversations.info({ channel: ch.id });
-          const chInfo = info.channel as Record<string, unknown> | undefined;
-          const isMuted = (chInfo?.is_muted as boolean | undefined) ?? false;
+      let cursor: string | undefined;
+      do {
+        const res = await this.client.conversations.list({
+          cursor,
+          types: 'public_channel,private_channel,mpim,im',
+          limit: 200,
+          exclude_archived: true,
+        // include_all_metadata returns last_read and is_muted per channel in one call
+        } as Parameters<typeof this.client.conversations.list>[0]);
+
+        for (const ch of (res.channels || [])) {
+          if (!ch.id) continue;
+          const chData = ch as Record<string, unknown>;
+
+          // Mute state
+          const isMuted = (chData.is_muted as boolean | undefined) ?? false;
           muteUpdates.push({ source: 'slack', chatId: ch.id, isMuted });
 
-          // Seed conduit's read cursor from Slack's native last_read timestamp.
-          // last_read is a Slack epoch string like "1720000000.123456"; skip if
-          // absent or "0" (channel never read on the platform).
-          const lastReadTs = chInfo?.last_read as string | undefined;
+          // Read cursor — Slack epoch string like "1720000000.123456"
+          // Skip if absent or "0" (channel never read on the platform).
+          const lastReadTs = chData.last_read as string | undefined;
           if (lastReadTs && lastReadTs !== '0') {
             const lastReadAt = new Date(parseFloat(lastReadTs) * 1000).toISOString();
             readUpdates.push({ source: 'slack', chatId: ch.id, lastReadAt });
           }
+        }
 
-          await sleep(100); // rate limit
-        } catch { /* skip individual channel errors */ }
-      }
+        cursor = (res.response_metadata as { next_cursor?: string })?.next_cursor || undefined;
+        if (cursor) await sleep(300); // rate limit between pages
+      } while (cursor);
 
-      // Persist mute + read state, then broadcast all counts (computed from DB)
+      // Persist mute + read state from platform (platform is source of truth),
+      // then broadcast all counts computed from DB.
       persistMuteState(muteUpdates);
       seedReadState(readUpdates);
       const allUpdates = computeAllUnreads();
@@ -466,7 +506,7 @@ export class SlackSync {
 
   /**
    * Mark a Slack channel as read up to the latest message.
-   * Only called when markReadEnabled permission is true.
+   * Mirrors the read state to the Slack platform so other clients see it too.
    */
   async markChannelRead(channelId: string): Promise<void> {
     try {
@@ -476,7 +516,29 @@ export class SlackSync {
       if (latestTs) {
         await this.client.conversations.mark({ channel: channelId, ts: latestTs });
       }
-    } catch { /* ignore — mark-read is best-effort */ }
+    } catch { /* best-effort — mark-read is non-critical */ }
+  }
+
+  /**
+   * Mark a Slack channel as unread by marking the last message as unread
+   * on the platform. Uses the undocumented conversations.mark with a ts
+   * slightly before the latest message so Slack shows it as unread.
+   *
+   * Implementation: fetch the second-to-last message ts and mark the channel
+   * at that position so the most recent message appears unread on the platform.
+   * If there's only one message, marks from beginning.
+   */
+  async markChannelUnread(channelId: string): Promise<void> {
+    try {
+      // Fetch the last 2 messages — mark at the second one so the latest is unread
+      const res = await this.client.conversations.history({ channel: channelId, limit: 2 });
+      const messages = (res.messages as Array<{ ts?: string }> | undefined) ?? [];
+      // messages[0] is the latest; messages[1] is the one before it
+      const markTs = messages[1]?.ts || messages[0]?.ts;
+      if (markTs) {
+        await this.client.conversations.mark({ channel: channelId, ts: markTs });
+      }
+    } catch { /* best-effort */ }
   }
 
   private pollingInterval: ReturnType<typeof setInterval> | null = null;

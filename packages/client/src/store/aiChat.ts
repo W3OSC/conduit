@@ -1,13 +1,12 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
-import type { AiSession, AiMessage } from '../lib/api';
+import type { AiSession, AiMessage, AiToolCall } from '../lib/api';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface StreamingMessage {
   messageId: string;
   content: string;
-  toolCalls?: Array<{ name: string; input: unknown; output?: unknown }>;
 }
 
 // ── Store ─────────────────────────────────────────────────────────────────────
@@ -50,10 +49,16 @@ interface AiChatStore {
    */
   reconcileFromDb: (sessionId: string, dbMessages: AiMessage[]) => void;
 
+  // Tool calls per session — server-detected AI API accesses (keyed by sessionId).
+  // Not persisted; re-fetched on page load.
+  toolCalls: Record<string, AiToolCall[]>;
+  setToolCalls: (sessionId: string, toolCalls: AiToolCall[]) => void;
+  addToolCall: (sessionId: string, toolCall: AiToolCall) => void;
+
   // Active streaming state per session (transient — not persisted)
   streaming: Record<string, StreamingMessage | null>;
   startStream: (sessionId: string, messageId: string) => void;
-  appendToken: (sessionId: string, messageId: string, delta: string, toolCalls?: StreamingMessage['toolCalls']) => void;
+  appendToken: (sessionId: string, messageId: string, delta: string) => void;
   finalizeStream: (sessionId: string, messageId: string) => void;
 
   // Error state per session (transient — not persisted)
@@ -82,6 +87,7 @@ export const useAiChatStore = create<AiChatStore>()(
       removeSession: (id) =>
         set((s) => {
           const { [id]: _msgs, ...restMessages } = s.messages;
+          const { [id]: _tcs, ...restToolCalls } = s.toolCalls;
           const { [id]: _stream, ...restStreaming } = s.streaming;
           const { [id]: _err, ...restErrors } = s.errors;
           const { [id]: _wait, ...restWaiting } = s.waiting;
@@ -89,6 +95,7 @@ export const useAiChatStore = create<AiChatStore>()(
             activeId: s.activeId === id ? (s.sessions.find((sess) => sess.id !== id)?.id ?? null) : s.activeId,
             sessions: s.sessions.filter((sess) => sess.id !== id),
             messages: restMessages,
+            toolCalls: restToolCalls,
             streaming: restStreaming,
             errors: restErrors,
             waiting: restWaiting,
@@ -184,7 +191,7 @@ export const useAiChatStore = create<AiChatStore>()(
               const updatedMessages = alreadyExists
                 ? existingMessages.map((m) =>
                     m.id === dbMsg.id
-                      ? { ...m, content: dbMsg.content, toolCalls: dbMsg.toolCalls, streaming: false }
+                      ? { ...m, content: dbMsg.content, streaming: false }
                       : m,
                   )
                 : [...existingMessages, { ...dbMsg, streaming: false }];
@@ -214,13 +221,25 @@ export const useAiChatStore = create<AiChatStore>()(
         }
       },
 
+      // Tool calls — server-detected AI API accesses
+      toolCalls: {},
+      setToolCalls: (sessionId, toolCalls) =>
+        set((s) => ({ toolCalls: { ...s.toolCalls, [sessionId]: toolCalls } })),
+      addToolCall: (sessionId, toolCall) =>
+        set((s) => ({
+          toolCalls: {
+            ...s.toolCalls,
+            [sessionId]: [...(s.toolCalls[sessionId] || []), toolCall],
+          },
+        })),
+
       streaming: {},
       startStream: (sessionId, messageId) =>
         set((s) => ({
           streaming: { ...s.streaming, [sessionId]: { messageId, content: '' } },
           waiting: { ...s.waiting, [sessionId]: false },
         })),
-      appendToken: (sessionId, messageId, delta, toolCalls) =>
+      appendToken: (sessionId, messageId, delta) =>
         set((s) => {
           const current = s.streaming[sessionId];
           if (!current || current.messageId !== messageId) {
@@ -228,7 +247,7 @@ export const useAiChatStore = create<AiChatStore>()(
             return {
               streaming: {
                 ...s.streaming,
-                [sessionId]: { messageId, content: delta, toolCalls },
+                [sessionId]: { messageId, content: delta },
               },
               waiting: { ...s.waiting, [sessionId]: false },
             };
@@ -239,7 +258,6 @@ export const useAiChatStore = create<AiChatStore>()(
               [sessionId]: {
                 messageId,
                 content: current.content + delta,
-                toolCalls: toolCalls ?? current.toolCalls,
               },
             },
           };
@@ -251,19 +269,13 @@ export const useAiChatStore = create<AiChatStore>()(
           const stream = s.streaming[sessionId];
           // Persist the streamed content into the messages array
           const finalContent = stream?.content ?? '';
-          const finalToolCalls = stream?.toolCalls;
           const existingMessages = s.messages[sessionId] || [];
           const alreadyExists = existingMessages.some((m) => m.id === messageId);
 
           const updatedMessages = alreadyExists
             ? existingMessages.map((m) =>
                 m.id === messageId
-                  ? {
-                      ...m,
-                      content: finalContent,
-                      toolCalls: finalToolCalls ? JSON.stringify(finalToolCalls) : m.toolCalls,
-                      streaming: false,
-                    }
+                  ? { ...m, content: finalContent, streaming: false }
                   : m,
               )
             : [
@@ -273,7 +285,6 @@ export const useAiChatStore = create<AiChatStore>()(
                   sessionId,
                   role: 'assistant' as const,
                   content: finalContent,
-                  toolCalls: finalToolCalls ? JSON.stringify(finalToolCalls) : null,
                   streaming: false,
                   createdAt: new Date().toISOString(),
                 },
@@ -299,7 +310,7 @@ export const useAiChatStore = create<AiChatStore>()(
       name: 'conduit-ai-chat',
       storage: createJSONStorage(() => localStorage),
       // Only persist the data that is meaningful to restore across reloads.
-      // Transient UI state (streaming, errors, waiting) is intentionally excluded.
+      // Transient UI state (toolCalls, streaming, errors, waiting) is intentionally excluded.
       partialize: (s) => ({
         activeId: s.activeId,
         sessions: s.sessions,

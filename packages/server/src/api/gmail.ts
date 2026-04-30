@@ -8,7 +8,7 @@ import { Router } from 'express';
 import { getDb } from '../db/client.js';
 import { gmailMessages, outbox, permissions } from '../db/schema.js';
 import { desc, eq, and, like, inArray, sql } from 'drizzle-orm';
-import { optionalAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
+import { optionalAuth, writeAuditLog, trackAiCall, type AuthedRequest } from '../auth/middleware.js';
 import { getConnectionManager } from '../connections/manager.js';
 import { broadcast } from '../websocket/hub.js';
 import type { GmailAction } from '../sync/gmail.js';
@@ -33,7 +33,7 @@ router.get('/status', optionalAuth, (req, res) => {
 });
 
 // GET /api/gmail/messages
-router.get('/messages', optionalAuth, (req, res) => {
+router.get('/messages', optionalAuth, trackAiCall, (req, res) => {
   const {
     q, label, unread, starred,
     limit = '50', offset = '0', thread_id,
@@ -68,7 +68,7 @@ router.get('/messages', optionalAuth, (req, res) => {
 });
 
 // GET /api/gmail/messages/:id
-router.get('/messages/:id', optionalAuth, (req, res) => {
+router.get('/messages/:id', optionalAuth, trackAiCall, (req, res) => {
   const db = getDb();
   const msg = db.select().from(gmailMessages)
     .where(eq(gmailMessages.gmailId, req.params['id'] as string))
@@ -78,7 +78,7 @@ router.get('/messages/:id', optionalAuth, (req, res) => {
 });
 
 // GET /api/gmail/messages/:id/body — live fetch from Gmail API
-router.get('/messages/:id/body', optionalAuth, async (req, res) => {
+router.get('/messages/:id/body', optionalAuth, trackAiCall, async (req, res) => {
   const manager = getConnectionManager();
   const gmail = manager.getGmail();
   if (!gmail) return res.status(503).json({ error: 'Gmail not connected' });
@@ -92,7 +92,7 @@ router.get('/messages/:id/body', optionalAuth, async (req, res) => {
 });
 
 // GET /api/gmail/threads/:threadId
-router.get('/threads/:threadId', optionalAuth, (req, res) => {
+router.get('/threads/:threadId', optionalAuth, trackAiCall, (req, res) => {
   const db = getDb();
   const messages = db.select().from(gmailMessages)
     .where(eq(gmailMessages.threadId, req.params['threadId'] as string))
@@ -102,7 +102,7 @@ router.get('/threads/:threadId', optionalAuth, (req, res) => {
 });
 
 // GET /api/gmail/labels — live from Gmail API
-router.get('/labels', optionalAuth, async (req, res) => {
+router.get('/labels', optionalAuth, trackAiCall, async (req, res) => {
   const manager = getConnectionManager();
   const gmail = manager.getGmail();
   if (!gmail) return res.status(503).json({ error: 'Gmail not connected' });

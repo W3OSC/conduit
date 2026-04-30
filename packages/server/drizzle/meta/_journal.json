@@ -141,6 +141,13 @@
       "when": 1777575063366,
       "tag": "0019_smb_share_config",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1777661463366,
+      "tag": "0020_ai_tool_calls",
+      "breakpoints": true
     }
   ]
 }

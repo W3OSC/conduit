@@ -270,6 +270,10 @@ export const api = {
   resetService: (service: string) =>
     request<{ success: boolean; message: string }>(`/service/${service}/reset`, { method: 'POST' }),
 
+  // Wipe all app data while preserving credentials and configuration
+  resetAppData: () =>
+    request<{ success: boolean; message: string }>('/reset-app-data', { method: 'POST' }),
+
   // Discord guild management
   discordGuilds: () =>
     request<DiscordGuildInfo[]>('/discord/guilds'),
@@ -481,6 +485,8 @@ export const api = {
     if (limit) q.set('limit', String(limit));
     return request<{ session: AiSession; messages: AiMessage[] }>(`/ai/sessions/${sessionId}/messages?${q}`);
   },
+  aiToolCalls: (sessionId: string) =>
+    request<{ toolCalls: AiToolCall[] }>(`/ai/sessions/${sessionId}/tool-calls`),
   sendAiMessage: (sessionId: string, content: string) =>
     request<AiMessage>(`/ai/sessions/${sessionId}/messages`, { method: 'POST', body: JSON.stringify({ content }) }),
 
@@ -513,6 +519,24 @@ export const api = {
     request<{ files: VaultFileEntry[] }>(`/obsidian/vaults/${id}/files`),
   obsidianReadFile: (id: number, filePath: string) =>
     request<{ path: string; content: string }>(`/obsidian/vaults/${id}/files/${encodeURIComponent(filePath)}`),
+
+  // ── SMB File Shares ──────────────────────────────────────────────────────────
+  listSmbShares: () =>
+    request<{ shares: SmbShareRow[] }>('/smb/shares'),
+  createSmbShare: (body: SmbShareInput) =>
+    request<SmbShareRow>('/smb/shares', { method: 'POST', body: JSON.stringify(body) }),
+  getSmbShare: (id: number) =>
+    request<SmbShareRow>(`/smb/shares/${id}`),
+  updateSmbShare: (id: number, body: Partial<SmbShareInput>) =>
+    request<SmbShareRow>(`/smb/shares/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteSmbShare: (id: number) =>
+    request<{ success: boolean }>(`/smb/shares/${id}`, { method: 'DELETE' }),
+  testSmbShare: (id: number) =>
+    request<{ success: boolean; entries?: unknown[]; error?: string }>(`/smb/shares/${id}/test`, { method: 'POST' }),
+  connectSmbShare: (id: number) =>
+    request<{ success: boolean; status: unknown }>(`/smb/shares/${id}/connect`, { method: 'POST' }),
+  disconnectSmbShare: (id: number) =>
+    request<{ success: boolean }>(`/smb/shares/${id}/disconnect`, { method: 'POST' }),
 
   // ── Notion ───────────────────────────────────────────────────────────────────
   /** Search the Notion workspace. Pass no query to get top-level pages. */
@@ -801,6 +825,13 @@ export interface ObsidianFineGrained {
   writePaths?: string[];
 }
 
+export interface SmbFineGrained {
+  readEnabled?: boolean;
+  writeEnabled?: boolean;
+  readPaths?: string[];
+  writePaths?: string[];
+}
+
 export type ServiceFineGrained =
   | SlackFineGrained
   | DiscordFineGrained
@@ -809,7 +840,8 @@ export type ServiceFineGrained =
   | CalendarFineGrained
   | TwitterFineGrained
   | NotionFineGrained
-  | ObsidianFineGrained;
+  | ObsidianFineGrained
+  | SmbFineGrained;
 
 // ─── Resource listing types (for fine-grained permissions UI) ─────────────────
 
@@ -1301,15 +1333,18 @@ export interface AiMessage {
   sessionId: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
-  toolCalls: string | null; // JSON string of ToolCall[]
   streaming: boolean;
   createdAt: string | null;
 }
 
+// A single API call made by the AI agent, detected server-side via X-Session-Id header.
 export interface AiToolCall {
-  name: string;
-  input: unknown;
-  output?: unknown;
+  id: string;
+  sessionId: string;
+  name: string;           // e.g. 'getMessages', 'getChats'
+  input: unknown;         // { method, path, params }
+  output: string | null;  // compact human-readable summary
+  createdAt: string;
 }
 
 // ─── Obsidian Vault types ─────────────────────────────────────────────────────
@@ -1377,6 +1412,33 @@ export interface UpdateStatus {
   commitsBehind: number;
   latestCommitSha: string;
   isDocker: boolean;
+}
+
+// ─── SMB types ────────────────────────────────────────────────────────────────
+
+export interface SmbShareRow {
+  id: number;
+  name: string;
+  host: string;
+  share: string;
+  domain: string | null;
+  username: string;
+  hasPassword: boolean;
+  createdAt: string | null;
+  updatedAt: string | null;
+  connectionStatus?: {
+    status: 'connected' | 'disconnected' | 'connecting' | 'error';
+    error?: string;
+  };
+}
+
+export interface SmbShareInput {
+  name: string;
+  host: string;
+  share: string;
+  domain?: string | null;
+  username: string;
+  password: string;
 }
 
 // ─── Notion types ─────────────────────────────────────────────────────────────

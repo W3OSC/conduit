@@ -406,8 +406,18 @@ export const aiMessages = sqliteTable('ai_messages', {
   sessionId: text('session_id').notNull(),                        // FK → ai_sessions
   role:      text('role').notNull(),                              // 'user' | 'assistant' | 'system' | 'tool'
   content:   text('content').notNull().default(''),
-  toolCalls: text('tool_calls'),                                  // JSON array of { name, input, output }
   streaming: integer('streaming', { mode: 'boolean' }).notNull().default(false),
+  createdAt: text('created_at').default(sql`(datetime('now'))`),
+});
+
+// AI API access events — one row per Conduit API call made by the AI agent.
+// Populated server-side when the AI passes X-Session-Id on its requests.
+export const aiToolCalls = sqliteTable('ai_tool_calls', {
+  id:        text('id').primaryKey(),           // nanoid
+  sessionId: text('session_id').notNull(),      // FK → ai_sessions.id
+  name:      text('name').notNull(),            // e.g. 'getMessages', 'getChats'
+  input:     text('input').notNull(),           // JSON: { method, path, params }
+  output:    text('output'),                    // compact human-readable summary
   createdAt: text('created_at').default(sql`(datetime('now'))`),
 });
 

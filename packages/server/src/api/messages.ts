@@ -5,7 +5,7 @@ import {
   syncState, syncRuns, errorLog, contacts, accounts, settings,
 } from '../db/schema.js';
 import { eq, and, desc, like, gte, lte, sql, isNull, inArray } from 'drizzle-orm';
-import { optionalAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
+import { optionalAuth, writeAuditLog, trackAiCall, type AuthedRequest } from '../auth/middleware.js';
 import {
   filterReadIds, filterGmailByLabels, resolveTwitterReadPerms, resolveEffectiveFineGrained,
   isReadPermitted,
@@ -197,7 +197,7 @@ router.get('/status', optionalAuth, (req, res) => {
  * Twitter:  DMs section only
  * Gmail:    flat thread list
  */
-router.get('/chats', optionalAuth, async (req, res) => {
+router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
   const apiKeyId = authedReq.apiKey?.id ?? null;
@@ -653,10 +653,18 @@ router.get('/chats', optionalAuth, async (req, res) => {
     }
   }
 
+  // Audit log for non-AI API key calls (AI calls are tracked via trackAiCall middleware)
+  if (authedReq.actor === 'api' && !authedReq.aiSessionId) {
+    writeAuditLog('read', 'api', {
+      apiKeyId: authedReq.apiKey?.id,
+      detail: { endpoint: 'chats' },
+    });
+  }
+
   res.json(result);
 });
 
-router.get('/messages', optionalAuth, (req, res) => {
+router.get('/messages', optionalAuth, trackAiCall, (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
   const { source, chat_id, limit = '50', before, after, around, include_meta } = req.query as Record<string, string>;
@@ -818,7 +826,7 @@ router.get('/messages', optionalAuth, (req, res) => {
   res.json({ messages: page, total: results.length, ...(conversationMeta ? { conversationMeta } : {}) });
 });
 
-router.get('/search', optionalAuth, (req, res) => {
+router.get('/search', optionalAuth, trackAiCall, (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
   const { q, source, limit = '50' } = req.query as Record<string, string>;
@@ -883,7 +891,7 @@ router.get('/search', optionalAuth, (req, res) => {
 //   sources — comma-separated filter, e.g. "slack,discord,gmail"
 //             (default: all; gmail produces 'email' type items)
 
-router.get('/activity', optionalAuth, (req, res) => {
+router.get('/activity', optionalAuth, trackAiCall, (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
   const now = new Date();

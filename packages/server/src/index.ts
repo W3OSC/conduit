@@ -118,6 +118,31 @@ async function main() {
   // Start the background update poller (checks for new commits every hour)
   startUpdatePoller();
 
+  // Periodic unread re-sync — every 5 minutes, re-fetch unread counts from all
+  // connected platforms so that cross-device reads (on phone/desktop apps) are
+  // reflected in conduit even if a real-time event was missed.
+  const UNREAD_RESYNC_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+  setInterval(async () => {
+    try {
+      const slack = manager.getSlack();
+      if (slack?.connected) slack.fetchUnreadCounts().catch((e) => console.error('[unread] Slack resync error:', e));
+
+      const telegram = manager.getTelegram();
+      if (telegram?.connected) telegram.fetchUnreadCounts().catch((e) => console.error('[unread] Telegram resync error:', e));
+
+      // Discord: only mute state needs re-syncing (no unread counts)
+      const discord = manager.getDiscord();
+      if (discord?.connected) discord.fetchUnreadCounts().catch((e) => console.error('[unread] Discord resync error:', e));
+
+      // Gmail: recompute per-thread counts from local DB (no API call needed)
+      for (const gmail of manager.getAllGmailInstances()) {
+        if (gmail.connected) gmail.fetchUnreadCounts();
+      }
+    } catch (e) {
+      console.error('[unread] Periodic resync error:', e);
+    }
+  }, UNREAD_RESYNC_INTERVAL_MS);
+
   // Graceful shutdown
   const shutdown = async (signal: string) => {
     console.log(`\n[conduit] Received ${signal}, shutting down...`);

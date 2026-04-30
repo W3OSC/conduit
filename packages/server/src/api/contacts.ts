@@ -23,7 +23,7 @@ import {
 } from '../db/schema.js';
 
 import { eq, and, or, like, desc, lt, gte, sql, isNull } from 'drizzle-orm';
-import { optionalAuth, writeAuditLog } from '../auth/middleware.js';
+import { optionalAuth, writeAuditLog, trackAiCall } from '../auth/middleware.js';
 import { getContactCriteria, setContactCriteria, syncGmailContactsFromDb, syncCalendarContactsFromDb, rebuildContactsFromMessages, type ContactCriteria } from '../sync/contacts.js';
 import { getConnectionManager } from '../connections/manager.js';
 
@@ -285,7 +285,7 @@ function computeActivityScores(db: ReturnType<typeof getDb>): Map<string, Activi
 
 // ─── GET /api/contacts ────────────────────────────────────────────────────────
 
-router.get('/', optionalAuth, (req, res) => {
+router.get('/', optionalAuth, trackAiCall, (req, res) => {
   const {
     source, q, criteria: criteriaFilter,
     limit = '50', offset = '0',
@@ -537,7 +537,7 @@ router.post('/rebuild', optionalAuth, async (req, res) => {
   res.json({ success: true, upserted: total, sources });
 });
 
-router.get('/:source/:platformId', optionalAuth, (req, res) => {
+router.get('/:source/:platformId', optionalAuth, trackAiCall, (req, res) => {
   const { source, platformId } = req.params as { source: string; platformId: string };
   const db = getDb();
   const contact = db.select().from(contacts)
@@ -549,7 +549,7 @@ router.get('/:source/:platformId', optionalAuth, (req, res) => {
 
 // ─── GET /api/contacts/:source/:platformId/history ────────────────────────────
 
-router.get('/:source/:platformId/history', optionalAuth, (req, res) => {
+router.get('/:source/:platformId/history', optionalAuth, trackAiCall, (req, res) => {
   const { source, platformId } = req.params as { source: string; platformId: string };
   const { limit = '100', before, after } = req.query as Record<string, string>;
   const lim = Math.min(parseInt(limit) || 100, 500);

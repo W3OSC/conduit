@@ -29,7 +29,7 @@ import { fileURLToPath } from 'url';
 import { getDb } from '../db/client.js';
 import { obsidianVaultConfig } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
-import { optionalAuth } from '../auth/middleware.js';
+import { optionalAuth, trackAiCall } from '../auth/middleware.js';
 import { getConnectionManager } from '../connections/manager.js';
 import { ObsidianVaultSync } from '../sync/obsidian.js';
 import { validateGitRemoteUrl } from '../auth/ssrf.js';
@@ -370,7 +370,7 @@ router.post('/vaults/:id/sync', optionalAuth, async (req, res) => {
 
 // ── GET /obsidian/vaults/:id/files ────────────────────────────────────────
 
-router.get('/vaults/:id/files', optionalAuth, async (req, res) => {
+router.get('/vaults/:id/files', optionalAuth, trackAiCall, async (req, res) => {
   const id = parseVaultId(req.params['id'] as string);
   if (id === null) { res.status(400).json({ error: 'Invalid vault id' }); return; }
 
@@ -392,7 +392,7 @@ router.get('/vaults/:id/files', optionalAuth, async (req, res) => {
 
 // ── GET /obsidian/vaults/:id/files/* ─────────────────────────────────────
 
-router.get('/vaults/:id/files/*path', optionalAuth, async (req, res) => {
+router.get('/vaults/:id/files/*path', optionalAuth, trackAiCall, async (req, res) => {
   const id = parseVaultId(req.params['id'] as string);
   if (id === null) { res.status(400).json({ error: 'Invalid vault id' }); return; }
 
