@@ -13,13 +13,15 @@ A self-hosted personal communications hub. Aggregates Slack, Discord, Telegram, 
 | Platform | What's supported |
 |---|---|
 | **Slack** | Messages, DMs, channels, realtime via Socket Mode, unread tracking |
-| **Discord** | Messages, DMs, server channels, guild sync, unread tracking |
+| **Discord** | Messages, DMs, server channels, guild sync, mute state tracking |
 | **Telegram** | Private messages, groups, channels, MTProto realtime, folder sync |
 | **Gmail** | Full inbox, email body, actions (reply, archive, trash, etc.) |
 | **Google Calendar** | Events, RSVP, create/update/delete, Meet links |
+| **Google Meet** | AI-generated meeting notes synced from Meet and Google Drive |
 | **Twitter / X** | DMs, home feed, mentions, search, tweet analytics |
-| **Notion** | Page and database browsing, content reads |
-| **Obsidian** | Vault sync via git (SSH or HTTPS), file read/write via outbox |
+| **Notion** | Page and database browsing, content reads and writes |
+| **Obsidian** | Multi-vault sync via git (SSH or HTTPS), file read/write via outbox |
+| **SMB file shares** | Directory listing and file read/write on SMB2 network shares |
 
 ---
 
@@ -31,10 +33,11 @@ A self-hosted personal communications hub. Aggregates Slack, Discord, Telegram, 
 - **Email** — Gmail inbox with sandboxed HTML rendering and action buttons
 - **Calendar** — weekly view, event detail, RSVP
 - **AI agent API** — full REST + OpenAPI spec, designed for tool use by LLMs
+- **AI chat** — built-in chat interface with session history and tool call tracking
 - **Outbox approval** — all AI-generated actions queue for human review before sending
 - **Audit log** — complete history of all actions by actor and service
-- **Password + TOTP 2FA** — optional browser login with rate limiting and session management
-- **Multi-account Gmail** — connect multiple Google accounts simultaneously
+- **Password + TOTP 2FA + passkeys** — optional browser login with WebAuthn, rate limiting, and session management
+- **Multi-account Google** — connect multiple Google accounts simultaneously (Gmail, Calendar, Meet Notes)
 - **Self-hosted, local-first** — SQLite database, no cloud dependencies, no telemetry
 
 ---
@@ -84,7 +87,7 @@ The full OpenAPI spec is at `/api/openapi.json`. A human-readable version is in 
   <img src="docs/architecture.svg" alt="Conduit Architecture" width="100%" />
 </div>
 
-**Stack:** Node.js 20 · Express · SQLite (better-sqlite3) · Drizzle ORM · React · Vite · Tailwind CSS · TypeScript throughout.
+**Stack:** Node.js 20 · Express 5 · SQLite (better-sqlite3) · Drizzle ORM · React 19 · Vite · Tailwind CSS 4 · TypeScript 6 throughout.
 
 ---
 
@@ -100,7 +103,7 @@ Conduit is a **single point of failure** for every account you connect. The loca
 4. Set `TRUST_PROXY=true` only if running behind a reverse proxy you control
 
 **Security controls implemented:**
-- Optional password login (bcrypt, cost 12) + TOTP 2FA with rate limiting
+- Optional password login (bcrypt, cost 12) + TOTP 2FA + passkeys (WebAuthn) with rate limiting
 - API key auth (SHA-256 hashed) with per-key, per-service permission grants
 - CSRF protection (double-submit cookie) for all UI session requests
 - SSRF validation on outbound webhook and git remote URLs
@@ -155,8 +158,6 @@ Conduit has no configuration files. All credentials are entered through the web 
 
 ---
 
-## Disclaimer
+## Trust model
 
-**By installing or running Conduit, you accept full responsibility for your use of this software. The authors make no warranties and accept no liability for any consequences, including account suspension, data loss, or security incidents.**
-
-You are solely responsible for securing the host machine, restricting network access, enabling login protection, and protecting the database file.
+Conduit runs entirely on your machine. All credentials, tokens, and message data are stored in a single local SQLite database. All platform traffic is routed through the local Node.js process. There are no cloud services, no telemetry, and no data leaves your host except through the platform connections you configure.
