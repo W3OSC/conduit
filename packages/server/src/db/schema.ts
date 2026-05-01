@@ -146,6 +146,10 @@ export const permissions = sqliteTable('permissions', {
   // When true, opening a conversation marks it as read on the platform API.
   // When false (default), read state is only tracked in the client store.
   markReadEnabled: integer('mark_read_enabled', { mode: 'boolean' }).notNull().default(false),
+  // JSON blob with per-service fine-grained read/write allowlists.
+  // Shape: { readChannelIds?: string[], writeChannelIds?: string[], ... } (service-specific)
+  // NULL = unrestricted (all resources allowed).
+  fineGrainedConfig: text('fine_grained_config'),
   updatedAt: text('updated_at').default(sql`(datetime('now'))`),
 });
 
@@ -184,6 +188,9 @@ export const apiKeyPermissions = sqliteTable('api_key_permissions', {
   readEnabled:     integer('read_enabled',      { mode: 'boolean' }),  // null = inherit
   sendEnabled:     integer('send_enabled',      { mode: 'boolean' }),  // null = inherit
   requireApproval: integer('require_approval',  { mode: 'boolean' }),  // null = inherit
+  // JSON blob with per-service fine-grained read/write allowlists.
+  // NULL = inherit from global permissions table.
+  fineGrainedConfig: text('fine_grained_config'),
 }, (t) => ({
   uniq: unique().on(t.apiKeyId, t.service),
 }));
@@ -194,6 +201,20 @@ export const settings = sqliteTable('settings', {
   key: text('key').primaryKey(),
   value: text('value').notNull(),
   updatedAt: text('updated_at').default(sql`(datetime('now'))`),
+});
+
+// ─── Passkey Credentials ──────────────────────────────────────────────────────
+// One row per registered WebAuthn/passkey authenticator.
+
+export const passkeyCredentials = sqliteTable('passkey_credentials', {
+  id:           integer('id').primaryKey({ autoIncrement: true }),
+  credentialId: text('credential_id').notNull().unique(),
+  publicKey:    text('public_key').notNull(),          // base64url-encoded COSE key
+  counter:      integer('counter').notNull().default(0),
+  aaguid:       text('aaguid'),
+  name:         text('name'),                          // user-supplied nickname
+  createdAt:    text('created_at').default(sql`(datetime('now'))`),
+  lastUsedAt:   text('last_used_at'),
 });
 
 // ─── Gmail ───────────────────────────────────────────────────────────────────
@@ -385,8 +406,18 @@ export const aiMessages = sqliteTable('ai_messages', {
   sessionId: text('session_id').notNull(),                        // FK → ai_sessions
   role:      text('role').notNull(),                              // 'user' | 'assistant' | 'system' | 'tool'
   content:   text('content').notNull().default(''),
-  toolCalls: text('tool_calls'),                                  // JSON array of { name, input, output }
   streaming: integer('streaming', { mode: 'boolean' }).notNull().default(false),
+  createdAt: text('created_at').default(sql`(datetime('now'))`),
+});
+
+// AI API access events — one row per Conduit API call made by the AI agent.
+// Populated server-side when the AI passes X-Session-Id on its requests.
+export const aiToolCalls = sqliteTable('ai_tool_calls', {
+  id:        text('id').primaryKey(),           // nanoid
+  sessionId: text('session_id').notNull(),      // FK → ai_sessions.id
+  name:      text('name').notNull(),            // e.g. 'getMessages', 'getChats'
+  input:     text('input').notNull(),           // JSON: { method, path, params }
+  output:    text('output'),                    // compact human-readable summary
   createdAt: text('created_at').default(sql`(datetime('now'))`),
 });
 
@@ -409,6 +440,91 @@ export const obsidianVaultConfig = sqliteTable('obsidian_vault_config', {
   createdAt:       text('created_at').default(sql`(datetime('now'))`),
   updatedAt:       text('updated_at').default(sql`(datetime('now'))`),
 });
+
+// ─── SMB File Share ───────────────────────────────────────────────────────────
+
+export const smbShareConfig = sqliteTable('smb_share_config', {
+  id:        integer('id').primaryKey({ autoIncrement: true }),
+  name:      text('name').notNull(),                   // friendly name, e.g. "NAS Documents"
+  host:      text('host').notNull(),                   // e.g. "192.168.1.10"
+  share:     text('share').notNull(),                  // share name, e.g. "documents"
+  domain:    text('domain'),                           // optional Windows domain
+  username:  text('username').notNull(),
+  password:  text('password').notNull(),               // stored in server DB (not settings key/value)
+  createdAt: text('created_at').default(sql`(datetime('now'))`),
+  updatedAt: text('updated_at').default(sql`(datetime('now'))`),
+});
+
+// ─── Fine-grained permission config types ─────────────────────────────────────
+// Stored as JSON in `permissions.fine_grained_config` and
+// `api_key_permissions.fine_grained_config`.
+// Each service only uses the fields relevant to it.
+// An absent or null field = unrestricted (all resources allowed).
+
+export interface SlackFineGrained {
+  readChannelIds?: string[];   // DM/channel IDs the key may read from
+  writeChannelIds?: string[];  // DM/channel IDs the key may send to
+}
+
+export interface DiscordFineGrained {
+  readGuildIds?: string[];
+  readChannelIds?: string[];
+  writeGuildIds?: string[];
+  writeChannelIds?: string[];
+}
+
+export interface TelegramFineGrained {
+  readChatIds?: string[];
+  readFolderIds?: string[];
+  writeChatIds?: string[];
+}
+
+export interface GmailFineGrained {
+  readLabelIds?: string[];
+  writeLabelIds?: string[];
+}
+
+export interface CalendarFineGrained {
+  readCalendarIds?: string[];
+  writeCalendarIds?: string[];
+}
+
+export interface TwitterFineGrained {
+  readDms?: boolean;       // can read DM conversations
+  readTimeline?: boolean;  // can read home timeline / feed
+  allowTweets?: boolean;   // can post tweets
+  allowDmReplies?: boolean; // can send DM replies
+}
+
+export interface NotionFineGrained {
+  readDatabaseIds?: string[];
+  readPageIds?: string[];
+  writeDatabaseIds?: string[];
+  writePageIds?: string[];
+}
+
+export interface ObsidianFineGrained {
+  readPaths?: string[];   // path prefixes the key may read
+  writePaths?: string[];  // path prefixes the key may write to
+}
+
+export interface SmbFineGrained {
+  readEnabled?: boolean;   // global read toggle for this share
+  writeEnabled?: boolean;  // global write toggle for this share
+  readPaths?: string[];    // path prefixes the key may read (null = all paths)
+  writePaths?: string[];   // path prefixes the key may write to (null = all paths)
+}
+
+export type ServiceFineGrained =
+  | SlackFineGrained
+  | DiscordFineGrained
+  | TelegramFineGrained
+  | GmailFineGrained
+  | CalendarFineGrained
+  | TwitterFineGrained
+  | NotionFineGrained
+  | ObsidianFineGrained
+  | SmbFineGrained;
 
 // ─── Type exports ─────────────────────────────────────────────────────────────
 
@@ -445,4 +561,6 @@ export type AiMessage = typeof aiMessages.$inferSelect;
 export type InsertAiMessage = typeof aiMessages.$inferInsert;
 
 export type ObsidianVaultConfig = typeof obsidianVaultConfig.$inferSelect;
+export type SmbShareConfig = typeof smbShareConfig.$inferSelect;
+export type InsertSmbShareConfig = typeof smbShareConfig.$inferInsert;
 export type InsertObsidianVaultConfig = typeof obsidianVaultConfig.$inferInsert;

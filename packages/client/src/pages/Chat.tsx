@@ -1171,17 +1171,20 @@ export default function Chat() {
             <span className="text-xs text-muted-foreground/50 hidden sm:block flex-shrink-0">
               {selected.messageCount.toLocaleString()} messages
             </span>
-            <button
-              onClick={() => {
-                if (!selected) return;
-                markUnreadOptimistic(selected.source, selected.id);
-                api.markChatUnread(selected.source, selected.id).catch(() => {});
-              }}
-              title="Mark as unread"
-              className="p-1.5 rounded hover:bg-accent text-muted-foreground/50 hover:text-foreground transition-colors flex-shrink-0"
-            >
-              <MailOpen className="w-3.5 h-3.5" />
-            </button>
+            {/* Mark as unread — hidden for Discord (no reliable read cursor API) */}
+            {selected?.source !== 'discord' && (
+              <button
+                onClick={() => {
+                  if (!selected) return;
+                  markUnreadOptimistic(selected.source, selected.id);
+                  api.markChatUnread(selected.source, selected.id).catch(() => {});
+                }}
+                title="Mark as unread"
+                className="p-1.5 rounded hover:bg-accent text-muted-foreground/50 hover:text-foreground transition-colors flex-shrink-0"
+              >
+                <MailOpen className="w-3.5 h-3.5" />
+              </button>
+            )}
             {(() => {
               const url = getPlatformUrl(selected);
               if (!url) return null;

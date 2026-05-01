@@ -7,6 +7,7 @@ import { MeetNotesSync } from '../sync/meet-notes.js';
 import { TwitterSync, type TwitterAction, type TwitterCreds } from '../sync/twitter.js';
 import { NotionSync, type NotionWriteAction } from '../sync/notion.js';
 import { ObsidianVaultSync, type ObsidianWriteAction, type VaultConfig } from '../sync/obsidian.js';
+import { SmbSync, type SmbWriteAction, type SmbConfig } from '../sync/smb.js';
 import { syncGmailContactsFromDb, syncCalendarContactsFromDb } from '../sync/contacts.js';
 import { broadcast, onNextBroadcast } from '../websocket/hub.js';
 import { randomBytes } from 'crypto';
@@ -14,10 +15,12 @@ import { getCreds, type SlackCreds, type DiscordCreds, type TelegramCreds, type 
 import { getAllGmailCreds } from '../api/google-auth.js';
 import type { GmailCreds as GmailCredsType } from '../sync/gmail.js';
 import { getDb } from '../db/client.js';
-import { settings, obsidianVaultConfig } from '../db/schema.js';
+import { settings, obsidianVaultConfig, smbShareConfig } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 
-export type ServiceName = 'slack' | 'discord' | 'telegram' | 'gmail' | 'calendar' | 'twitter' | 'notion' | 'obsidian' | 'ai';
+export type ServiceName = 'slack' | 'discord' | 'telegram' | 'gmail' | 'calendar' | 'twitter' | 'notion' | 'obsidian' | 'smb' | 'ai';
+// Vault-specific status key format: 'obsidian:<id>'
+export type VaultStatusKey = `obsidian:${number}`;
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
 export interface ServiceStatus {
@@ -39,7 +42,13 @@ export class ConnectionManager {
   private meetNotesAccounts = new Map<string, MeetNotesSync>();
   private twitter: TwitterSync | null = null;
   private notion: NotionSync | null = null;
-  private obsidian: ObsidianVaultSync | null = null;
+  // Multi-vault: keyed by vault id
+  private obsidianVaults = new Map<number, ObsidianVaultSync>();
+  private obsidianStatuses = new Map<number, ServiceStatus>();
+
+  // Multi-share SMB: keyed by share id
+  private smbShares = new Map<number, SmbSync>();
+  private smbStatuses = new Map<number, ServiceStatus>();
 
   private statuses: Record<ServiceName, ServiceStatus> = {
     slack:    { status: 'disconnected' },
@@ -50,6 +59,7 @@ export class ConnectionManager {
     twitter:  { status: 'disconnected' },
     notion:   { status: 'disconnected' },
     obsidian: { status: 'disconnected' },
+    smb:      { status: 'disconnected' },
     ai:       { status: 'disconnected' },
   };
 
@@ -59,6 +69,16 @@ export class ConnectionManager {
 
   getStatus(service: ServiceName): ServiceStatus { return this.statuses[service]; }
   getAllStatuses(): Record<ServiceName, ServiceStatus> { return { ...this.statuses }; }
+
+  getObsidianVaultStatus(vaultId: number): ServiceStatus {
+    return this.obsidianStatuses.get(vaultId) ?? { status: 'disconnected' };
+  }
+  getAllObsidianVaultStatuses(): Map<number, ServiceStatus> { return new Map(this.obsidianStatuses); }
+
+  getSmbShareStatus(shareId: number): ServiceStatus {
+    return this.smbStatuses.get(shareId) ?? { status: 'disconnected' };
+  }
+  getAllSmbShareStatuses(): Map<number, ServiceStatus> { return new Map(this.smbStatuses); }
 
   // Return per-account statuses for the UI
   getGmailAccountStatuses(): Array<{ email: string; gmail: ServiceStatus; calendar: ServiceStatus }> {
@@ -73,6 +93,72 @@ export class ConnectionManager {
   private setStatus(service: ServiceName, status: Partial<ServiceStatus>): void {
     this.statuses[service] = { ...this.statuses[service], ...status };
     broadcast({ type: 'connection:status', data: { service, ...this.statuses[service] } });
+  }
+
+  private setVaultStatus(vaultId: number, status: Partial<ServiceStatus>): void {
+    const current = this.obsidianStatuses.get(vaultId) ?? { status: 'disconnected' as const };
+    const next = { ...current, ...status };
+    this.obsidianStatuses.set(vaultId, next);
+    broadcast({ type: 'connection:status', data: { service: `obsidian:${vaultId}`, ...next } });
+    this.updateAggregateObsidianStatus();
+  }
+
+  private setSmbShareStatus(shareId: number, status: Partial<ServiceStatus>): void {
+    const current = this.smbStatuses.get(shareId) ?? { status: 'disconnected' as const };
+    const next = { ...current, ...status };
+    this.smbStatuses.set(shareId, next);
+    broadcast({ type: 'connection:status', data: { service: `smb:${shareId}`, ...next } });
+    this.updateAggregateSmbStatus();
+  }
+
+  private updateAggregateSmbStatus(): void {
+    const statuses = [...this.smbStatuses.values()];
+    if (statuses.length === 0) {
+      this.setStatus('smb', { status: 'disconnected', displayName: undefined });
+      return;
+    }
+    const anyConnected = statuses.some((s) => s.status === 'connected');
+    const anyError = statuses.some((s) => s.status === 'error');
+    const names = [...this.smbStatuses.entries()]
+      .map(([id]) => {
+        const db = getDb();
+        const row = db.select().from(smbShareConfig).where(eq(smbShareConfig.id, id)).get();
+        return row?.name ?? `share-${id}`;
+      })
+      .join(', ');
+    if (anyConnected) {
+      this.statuses['smb'] = { status: 'connected', displayName: names, mode: 'smb2' };
+    } else if (anyError) {
+      this.statuses['smb'] = { status: 'error', error: 'One or more shares failed', displayName: names };
+    } else {
+      this.statuses['smb'] = { status: 'connecting', displayName: names };
+    }
+    broadcast({ type: 'connection:status', data: { service: 'smb', ...this.statuses['smb'] } });
+  }
+
+  private updateAggregateObsidianStatus(): void {
+    const statuses = [...this.obsidianStatuses.values()];
+    if (statuses.length === 0) {
+      this.setStatus('obsidian', { status: 'disconnected', displayName: undefined });
+      return;
+    }
+    const anyConnected = statuses.some((s) => s.status === 'connected');
+    const anyError = statuses.some((s) => s.status === 'error');
+    const names = [...this.obsidianStatuses.entries()]
+      .map(([id]) => {
+        const db = getDb();
+        const row = db.select().from(obsidianVaultConfig).where(eq(obsidianVaultConfig.id, id)).get();
+        return row?.name ?? `vault-${id}`;
+      })
+      .join(', ');
+    if (anyConnected) {
+      this.statuses['obsidian'] = { status: 'connected', displayName: names, mode: 'git' };
+    } else if (anyError) {
+      this.statuses['obsidian'] = { status: 'error', error: 'One or more vaults failed', displayName: names };
+    } else {
+      this.statuses['obsidian'] = { status: 'connecting', displayName: names };
+    }
+    broadcast({ type: 'connection:status', data: { service: 'obsidian', ...this.statuses['obsidian'] } });
   }
 
   private updateAggregateGmailStatus(): void {
@@ -95,7 +181,10 @@ export class ConnectionManager {
   getSlack(): SlackSync | null { return this.slack; }
   getDiscord(): DiscordSync | null { return this.discord; }
   getTelegram(): TelegramBridge | null { return this.telegram; }
-  getObsidian(): ObsidianVaultSync | null { return this.obsidian; }
+  getObsidian(vaultId: number): ObsidianVaultSync | null { return this.obsidianVaults.get(vaultId) ?? null; }
+  getAllObsidianVaults(): Map<number, ObsidianVaultSync> { return new Map(this.obsidianVaults); }
+  getSmbShare(shareId: number): SmbSync | null { return this.smbShares.get(shareId) ?? null; }
+  getAllSmbShares(): Map<number, SmbSync> { return new Map(this.smbShares); }
   /** Returns the first connected Gmail instance (legacy compat) */
   getGmail(): GmailSync | null {
     for (const g of this.gmailAccounts.values()) if (g.connected) return g;
@@ -165,11 +254,17 @@ export class ConnectionManager {
       tasks.push(this.connectNotion().catch((e) => console.error('[notion] Auto-connect failed:', e)));
     }
 
-    // Obsidian — connect if vault config exists and local clone is present
+    // Obsidian — connect all configured vaults
     const db = getDb();
-    const vaultRow = db.select().from(obsidianVaultConfig).get();
-    if (vaultRow) {
-      tasks.push(this.connectObsidian().catch((e) => console.error('[obsidian] Auto-connect failed:', e)));
+    const vaultRows = db.select().from(obsidianVaultConfig).all();
+    for (const vaultRow of vaultRows) {
+      tasks.push(this.connectObsidianVault(vaultRow.id).catch((e) => console.error(`[obsidian:${vaultRow.id}] Auto-connect failed:`, e)));
+    }
+
+    // SMB — connect all configured shares
+    const smbRows = db.select().from(smbShareConfig).all();
+    for (const smbRow of smbRows) {
+      tasks.push(this.connectSmbShare(smbRow.id).catch((e) => console.error(`[smb:${smbRow.id}] Auto-connect failed:`, e)));
     }
 
     // AI — reflect configured status from stored settings
@@ -431,17 +526,18 @@ export class ConnectionManager {
     }
   }
 
-  async connectObsidian(): Promise<void> {
+  async connectObsidianVault(vaultId: number): Promise<void> {
     const db = getDb();
-    const row = db.select().from(obsidianVaultConfig).get();
+    const row = db.select().from(obsidianVaultConfig).where(eq(obsidianVaultConfig.id, vaultId)).get();
     if (!row) {
-      this.setStatus('obsidian', { status: 'error', error: 'No vault configured' });
+      this.setVaultStatus(vaultId, { status: 'error', error: 'Vault not found' });
       return;
     }
-    this.setStatus('obsidian', { status: 'connecting' });
+    this.setVaultStatus(vaultId, { status: 'connecting' });
     try {
-      if (this.obsidian) this.obsidian.disconnect();
-      this.obsidian = new ObsidianVaultSync();
+      // Disconnect existing instance for this vault if any
+      this.obsidianVaults.get(vaultId)?.disconnect();
+      const sync = new ObsidianVaultSync();
       const config: VaultConfig = {
         id: row.id,
         name: row.name,
@@ -454,37 +550,103 @@ export class ConnectionManager {
         branch: row.branch,
         lastSyncedAt: row.lastSyncedAt,
       };
-      const ok = await this.obsidian.connect(config);
+      const ok = await sync.connect(config);
       if (!ok) {
-        this.setStatus('obsidian', { status: 'error', error: 'Vault not cloned yet. Use the Connections page to clone.' });
+        this.setVaultStatus(vaultId, { status: 'error', error: 'Vault not cloned yet. Use the Connections page to clone.' });
         return;
       }
-      this.setStatus('obsidian', { status: 'connected', displayName: row.name, mode: 'git' });
+      this.obsidianVaults.set(vaultId, sync);
+      this.setVaultStatus(vaultId, { status: 'connected', displayName: row.name, mode: 'git' });
       // Start background sync polling (5 minutes)
-      this.obsidian.startPolling(5 * 60 * 1000);
+      sync.startPolling(5 * 60 * 1000);
       // Run an initial sync to ensure we're up to date
-      this.obsidian.sync().catch((e) => console.error('[obsidian] Initial sync failed:', e));
+      sync.sync().catch((e) => console.error(`[obsidian:${vaultId}] Initial sync failed:`, e));
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e);
-      this.setStatus('obsidian', { status: 'error', error: err });
-      console.error('[obsidian] Connection failed:', err);
+      this.setVaultStatus(vaultId, { status: 'error', error: err });
+      console.error(`[obsidian:${vaultId}] Connection failed:`, err);
     }
   }
 
-  disconnectObsidian(): void {
-    if (this.obsidian) {
-      this.obsidian.disconnect();
-      this.obsidian = null;
+  disconnectObsidianVault(vaultId: number): void {
+    const sync = this.obsidianVaults.get(vaultId);
+    if (sync) {
+      sync.disconnect();
+      this.obsidianVaults.delete(vaultId);
     }
-    this.setStatus('obsidian', { status: 'disconnected' });
+    this.obsidianStatuses.delete(vaultId);
+    this.updateAggregateObsidianStatus();
+  }
+
+  async connectSmbShare(shareId: number): Promise<void> {
+    const db = getDb();
+    const row = db.select().from(smbShareConfig).where(eq(smbShareConfig.id, shareId)).get();
+    if (!row) {
+      this.setSmbShareStatus(shareId, { status: 'error', error: 'Share not found' });
+      return;
+    }
+    this.setSmbShareStatus(shareId, { status: 'connecting' });
+    try {
+      // Disconnect existing instance for this share if any
+      this.smbShares.get(shareId)?.disconnect();
+      const sync = new SmbSync();
+      const config: SmbConfig = {
+        id: row.id,
+        name: row.name,
+        host: row.host,
+        share: row.share,
+        domain: row.domain,
+        username: row.username,
+        password: row.password,
+      };
+      const ok = await sync.connect(config);
+      if (!ok) {
+        this.setSmbShareStatus(shareId, { status: 'error', error: 'Connection failed — check credentials and share name' });
+        return;
+      }
+      this.smbShares.set(shareId, sync);
+      const info = sync.accountInfo;
+      this.setSmbShareStatus(shareId, { status: 'connected', displayName: info?.displayName ?? row.name, mode: 'smb2' });
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      this.setSmbShareStatus(shareId, { status: 'error', error: err });
+      console.error(`[smb:${shareId}] Connection failed:`, err);
+    }
+  }
+
+  disconnectSmbShare(shareId: number): void {
+    const sync = this.smbShares.get(shareId);
+    if (sync) {
+      sync.disconnect();
+      this.smbShares.delete(shareId);
+    }
+    this.smbStatuses.delete(shareId);
+    this.updateAggregateSmbStatus();
+  }
+
+  disconnectAllSmbShares(): void {
+    for (const [id] of this.smbShares) this.disconnectSmbShare(id);
+  }
+
+  async executeSmbAction(action: SmbWriteAction & { shareId?: number }): Promise<string> {
+    const shareId = action.shareId;
+    if (shareId !== undefined) {
+      const sync = this.smbShares.get(shareId);
+      if (!sync) throw new Error(`SMB share ${shareId} not connected`);
+      return sync.executeAction(action);
+    }
+    // Fallback: use the first connected share
+    const firstSync = [...this.smbShares.values()][0];
+    if (!firstSync) throw new Error('No SMB share connected');
+    return firstSync.executeAction(action);
   }
 
   /**
-   * Clone the vault repo and then connect to it.
-   * Called from the API when the user triggers a clone.
+   * Clone a vault repo and then connect to it.
+   * Called from the API when the user triggers a clone for a specific vault.
    */
   async cloneObsidianVault(row: { id: number; name: string; remoteUrl: string; authType: string | null; httpsToken: string | null; sshPrivateKey: string | null; sshPublicKey: string | null; localPath: string; branch: string; lastSyncedAt: string | null }): Promise<void> {
-    this.setStatus('obsidian', { status: 'connecting', mode: 'cloning' });
+    this.setVaultStatus(row.id, { status: 'connecting', mode: 'cloning' });
     try {
       const config: VaultConfig = {
         id: row.id,
@@ -500,14 +662,14 @@ export class ConnectionManager {
       };
       const sync = new ObsidianVaultSync();
       await sync.clone(config);
-      this.obsidian = sync;
-      this.setStatus('obsidian', { status: 'connected', displayName: row.name, mode: 'git' });
-      this.obsidian.startPolling(5 * 60 * 1000);
-      this.obsidian.sync().catch((e) => console.error('[obsidian] Post-clone sync failed:', e));
+      this.obsidianVaults.set(row.id, sync);
+      this.setVaultStatus(row.id, { status: 'connected', displayName: row.name, mode: 'git' });
+      sync.startPolling(5 * 60 * 1000);
+      sync.sync().catch((e) => console.error(`[obsidian:${row.id}] Post-clone sync failed:`, e));
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e);
-      this.setStatus('obsidian', { status: 'error', error: err });
-      console.error('[obsidian] Clone failed:', err);
+      this.setVaultStatus(row.id, { status: 'error', error: err });
+      console.error(`[obsidian:${row.id}] Clone failed:`, err);
       throw e;
     }
   }
@@ -521,7 +683,8 @@ export class ConnectionManager {
       case 'calendar': this.getAllCalendarInstances().forEach((c) => c.cancelSync()); break;
       case 'twitter':  this.twitter?.cancelSync(); break;
       case 'notion':   /* no background sync for Notion */ break;
-      case 'obsidian': this.obsidian?.stopPolling(); break;
+      case 'obsidian': for (const s of this.obsidianVaults.values()) s.stopPolling(); break;
+      case 'smb':      /* SMB is on-demand — no background polling to cancel */ break;
       default: return { success: false, message: `Cancel not supported for ${service}` };
     }
     return { success: true, message: `${service} sync cancellation requested` };
@@ -567,9 +730,13 @@ export class ConnectionManager {
         // Notion is passthrough-only — no background sync
         return { success: false, message: 'Notion has no background sync — operations are executed on demand' };
       case 'obsidian':
-        if (!this.obsidian) return { success: false, message: 'Obsidian vault not connected' };
-        this.obsidian.sync().catch(console.error);
-        return { success: true, message: 'Obsidian vault sync started' };
+        if (this.obsidianVaults.size === 0) return { success: false, message: 'No Obsidian vaults connected' };
+        for (const s of this.obsidianVaults.values()) s.sync().catch(console.error);
+        return { success: true, message: `Obsidian vault sync started for ${this.obsidianVaults.size} vault(s)` };
+      case 'smb':
+        // SMB shares are on-demand (no background sync loop); verify connectivity on manual trigger
+        if (this.smbShares.size === 0) return { success: false, message: 'No SMB shares connected' };
+        return { success: true, message: `SMB has ${this.smbShares.size} share(s) connected (no background sync — access is on-demand)` };
       default:
         return { success: false, message: `Unknown service: ${service}` };
     }
@@ -616,9 +783,17 @@ export class ConnectionManager {
     return this.notion.executeAction(action);
   }
 
-  async executeObsidianAction(action: ObsidianWriteAction): Promise<string> {
-    if (!this.obsidian) throw new Error('Obsidian vault not connected');
-    return this.obsidian.executeAction(action);
+  async executeObsidianAction(action: ObsidianWriteAction & { vaultId?: number }): Promise<string> {
+    const vaultId = action.vaultId;
+    if (vaultId !== undefined) {
+      const sync = this.obsidianVaults.get(vaultId);
+      if (!sync) throw new Error(`Obsidian vault ${vaultId} not connected`);
+      return sync.executeAction(action);
+    }
+    // Fallback: use the first connected vault
+    const firstSync = [...this.obsidianVaults.values()][0];
+    if (!firstSync) throw new Error('No Obsidian vault connected');
+    return firstSync.executeAction(action);
   }
 
   async* runTest(service: ServiceName): AsyncGenerator<{ step: number; name: string; status: 'running' | 'success' | 'error'; detail?: string }> {
@@ -985,6 +1160,56 @@ export class ConnectionManager {
           ];
         })();
 
+        case 'smb': return (() => {
+          return [
+            {
+              name: 'Verify credentials',
+              run: async () => {
+                if (this.smbShares.size === 0) throw new Error('No SMB shares connected');
+                const firstSync = [...this.smbShares.values()][0];
+                const info = firstSync.accountInfo;
+                if (!info) throw new Error('No account info — reconnect');
+                const count = this.smbShares.size;
+                return `${info.displayName}${count > 1 ? ` (+${count - 1} more share${count - 1 !== 1 ? 's' : ''})` : ''}`;
+              },
+            },
+            {
+              name: 'List top-level entries',
+              run: async () => {
+                if (this.smbShares.size === 0) throw new Error('No SMB shares connected');
+                const firstSync = [...this.smbShares.values()][0];
+                const entries = await firstSync.listDirectory('');
+                if (entries.length === 0) return 'Share accessible — no top-level entries found (empty share)';
+                const names = entries
+                  .slice(0, 10)
+                  .map((e) => (e.type === 'directory' ? `${e.name}/` : e.name))
+                  .join(', ');
+                return `${entries.length} entries: ${names}`;
+              },
+            },
+            {
+              name: 'Read access check',
+              run: async () => {
+                if (this.smbShares.size === 0) throw new Error('No SMB shares connected');
+                // Verify we can list root of every connected share
+                const results: string[] = [];
+                for (const [id, sync] of this.smbShares) {
+                  const db = getDb();
+                  const row = db.select().from(smbShareConfig).where(eq(smbShareConfig.id, id)).get();
+                  const label = row?.name ?? `share-${id}`;
+                  try {
+                    const entries = await sync.listDirectory('');
+                    results.push(`${label}: ${entries.length} item(s) accessible`);
+                  } catch (e) {
+                    results.push(`${label}: ERROR — ${e instanceof Error ? e.message : String(e)}`);
+                  }
+                }
+                return results.join(' | ');
+              },
+            },
+          ];
+        })();
+
         default:
           return [{ name: 'Check connection', run: async () => `${service} not supported` }];
       }
@@ -1008,7 +1233,8 @@ export class ConnectionManager {
     this.disconnectAllGmailAccounts();
     if (this.twitter) this.twitter.disconnect();
     if (this.notion) this.notion.disconnect();
-    if (this.obsidian) this.obsidian.disconnect();
+    for (const sync of this.obsidianVaults.values()) sync.disconnect();
+    for (const sync of this.smbShares.values()) sync.disconnect();
   }
 }
 

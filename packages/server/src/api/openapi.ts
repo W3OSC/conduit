@@ -272,7 +272,7 @@ router.get('/openapi.json', (req, res) => {
                     items: {
                       type: 'object',
                       properties: {
-                        service:    { type: 'string', enum: ['slack', 'discord', 'telegram', 'gmail', 'calendar', 'twitter', 'notion', 'obsidian'], description: 'Platform name' },
+                        service:    { type: 'string', enum: ['slack', 'discord', 'telegram', 'gmail', 'calendar', 'twitter', 'notion', 'obsidian', 'smb'], description: 'Platform name' },
                         connected:  { type: 'boolean', description: 'True if the service is actively connected' },
                         status:     { type: 'string', enum: ['connected', 'connecting', 'disconnected', 'error'], description: 'Detailed connection state' },
                         error:      { type: 'string', nullable: true, description: 'Error message when status=error' },
@@ -777,8 +777,53 @@ router.get('/openapi.json', (req, res) => {
         },
         post: {
           operationId: 'createOutboxItem',
-          summary: 'Send a message to any platform via the outbox',
-          description: 'Queues a message for sending. The recipient_id is the platform-native channel or user ID. For DMs, use the contact\'s platformId. For channels, use the channel ID from GET /chats. Messages require sendEnabled permission for the service.',
+          summary: 'Queue an action to any platform via the outbox',
+          description: `Queues a message or file action for sending. For messaging platforms (slack, discord, telegram, twitter), content is plain text. For structured platforms (gmail, calendar, notion, obsidian), content must be a JSON string encoding the action payload — see below.
+
+**Obsidian vault writes** — set source to "obsidian" and JSON-encode one of these action objects as the content field:
+
+- \`create_file\` — Create a new file (fails if it already exists):
+  \`{"action":"create_file","path":"Notes/example.md","content":"# Hello\\nFile body here."}\`
+
+- \`patch_file\` — Edit an existing file with one or more targeted operations. **Prefer this over write_file whenever editing an existing file.** Each edit locates an exact anchor string (must match exactly once) and applies one of three operations via the optional \`position\` field:
+  - \`position: "replace"\` (default) — replaces the matched text with \`replace\`. To delete a block set \`replace\` to \`""\`.
+    \`{"search":"old text","replace":"new text"}\`
+  - \`position: "after"\` — inserts \`content\` immediately after the anchor; the anchor itself is unchanged. Use this to append to a section, add a list item, etc.
+    \`{"search":"## Action Items","position":"after","content":"\\n- New task here"}\`
+  - \`position: "before"\` — inserts \`content\` immediately before the anchor; the anchor itself is unchanged.
+    \`{"search":"## Next Section","position":"before","content":"New paragraph above.\\n\\n"}\`
+  Edits are applied in sequence; each operates on the result of the previous. Full example:
+  \`{"action":"patch_file","path":"Notes/example.md","edits":[{"search":"## Old Heading","replace":"## New Heading"},{"search":"## Action Items","position":"after","content":"\\n- Follow up with Alice"}]}\`
+
+- \`write_file\` — Overwrite an entire file (or create it if absent). **Only use this for new content or when replacing the entire file is intentional.** For targeted edits use patch_file instead.
+  \`{"action":"write_file","path":"Notes/example.md","content":"# Replaced\\nEntire content."}\`
+
+- \`rename_file\` — Move or rename a file:
+  \`{"action":"rename_file","oldPath":"Notes/old.md","newPath":"Notes/new.md"}\`
+
+- \`delete_file\` — Delete a file:
+  \`{"action":"delete_file","path":"Notes/example.md"}\`
+
+The recipient_id field should be set to the vault file path for obsidian actions (same as the path field in the JSON content). All writes require sendEnabled permission for the obsidian service.
+
+**SMB share writes** — set source to "smb" and JSON-encode one of these action objects as the content field. Include \`shareId\` to target a specific share (omit to use the first connected share):
+
+- \`create_file\` — Create a new file (fails if it already exists):
+  \`{"action":"create_file","path":"Reports/q1.txt","content":"Q1 report content","shareId":1}\`
+
+- \`write_file\` — Overwrite an entire file (creates if absent):
+  \`{"action":"write_file","path":"Reports/q1.txt","content":"Updated content","shareId":1}\`
+
+- \`delete_file\` — Delete a file:
+  \`{"action":"delete_file","path":"Reports/q1.txt","shareId":1}\`
+
+- \`rename_file\` — Move or rename a file:
+  \`{"action":"rename_file","oldPath":"Reports/old.txt","newPath":"Reports/new.txt","shareId":1}\`
+
+- \`create_directory\` — Create a new directory:
+  \`{"action":"create_directory","path":"Reports/2025","shareId":1}\`
+
+The recipient_id field should be set to the file/directory path for smb actions. All writes require sendEnabled permission for the smb service.`,
           requestBody: {
             required: true,
             content: {
@@ -787,10 +832,10 @@ router.get('/openapi.json', (req, res) => {
                   type: 'object',
                   required: ['source', 'recipient_id', 'content'],
                   properties: {
-                    source:         { type: 'string', enum: ['slack', 'discord', 'telegram', 'twitter'] },
-                    recipient_id:   { type: 'string', description: 'Platform-native channel ID or user ID' },
+                    source:         { type: 'string', enum: ['slack', 'discord', 'telegram', 'twitter', 'gmail', 'calendar', 'notion', 'obsidian', 'smb'], description: 'Platform to send on' },
+                    recipient_id:   { type: 'string', description: 'Platform-native channel ID, user ID, vault file path (obsidian), or SMB file path (smb)' },
                     recipient_name: { type: 'string', description: 'Human-readable name for display in the outbox UI' },
-                    content:        { type: 'string', description: 'Message text' },
+                    content:        { type: 'string', description: 'Plain text for messaging platforms; JSON-encoded action object for obsidian, smb, gmail, calendar, notion' },
                   },
                 },
               },
@@ -2009,21 +2054,20 @@ router.get('/openapi.json', (req, res) => {
 
       // ── Obsidian ──────────────────────────────────────────────────────────────
 
-      '/obsidian/config': {
+       '/obsidian/vaults': {
         get: {
-          operationId: 'getObsidianConfig',
-          summary: 'Get Obsidian vault configuration',
-          description: 'Returns the current vault configuration (secrets like tokens and private keys are excluded). Check `configured: true` before calling file or sync endpoints.',
+          operationId: 'listObsidianVaults',
+          summary: 'List all configured Obsidian vaults',
+          description: 'Returns all configured vault entries with their connection status. Use the `id` field to target per-vault operations.',
           responses: {
             '200': {
-              description: 'Vault configuration or not-configured state',
+              description: 'List of vaults',
               content: {
                 'application/json': {
                   schema: {
                     type: 'object',
                     properties: {
-                      configured: { type: 'boolean', description: 'Whether a vault has been configured' },
-                      vault: { $ref: '#/components/schemas/ObsidianVaultConfig', nullable: true },
+                      vaults: { type: 'array', items: { $ref: '#/components/schemas/ObsidianVaultConfig' } },
                     },
                   },
                 },
@@ -2032,9 +2076,9 @@ router.get('/openapi.json', (req, res) => {
           },
         },
         post: {
-          operationId: 'setObsidianConfig',
-          summary: 'Create or update Obsidian vault configuration',
-          description: 'Saves vault connection details (remote URL, auth credentials, branch). After saving, call POST /obsidian/config/test to verify access, then POST /obsidian/config/clone to clone the repository. For SSH auth, first call POST /obsidian/config/generate-ssh-key to get a deploy key.',
+          operationId: 'createObsidianVault',
+          summary: 'Create a new Obsidian vault configuration',
+          description: 'Saves a new vault connection entry. After creating, call POST /obsidian/vaults/{id}/test to verify access, then POST /obsidian/vaults/{id}/clone to clone the repository. For SSH auth, first call POST /obsidian/vaults/{id}/generate-ssh-key.',
           requestBody: {
             required: true,
             content: {
@@ -2043,129 +2087,136 @@ router.get('/openapi.json', (req, res) => {
                   type: 'object',
                   required: ['name', 'remote_url'],
                   properties: {
-                    name:            { type: 'string', description: 'Friendly name for the vault (used as directory name; alphanumeric and hyphens only)' },
-                    remote_url:      { type: 'string', description: 'Git remote URL — HTTPS (e.g. https://github.com/user/vault.git) or SSH (git@github.com:user/vault.git)' },
-                    auth_type:       { type: 'string', enum: ['https', 'ssh'], default: 'https', description: 'Authentication method. Use https with a personal access token, or ssh with a generated deploy key.' },
-                    https_token:     { type: 'string', description: 'Personal access token for HTTPS auth (stored encrypted, not returned on GET)' },
-                    ssh_private_key: { type: 'string', description: 'SSH private key for SSH auth. Omit to use a previously generated key.' },
-                    branch:          { type: 'string', default: 'main', description: 'Git branch to track' },
+                    name:            { type: 'string', description: 'Friendly name for the vault' },
+                    remote_url:      { type: 'string', description: 'Git remote URL — HTTPS or SSH' },
+                    auth_type:       { type: 'string', enum: ['https', 'ssh'], default: 'https' },
+                    https_token:     { type: 'string', description: 'PAT for HTTPS auth' },
+                    ssh_private_key: { type: 'string', description: 'SSH private key for SSH auth' },
+                    branch:          { type: 'string', default: 'main' },
                   },
                 },
               },
             },
           },
           responses: {
-            '200': {
-              description: 'Saved vault configuration (secrets excluded)',
-              content: { 'application/json': { schema: { type: 'object', properties: { configured: { type: 'boolean' }, vault: { $ref: '#/components/schemas/ObsidianVaultConfig' } } } } },
+            '201': {
+              description: 'Created vault configuration (secrets excluded)',
+              content: { 'application/json': { schema: { type: 'object', properties: { vault: { $ref: '#/components/schemas/ObsidianVaultConfig' } } } } },
             },
           },
         },
-        delete: {
-          operationId: 'deleteObsidianConfig',
-          summary: 'Remove Obsidian vault configuration',
-          description: 'Deletes the vault configuration and disconnects the sync. Optionally deletes the local git clone from disk.',
+      },
+
+      '/obsidian/vaults/{id}': {
+        get: {
+          operationId: 'getObsidianVault',
+          summary: 'Get a single vault configuration',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' }, description: 'Vault ID' }],
+          responses: {
+            '200': { description: 'Vault configuration', content: { 'application/json': { schema: { type: 'object', properties: { vault: { $ref: '#/components/schemas/ObsidianVaultConfig' } } } } } },
+            '404': { description: 'Vault not found' },
+          },
+        },
+        put: {
+          operationId: 'updateObsidianVault',
+          summary: 'Update a vault configuration',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
           requestBody: {
             content: {
               'application/json': {
                 schema: {
                   type: 'object',
                   properties: {
-                    delete_local: { type: 'boolean', default: false, description: 'If true, deletes the local git clone from the server disk' },
+                    name:        { type: 'string' },
+                    remote_url:  { type: 'string' },
+                    auth_type:   { type: 'string', enum: ['https', 'ssh'] },
+                    https_token: { type: 'string' },
+                    branch:      { type: 'string' },
                   },
                 },
               },
             },
           },
           responses: {
-            '200': { description: 'Config deleted', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' } } } } } },
-            '404': { description: 'No vault configured' },
+            '200': { description: 'Updated vault', content: { 'application/json': { schema: { type: 'object', properties: { vault: { $ref: '#/components/schemas/ObsidianVaultConfig' } } } } } },
+            '404': { description: 'Vault not found' },
+          },
+        },
+        delete: {
+          operationId: 'deleteObsidianVault',
+          summary: 'Remove a vault configuration',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+          requestBody: {
+            content: {
+              'application/json': {
+                schema: { type: 'object', properties: { delete_local: { type: 'boolean', default: false, description: 'If true, deletes the local git clone from disk' } } },
+              },
+            },
+          },
+          responses: {
+            '200': { description: 'Vault deleted', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' } } } } } },
+            '404': { description: 'Vault not found' },
           },
         },
       },
 
-      '/obsidian/config/test': {
+      '/obsidian/vaults/{id}/test': {
         post: {
-          operationId: 'testObsidianConnection',
-          summary: 'Test vault git remote access without cloning',
-          description: 'Runs `git ls-remote` against the configured remote to verify credentials are valid. Use this after saving config and before triggering a clone.',
+          operationId: 'testObsidianVaultConnection',
+          summary: 'Test vault git remote access',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
           responses: {
             '200': {
               description: 'Connection test result',
-              content: {
-                'application/json': {
-                  schema: {
-                    type: 'object',
-                    properties: {
-                      success: { type: 'boolean' },
-                      error:   { type: 'string', nullable: true, description: 'Error message if test failed' },
-                    },
-                  },
-                },
-              },
+              content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, error: { type: 'string', nullable: true } } } } },
             },
           },
         },
       },
 
-      '/obsidian/config/generate-ssh-key': {
+      '/obsidian/vaults/{id}/generate-ssh-key': {
         post: {
-          operationId: 'generateObsidianSshKey',
-          summary: 'Generate an SSH key pair for vault access',
-          description: 'Generates a new ed25519 SSH key pair and stores it in the vault config. Returns the public key — add this as a deploy key in your git hosting provider (GitHub, GitLab, etc.) before cloning with SSH auth.',
+          operationId: 'generateObsidianVaultSshKey',
+          summary: 'Generate an SSH key pair for a vault',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
           responses: {
             '200': {
               description: 'Generated SSH public key and fingerprint',
-              content: {
-                'application/json': {
-                  schema: {
-                    type: 'object',
-                    properties: {
-                      publicKey:   { type: 'string', description: 'SSH public key to add as a deploy key in your git host' },
-                      fingerprint: { type: 'string', description: 'SHA256 fingerprint of the public key' },
-                    },
-                  },
-                },
-              },
+              content: { 'application/json': { schema: { type: 'object', properties: { publicKey: { type: 'string' }, fingerprint: { type: 'string' } } } } },
             },
           },
         },
       },
 
-      '/obsidian/config/ssh-key': {
+      '/obsidian/vaults/{id}/ssh-key': {
         get: {
-          operationId: 'getObsidianSshKey',
-          summary: 'Get the current SSH public key',
-          description: 'Returns the SSH public key that was previously generated. Add this as a read-only deploy key in your git repository to enable SSH cloning.',
+          operationId: 'getObsidianVaultSshKey',
+          summary: 'Get the SSH public key for a vault',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
           responses: {
-            '200': {
-              description: 'SSH public key',
-              content: { 'application/json': { schema: { type: 'object', properties: { publicKey: { type: 'string' } } } } },
-            },
-            '404': { description: 'No SSH key generated yet — call POST /obsidian/config/generate-ssh-key first' },
+            '200': { description: 'SSH public key', content: { 'application/json': { schema: { type: 'object', properties: { publicKey: { type: 'string' } } } } } },
+            '404': { description: 'No SSH key generated yet' },
           },
         },
       },
 
-      '/obsidian/config/clone': {
+      '/obsidian/vaults/{id}/clone': {
         post: {
           operationId: 'cloneObsidianVault',
           summary: 'Clone the vault git repository',
-          description: 'Triggers an initial `git clone` of the configured remote repository into the server\'s local data directory. This is a one-time setup step — run it after saving config and verifying the connection. The clone runs asynchronously; monitor progress via GET /obsidian/sync/status.',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+          description: 'Triggers an async git clone. Monitor progress via GET /obsidian/vaults/{id}/sync-status.',
           responses: {
-            '200': {
-              description: 'Clone started (runs asynchronously)',
-              content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, message: { type: 'string' } } } } },
-            },
+            '200': { description: 'Clone started', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, message: { type: 'string' } } } } } },
           },
         },
       },
 
-      '/obsidian/sync/status': {
+      '/obsidian/vaults/{id}/sync-status': {
         get: {
-          operationId: 'getObsidianSyncStatus',
-          summary: 'Get the current vault sync status',
-          description: 'Returns the vault\'s current synchronisation state including last sync time, latest commit hash, and any error. Poll this to track clone and sync progress.',
+          operationId: 'getObsidianVaultSyncStatus',
+          summary: 'Get the sync status for a vault',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
           responses: {
             '200': {
               description: 'Sync status',
@@ -2174,8 +2225,8 @@ router.get('/openapi.json', (req, res) => {
                   schema: {
                     type: 'object',
                     properties: {
-                      configured:     { type: 'boolean' },
-                      syncStatus:     { type: 'string', enum: ['idle', 'syncing', 'error'], nullable: true },
+                      vaultId:        { type: 'integer' },
+                      syncStatus:     { type: 'string', enum: ['idle', 'syncing', 'error'] },
                       lastSyncedAt:   { type: 'string', format: 'date-time', nullable: true },
                       lastCommitHash: { type: 'string', nullable: true },
                       error:          { type: 'string', nullable: true },
@@ -2188,74 +2239,232 @@ router.get('/openapi.json', (req, res) => {
         },
       },
 
-      '/obsidian/sync': {
+      '/obsidian/vaults/{id}/sync': {
         post: {
           operationId: 'syncObsidianVault',
-          summary: 'Trigger a manual vault sync (git fetch + pull)',
-          description: 'Runs `git fetch` followed by `git pull --ff-only` to pull the latest changes from the remote. The sync runs asynchronously — monitor progress via GET /obsidian/sync/status. The vault also auto-syncs every 5 minutes.',
+          summary: 'Trigger a manual vault sync',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+          description: 'Runs git fetch + pull --ff-only asynchronously. Auto-sync also runs every 5 minutes.',
           responses: {
-            '200': {
-              description: 'Sync started (runs asynchronously)',
-              content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, message: { type: 'string' } } } } },
-            },
-            '400': { description: 'No vault configured or vault not cloned yet' },
+            '200': { description: 'Sync started', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' }, message: { type: 'string' } } } } } },
+            '404': { description: 'Vault not found' },
+            '503': { description: 'Vault not connected' },
           },
         },
       },
 
-      '/obsidian/files': {
+      '/obsidian/vaults/{id}/files': {
         get: {
-          operationId: 'listObsidianFiles',
-          summary: 'List all files in the vault',
-          description: 'Returns the full file tree of the Obsidian vault as a recursive directory structure. Use the `path` field from any entry with GET /obsidian/files/{path} to read file contents. Hidden directories (.git, .obsidian, .trash) are excluded.',
+          operationId: 'listObsidianVaultFiles',
+          summary: 'List all files in a vault',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+          description: 'Returns the full file tree. Use the `path` field with GET /obsidian/vaults/{id}/files/{path} to read content.',
           responses: {
             '200': {
               description: 'Vault file tree',
-              content: {
-                'application/json': {
-                  schema: {
-                    type: 'object',
-                    properties: {
-                      files: { type: 'array', items: { $ref: '#/components/schemas/ObsidianFileEntry' } },
-                    },
-                  },
-                },
-              },
+              content: { 'application/json': { schema: { type: 'object', properties: { files: { type: 'array', items: { $ref: '#/components/schemas/ObsidianFileEntry' } } } } } },
             },
-            '503': { description: 'Vault not connected (clone it first)' },
+            '503': { description: 'Vault not connected' },
           },
         },
       },
 
-      '/obsidian/files/{path}': {
+      '/obsidian/vaults/{id}/files/{path}': {
         get: {
-          operationId: 'readObsidianFile',
-          summary: 'Read a file from the vault',
-          description: 'Returns the raw text content of a file in the vault by its relative path. The vault is auto-synced before reading if the last sync was more than 4 minutes ago. Use GET /obsidian/files to list available paths.',
+          operationId: 'readObsidianVaultFile',
+          summary: 'Read a file from a vault',
           parameters: [
-            {
-              name: 'path', in: 'path', required: true,
-              schema: { type: 'string' },
-              description: 'Relative path from the vault root (e.g. "Daily Notes/2026-04-13.md"). URL-encode any special characters.',
-            },
+            { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
+            { name: 'path', in: 'path', required: true, schema: { type: 'string' }, description: 'Relative path from vault root (URL-encoded)' },
           ],
           responses: {
             '200': {
               description: 'File contents',
+              content: { 'application/json': { schema: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } } } } },
+            },
+            '404': { description: 'File not found' },
+            '503': { description: 'Vault not connected' },
+          },
+        },
+      },
+
+      '/smb/shares': {
+        get: {
+          operationId: 'listSmbShares',
+          summary: 'List all configured SMB shares',
+          description: 'Returns all configured SMB shares with their current connection status. Passwords are never returned.',
+          responses: {
+            '200': {
+              description: 'List of SMB shares',
               content: {
                 'application/json': {
                   schema: {
                     type: 'object',
                     properties: {
-                      path:    { type: 'string', description: 'Relative path that was read' },
-                      content: { type: 'string', description: 'Raw file content (UTF-8 text)' },
+                      shares: {
+                        type: 'array',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            id:               { type: 'integer' },
+                            name:             { type: 'string', description: 'Friendly label for this share' },
+                            host:             { type: 'string', description: 'SMB server hostname or IP' },
+                            share:            { type: 'string', description: 'Share name on the server' },
+                            domain:           { type: 'string', nullable: true },
+                            username:         { type: 'string' },
+                            hasPassword:      { type: 'boolean' },
+                            connectionStatus: { type: 'object', description: 'Current ServiceStatus object' },
+                          },
+                        },
+                      },
                     },
                   },
                 },
               },
             },
-            '404': { description: 'File not found in vault' },
-            '503': { description: 'Vault not connected' },
+          },
+        },
+      },
+
+      '/smb/shares/{id}': {
+        get: {
+          operationId: 'getSmbShare',
+          summary: 'Get a single SMB share config',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+          responses: {
+            '200': { description: 'Share config (no password)' },
+            '404': { description: 'Share not found' },
+          },
+        },
+      },
+
+      '/smb/shares/{id}/test': {
+        post: {
+          operationId: 'testSmbShare',
+          summary: 'Test SMB share connectivity',
+          description: 'Attempts to connect to the SMB share using stored credentials and lists up to 10 top-level entries. Returns { success: true, entries: string[] } on success, or { success: false, error: string } on failure. Directories are suffixed with "/".',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+          responses: {
+            '200': {
+              description: 'Connection test result',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      success: { type: 'boolean' },
+                      entries: { type: 'array', items: { type: 'string' }, description: 'Top-level file/folder names (present on success). Directories end with "/".' },
+                      error:   { type: 'string', description: 'Human-readable error (present on failure)' },
+                    },
+                  },
+                },
+              },
+            },
+            '404': { description: 'Share not found' },
+          },
+        },
+      },
+
+      '/smb/shares/{id}/connect': {
+        post: {
+          operationId: 'connectSmbShare',
+          summary: 'Connect an SMB share',
+          description: 'Establishes a live SMB2 connection to the configured share. Status is broadcast via WebSocket (service: "smb:{id}").',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+          responses: {
+            '200': { description: 'Connection result with current status' },
+            '404': { description: 'Share not found' },
+          },
+        },
+      },
+
+      '/smb/shares/{id}/disconnect': {
+        post: {
+          operationId: 'disconnectSmbShare',
+          summary: 'Disconnect an SMB share',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+          responses: { '200': { description: 'Disconnected successfully' } },
+        },
+      },
+
+      '/smb/shares/{id}/status': {
+        get: {
+          operationId: 'getSmbShareStatus',
+          summary: 'Get connection status of an SMB share',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+          responses: {
+            '200': {
+              description: 'ServiceStatus object',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      status:      { type: 'string', enum: ['connected', 'connecting', 'disconnected', 'error'] },
+                      displayName: { type: 'string', nullable: true },
+                      mode:        { type: 'string', nullable: true },
+                      error:       { type: 'string', nullable: true },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      '/smb/shares/{id}/files': {
+        get: {
+          operationId: 'listSmbDirectory',
+          summary: 'List a directory on an SMB share',
+          description: 'Lists files and folders in the specified directory. Use the empty string or omit the path parameter to list the share root.',
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
+            { name: 'path', in: 'query', required: false, schema: { type: 'string' }, description: 'Relative path from share root. Omit or use "" for root.' },
+          ],
+          responses: {
+            '200': {
+              description: 'Directory listing',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      path:    { type: 'string', description: 'The path that was listed' },
+                      entries: {
+                        type: 'array',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            name: { type: 'string' },
+                            path: { type: 'string', description: 'Relative path from share root' },
+                            type: { type: 'string', enum: ['file', 'directory'] },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            '503': { description: 'Share not connected' },
+          },
+        },
+      },
+
+      '/smb/shares/{id}/files/{path}': {
+        get: {
+          operationId: 'readSmbFile',
+          summary: 'Read a file from an SMB share',
+          description: 'Returns the file contents. Text files are returned as UTF-8 text/plain. Binary files are returned as application/octet-stream with a Content-Disposition attachment header.',
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'integer' } },
+            { name: 'path', in: 'path', required: true, schema: { type: 'string' }, description: 'Relative file path from share root (URL-encoded)' },
+          ],
+          responses: {
+            '200': { description: 'File contents (text/plain or application/octet-stream)' },
+            '404': { description: 'File not found' },
+            '503': { description: 'Share not connected' },
           },
         },
       },

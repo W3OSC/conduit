@@ -1,21 +1,34 @@
 /**
  * unread.ts — Server-authoritative unread count and mute state management.
  *
- * The server is the sole source of truth for:
- *   - chat_read_state  — when each chat was last read (updated by markChatRead)
- *   - chat_mute_state  — whether each chat is muted (updated by fetchUnreadCounts per service)
+ * Design philosophy: the PLATFORM is the source of truth for unread state.
+ * We mirror platform unread state into conduit's chat_read_state table,
+ * and use that as the basis for computing unread counts.
+ *
+ * Per-platform approach:
+ *   - Slack:    conversations.list returns last_read per channel. We seed
+ *               the cursor from that. Real-time cross-device sync via
+ *               channel_marked / im_marked Socket Mode events.
+ *   - Telegram: getDialogs() returns readInboxMaxId per dialog. We find
+ *               the matching message timestamp in the local DB and seed
+ *               the cursor from that. Real-time via UpdateReadHistoryInbox.
+ *   - Discord:  No read cursor API available for selfbots. Discord unread
+ *               counts are NOT tracked — no badges, no read state.
+ *   - Gmail:    Per-message isRead boolean from UNREAD label. Unread counts
+ *               are per-thread (thread has unread if any message isRead=false).
+ *   - Twitter:  Cursor-based (no platform API), unchanged.
  *
  * Unread counts are computed as:
  *   COUNT(messages WHERE timestamp > last_read_at)
  *
- * This module is imported by all sync modules (discord, slack, telegram) and
+ * This module is imported by all sync modules (slack, telegram) and
  * by the API router. It has no dependency on any platform-specific code.
  */
 
 import { getDb } from '../db/client.js';
 import {
-  discordMessages, slackMessages, telegramMessages, twitterDms,
-  chatReadState, chatMuteState,
+  slackMessages, telegramMessages, twitterDms,
+  chatReadState, chatMuteState, gmailMessages,
 } from '../db/schema.js';
 import { eq, and, gt, sql } from 'drizzle-orm';
 import { broadcastUnread } from '../websocket/hub.js';
@@ -32,31 +45,8 @@ export interface UnreadEntry {
 }
 
 // ---------------------------------------------------------------------------
-// Mute state persistence
+// Read state persistence
 // ---------------------------------------------------------------------------
-
-/**
- * Seed the read cursor only for chats that have NO existing row yet.
- * Called at the end of each service's initialFullSync so that imported
- * history is treated as already-read. Existing read positions are never
- * overwritten, so real unreads that arrive after the initial sync are
- * preserved correctly.
- */
-export function seedMissingReadState(
-  updates: Array<{ source: string; chatId: string; lastReadAt: string }>,
-): void {
-  if (updates.length === 0) return;
-  const db = getDb();
-  const now = new Date().toISOString();
-  for (let i = 0; i < updates.length; i += 100) {
-    db.insert(chatReadState)
-      .values(updates.slice(i, i + 100).map(({ source, chatId, lastReadAt }) => ({
-        source, chatId, lastReadAt, updatedAt: now,
-      })))
-      .onConflictDoNothing()
-      .run();
-  }
-}
 
 /**
  * Seed (or overwrite) the read cursor for a batch of chats from platform data.
@@ -129,18 +119,14 @@ export function getChatMuteState(source: string, chatId: string): boolean {
 /**
  * Count unread messages for a single chat (since last_read_at).
  * Used by broadcastUnreadForChat — the hot path after every new message.
+ * Relies on the composite (channelId/chatId, timestamp) indexes for speed.
+ *
+ * NOTE: Discord is intentionally excluded — no reliable read cursor available.
  */
 function countUnreadForChat(source: string, chatId: string, lastReadAt: string | null): number {
   const db = getDb();
   const since = lastReadAt ?? '1970-01-01T00:00:00.000Z';
 
-  if (source === 'discord') {
-    const row = db.select({ count: sql<number>`count(*)` })
-      .from(discordMessages)
-      .where(and(eq(discordMessages.channelId, chatId), gt(discordMessages.timestamp, since)))
-      .get();
-    return row?.count ?? 0;
-  }
   if (source === 'slack') {
     const row = db.select({ count: sql<number>`count(*)` })
       .from(slackMessages)
@@ -166,11 +152,20 @@ function countUnreadForChat(source: string, chatId: string, lastReadAt: string |
 }
 
 /**
- * Compute unread counts for ALL chats across all services.
- * Called by GET /api/unread — the authoritative initial-load endpoint.
+ * Compute unread counts for ALL chats across all services using a single
+ * grouped query per source (queries total) instead of N+1 per-chat queries.
  *
- * Returns an entry for every chat that has either unread messages OR a mute
- * state entry, so the client always gets a complete picture.
+ * Discord is excluded — no reliable read cursor API for selfbots.
+ * Gmail is separate — uses per-thread unread counts from the gmail_messages table.
+ *
+ * Strategy:
+ *   1. Load all chat_read_state and chat_mute_state rows into maps (2 queries).
+ *   2. For each source, run one GROUP BY query that counts messages per chat
+ *      that are newer than a reference timestamp.
+ *   3. For Gmail, count threads with at least one unread message.
+ *   4. Merge the counts with mute state.
+ *
+ * Called by GET /api/unread and after fetchUnreadCounts() on reconnect.
  */
 export function computeAllUnreads(): UnreadEntry[] {
   const db = getDb();
@@ -187,48 +182,95 @@ export function computeAllUnreads(): UnreadEntry[] {
     muteMap.set(`${row.source}:${row.chatId}`, row.isMuted);
   }
 
+  // Accumulate results by "source:chatId" key to avoid duplicates
+  const countMap = new Map<string, number>(); // "source:chatId" → unread count
+
+  // ── Slack: one aggregated query ───────────────────────────────────────────
+  const slackRows = db.all<{ channelId: string; count: number }>(sql`
+    SELECT m.channel_id AS channelId,
+           COUNT(*) AS count
+    FROM slack_messages m
+    LEFT JOIN chat_read_state r
+      ON r.source = 'slack' AND r.chat_id = m.channel_id
+    WHERE m.timestamp > COALESCE(r.last_read_at, '1970-01-01T00:00:00.000Z')
+    GROUP BY m.channel_id
+  `);
+  for (const row of slackRows) {
+    countMap.set(`slack:${row.channelId}`, Number(row.count));
+  }
+
+  // ── Telegram: one aggregated query ───────────────────────────────────────
+  // chat_id is stored as INTEGER; cast to text for the JOIN key.
+  const telegramRows = db.all<{ chatId: string; count: number }>(sql`
+    SELECT CAST(m.chat_id AS TEXT) AS chatId,
+           COUNT(*) AS count
+    FROM telegram_messages m
+    LEFT JOIN chat_read_state r
+      ON r.source = 'telegram' AND r.chat_id = CAST(m.chat_id AS TEXT)
+    WHERE m.timestamp > COALESCE(r.last_read_at, '1970-01-01T00:00:00.000Z')
+    GROUP BY m.chat_id
+  `);
+  for (const row of telegramRows) {
+    countMap.set(`telegram:${row.chatId}`, Number(row.count));
+  }
+
+  // ── Twitter DMs: one aggregated query ────────────────────────────────────
+  const twitterRows = db.all<{ conversationId: string; count: number }>(sql`
+    SELECT m.conversation_id AS conversationId,
+           COUNT(*) AS count
+    FROM twitter_dms m
+    LEFT JOIN chat_read_state r
+      ON r.source = 'twitter' AND r.chat_id = m.conversation_id
+    WHERE m.created_at > COALESCE(r.last_read_at, '1970-01-01T00:00:00.000Z')
+    GROUP BY m.conversation_id
+  `);
+  for (const row of twitterRows) {
+    countMap.set(`twitter:${row.conversationId}`, Number(row.count));
+  }
+
+  // ── Gmail: per-thread unread counts ──────────────────────────────────────
+  // A thread is unread if it has at least one message with is_read = 0 (false).
+  // chatId = thread_id, source = 'gmail'.
+  const gmailRows = db.all<{ threadId: string; count: number }>(sql`
+    SELECT thread_id AS threadId,
+           COUNT(*) AS count
+    FROM gmail_messages
+    WHERE is_read = 0
+    GROUP BY thread_id
+  `);
+  for (const row of gmailRows) {
+    countMap.set(`gmail:${row.threadId}`, Number(row.count));
+  }
+
+  // ── Collect all known chat keys (union of message tables + mute/read state) ─
+  const allKeys = new Set<string>();
+
+  // Chats that have messages (distinct keys already in countMap)
+  for (const key of countMap.keys()) allKeys.add(key);
+
+  // Chats that have a read state but zero unread messages (not in countMap yet)
+  // Exclude discord entries from read state that may have been seeded previously
+  for (const key of readStateMap.keys()) {
+    if (!key.startsWith('discord:')) allKeys.add(key);
+  }
+
+  // Chats that have a mute state entry but possibly no messages
+  // Exclude discord mute entries from count — still track mute but not unread
+  for (const key of muteMap.keys()) {
+    if (!key.startsWith('discord:')) allKeys.add(key);
+  }
+
   const results: UnreadEntry[] = [];
-
-  // Helper to add entries for a given source + distinct chatIds
-  const addEntries = (source: string, chatIds: string[]) => {
-    for (const chatId of chatIds) {
-      const key = `${source}:${chatId}`;
-      const lastReadAt = readStateMap.get(key) ?? null;
-      const isMuted = muteMap.get(key) ?? false;
-      const count = countUnreadForChat(source, chatId, lastReadAt);
-      // Always include the entry so the client gets isMuted even for count=0
-      results.push({ source, chatId, count, isMuted });
-    }
-  };
-
-  // Discord — distinct channel IDs from messages
-  const discordChats = db.selectDistinct({ chatId: discordMessages.channelId })
-    .from(discordMessages).all().map((r) => r.chatId);
-  addEntries('discord', discordChats);
-
-  // Slack — distinct channel IDs from messages
-  const slackChats = db.selectDistinct({ chatId: slackMessages.channelId })
-    .from(slackMessages).all().map((r) => r.chatId);
-  addEntries('slack', slackChats);
-
-  // Telegram — distinct chat IDs from messages (stored as integer, cast to string)
-  const telegramChats = db.selectDistinct({ chatId: telegramMessages.chatId })
-    .from(telegramMessages).all().map((r) => String(r.chatId));
-  addEntries('telegram', telegramChats);
-
-  // Twitter — distinct conversation IDs
-  const twitterChats = db.selectDistinct({ chatId: twitterDms.conversationId })
-    .from(twitterDms).all().map((r) => r.chatId);
-  addEntries('twitter', twitterChats);
-
-  // Also include any chats that have a mute entry but no messages (rare but possible)
-  for (const [key, isMuted] of muteMap) {
+  for (const key of allKeys) {
     const colonIdx = key.indexOf(':');
     const source = key.slice(0, colonIdx);
     const chatId = key.slice(colonIdx + 1);
-    if (!results.some((r) => r.source === source && r.chatId === chatId)) {
-      results.push({ source, chatId, count: 0, isMuted });
-    }
+    results.push({
+      source,
+      chatId,
+      count: countMap.get(key) ?? 0,
+      isMuted: muteMap.get(key) ?? false,
+    });
   }
 
   return results;
@@ -244,8 +286,12 @@ export function computeAllUnreads(): UnreadEntry[] {
  * via WebSocket to all connected clients.
  *
  * This is the hot path — it runs on every incoming live message.
+ * Discord is excluded — no reliable read cursor tracking.
  */
 export function broadcastUnreadForChat(source: string, chatId: string): void {
+  // Discord unread tracking is disabled — no reliable read cursor API
+  if (source === 'discord') return;
+
   try {
     const db = getDb();
     const readRow = db.select({ lastReadAt: chatReadState.lastReadAt })
@@ -262,7 +308,8 @@ export function broadcastUnreadForChat(source: string, chatId: string): void {
 }
 
 /**
- * Mark every known chat as read at the current time, then broadcast count=0 for all.
+ * Mark every known non-Discord chat as read at the current time, then
+ * broadcast count=0 for all.
  * Returns the list of chats that were marked so the caller can also hit platform APIs.
  */
 export function markAllChatsRead(): Array<{ source: string; chatId: string }> {
@@ -270,7 +317,10 @@ export function markAllChatsRead(): Array<{ source: string; chatId: string }> {
   const now = new Date().toISOString();
 
   const allEntries = computeAllUnreads();
-  for (const { source, chatId } of allEntries) {
+  // Filter out Discord — we don't track read state for Discord
+  const eligibleEntries = allEntries.filter(({ source }) => source !== 'discord');
+
+  for (const { source, chatId } of eligibleEntries) {
     db.insert(chatReadState)
       .values({ source, chatId, lastReadAt: now, updatedAt: now })
       .onConflictDoUpdate({
@@ -281,23 +331,27 @@ export function markAllChatsRead(): Array<{ source: string; chatId: string }> {
   }
 
   const isMutedFn = (source: string, chatId: string) => getChatMuteState(source, chatId);
-  broadcastUnread(allEntries.map(({ source, chatId }) => ({
+  broadcastUnread(eligibleEntries.map(({ source, chatId }) => ({
     source, chatId, count: 0, isMuted: isMutedFn(source, chatId),
   })));
 
-  return allEntries.map(({ source, chatId }) => ({ source, chatId }));
+  return eligibleEntries.map(({ source, chatId }) => ({ source, chatId }));
 }
 
 // ---------------------------------------------------------------------------
-// Mark as read
+// Mark as read / unread
 // ---------------------------------------------------------------------------
 
 /**
  * Record that the user read a chat at the current time.
  * Writes to chat_read_state and broadcasts count=0 for this chat.
  * Called by POST /api/unread/:source/:chatId/read.
+ *
+ * Discord is a no-op — we don't track read state for Discord.
  */
 export function markChatRead(source: string, chatId: string): void {
+  if (source === 'discord') return;
+
   const db = getDb();
   const now = new Date().toISOString();
   db.insert(chatReadState)
@@ -309,4 +363,23 @@ export function markChatRead(source: string, chatId: string): void {
     .run();
   const isMuted = getChatMuteState(source, chatId);
   broadcastUnread([{ source, chatId, count: 0, isMuted }]);
+}
+
+/**
+ * Mark a chat as unread by resetting (deleting) the read cursor.
+ * Without a cursor, all messages in the chat count as unread.
+ * Broadcasts the new count.
+ *
+ * Discord is a no-op — we don't track read state for Discord.
+ */
+export function markChatUnread(source: string, chatId: string): void {
+  if (source === 'discord') return;
+
+  const db = getDb();
+  db.delete(chatReadState)
+    .where(and(eq(chatReadState.source, source), eq(chatReadState.chatId, chatId)))
+    .run();
+  const isMuted = getChatMuteState(source, chatId);
+  const count = countUnreadForChat(source, chatId, null);
+  broadcastUnread([{ source, chatId, count, isMuted }]);
 }

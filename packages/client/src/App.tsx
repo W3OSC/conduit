@@ -140,8 +140,8 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   const checkAuth = async () => {
     try {
       const status = await uiAuth.status();
-      // If login is not enabled, always authenticated regardless of session state
-      if (!status.enabled) {
+      // If no login method is enabled, always authenticated
+      if (!status.anyEnabled) {
         setAuthState('authenticated');
         return;
       }

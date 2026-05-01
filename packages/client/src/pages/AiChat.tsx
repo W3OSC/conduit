@@ -8,9 +8,13 @@ import { useNavigate } from 'react-router-dom';
 import {
   Plus, X, Bot, Send, ChevronDown, ChevronRight,
   Loader2, AlertTriangle, Zap, Terminal, Trash2, ArrowRight, Settings2,
+  Search, Mail, Calendar, Users, FileText, BookOpen, Database,
+  MessageSquare, Eye, Edit3, Trash, CheckCircle2, AtSign,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { api, type AiSession, type AiMessage, type AiToolCall, type AiConnection } from '@/lib/api';
 import { useAiChatStore } from '@/store';
+import { onWsReconnect } from '@/hooks/useWebSocket';
 import { cn } from '@/lib/utils';
 import { toast } from '@/store';
 import { CopyButton } from '@/components/shared/CopyButton';
@@ -27,77 +31,215 @@ function formatTime(ts: string | null): string {
   return d.toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-function parseToolCalls(raw: string | null): AiToolCall[] {
-  if (!raw) return [];
-  try { return JSON.parse(raw); } catch { return []; }
+// ─── Tool call helpers ────────────────────────────────────────────────────────
+
+function getToolCallIcon(name: string): LucideIcon {
+  if (/search|find/i.test(name)) return Search;
+  if (/gmail|email|mail/i.test(name)) return Mail;
+  if (/calendar|event/i.test(name)) return Calendar;
+  if (/contact/i.test(name)) return Users;
+  if (/obsidian|vault|file/i.test(name)) return FileText;
+  if (/notion.*page|getNotion|createNotion|updateNotion/i.test(name)) return BookOpen;
+  if (/notion.*database|queryNotion/i.test(name)) return Database;
+  if (/message|chat|outbox|send/i.test(name)) return MessageSquare;
+  if (/twitter|tweet/i.test(name)) return AtSign;
+  if (/get|list|read|fetch/i.test(name)) return Eye;
+  if (/create|write|update|patch/i.test(name)) return Edit3;
+  if (/delete|remove/i.test(name)) return Trash;
+  return Terminal;
 }
 
-// ─── Copy button — re-exported from shared component ──────────────────────────
+function str(v: unknown): string {
+  if (typeof v === 'string') return v;
+  if (v === null || v === undefined) return '';
+  return JSON.stringify(v);
+}
 
-// ─── Tool call panel ──────────────────────────────────────────────────────────
+function q(v: unknown): string {
+  const s = str(v).trim();
+  return s ? `'${s.length > 40 ? s.slice(0, 40) + '…' : s}'` : '';
+}
 
-function ToolCallPanel({ toolCalls }: { toolCalls: AiToolCall[] }) {
+function countLabel(n: number, singular: string, plural?: string): string {
+  return `${n} ${n === 1 ? singular : (plural ?? singular + 's')}`;
+}
+
+
+function getToolCallSummary(name: string, input: unknown, output?: string | null): string {
+  // Server-detected tool calls supply a pre-built compact output string.
+  // Use it as the primary description when available.
+  if (output) return output;
+
+  const inp = (input ?? {}) as Record<string, unknown>;
+
+  // ── Server-detected names (derived from HTTP method + path) ───────────────
+  if (name === 'getChats')          return 'Listed chats';
+  if (name === 'getMessages') {
+    const src = str(inp['source'] ?? '');
+    const chat = str(inp['chat_id'] ?? '');
+    return src ? `Read ${src} messages${chat ? ` in ${chat}` : ''}` : 'Read messages';
+  }
+  if (name === 'getActivity')       return 'Read activity feed';
+  if (name === 'searchMessages') {
+    const qStr = q(inp['q'] ?? inp['query'] ?? '');
+    return qStr ? `Searched messages for ${qStr}` : 'Searched messages';
+  }
+  if (name === 'getContacts')       return 'Listed contacts';
+  if (name === 'getContact')        return 'Looked up contact';
+  if (name === 'getContactHistory') return 'Retrieved contact message history';
+  if (name === 'getEmails') {
+    const qStr = q(inp['q'] ?? '');
+    return qStr ? `Searched emails for ${qStr}` : 'Listed emails';
+  }
+  if (name === 'getEmail')           return 'Retrieved email';
+  if (name === 'getEmailBody')       return 'Read email body';
+  if (name === 'getEmailThread')     return 'Read email thread';
+  if (name === 'getEmailLabels')     return 'Listed email labels';
+  if (name === 'getCalendarEvents')  return 'Listed calendar events';
+  if (name === 'getCalendarEvent')   return 'Retrieved calendar event';
+  if (name === 'getCalendars')       return 'Listed calendars';
+  if (name === 'listVaultFiles')     return 'Listed vault files';
+  if (name === 'readVaultFile') {
+    const path = q((inp['routeParams'] as Record<string, unknown> | undefined)?.['path'] ?? '');
+    return path ? `Read vault file ${path}` : 'Read vault file';
+  }
+
+  // ── Outbox ────────────────────────────────────────────────────────────────
+  if (name === 'createOutboxItem') {
+    const preview = q(inp['content'] ?? inp['text'] ?? inp['subject']);
+    return preview ? `Queued message: ${preview}` : 'Created outbox item';
+  }
+  if (name === 'createOutboxBatch' || name === 'createOutboxBatchMulti') {
+    const batchItems = Array.isArray(inp['messages']) ? inp['messages'].length : (Array.isArray(inp['items']) ? inp['items'].length : null);
+    return batchItems !== null ? `Queued ${countLabel(batchItems, 'message')} in batch` : 'Created outbox batch';
+  }
+
+  // ── Gmail actions ─────────────────────────────────────────────────────────
+  if (name === 'gmailAction') {
+    const action = str(inp['action'] ?? inp['type']).toLowerCase();
+    if (action.includes('reply')) return 'Replied to email';
+    if (action.includes('send')) return 'Sent email';
+    if (action.includes('archive')) return 'Archived email';
+    if (action.includes('delete') || action.includes('trash')) return 'Deleted email';
+    return action ? `Gmail: ${action}` : 'Performed Gmail action';
+  }
+
+  // ── Calendar actions ──────────────────────────────────────────────────────
+  if (name === 'calendarAction') {
+    const action = str(inp['action'] ?? inp['type']).toLowerCase();
+    if (action.includes('create')) return 'Created calendar event';
+    if (action.includes('update') || action.includes('patch')) return 'Updated calendar event';
+    if (action.includes('delete')) return 'Deleted calendar event';
+    if (action.includes('rsvp') || action.includes('respond')) return 'Responded to calendar invite';
+    return action ? `Calendar: ${action}` : 'Performed calendar action';
+  }
+
+  // ── Twitter ───────────────────────────────────────────────────────────────
+  if (name === 'twitterAction') {
+    const action = str(inp['action'] ?? inp['type']).toLowerCase();
+    if (action.includes('tweet') || action.includes('post')) return 'Posted a tweet';
+    if (action.includes('reply')) return 'Replied to a tweet';
+    if (action.includes('retweet')) return 'Retweeted';
+    if (action.includes('like') || action.includes('favorite')) return 'Liked a tweet';
+    if (action.includes('follow')) return 'Followed a user';
+    if (action.includes('dm') || action.includes('message')) return 'Sent a Twitter DM';
+    return action ? `Twitter: ${action}` : 'Performed Twitter action';
+  }
+
+  // ── Notion ────────────────────────────────────────────────────────────────
+  if (name === 'createNotionPage') {
+    const title = q(inp['title'] ?? inp['name']);
+    return title ? `Created Notion page ${title}` : 'Created Notion page';
+  }
+
+  // ── Fallback ──────────────────────────────────────────────────────────────
+  return name.replace(/([A-Z])/g, ' $1').trim().toLowerCase();
+}
+
+// ─── Tool call activity row ───────────────────────────────────────────────────
+
+interface ToolCallActivityRowProps {
+  toolCall: AiToolCall;
+}
+
+function ToolCallActivityRow({ toolCall }: ToolCallActivityRowProps) {
   const [open, setOpen] = useState(false);
-  if (!toolCalls.length) return null;
+  const Icon = getToolCallIcon(toolCall.name);
+  const summary = getToolCallSummary(toolCall.name, toolCall.input, toolCall.output);
+  const hasOutput = !!toolCall.output;
+  const outputStr = toolCall.output ?? '';
+  const inputStr = JSON.stringify(toolCall.input, null, 2);
+
   return (
-    <div className="mt-2 rounded-xl border border-border overflow-hidden">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="w-full flex items-center gap-2 px-3 py-2 bg-secondary/60 hover:bg-secondary text-xs font-medium text-muted-foreground transition-colors"
-      >
-        <Terminal className="w-3.5 h-3.5 flex-shrink-0" />
-        <span className="flex-1 text-left">
-          {toolCalls.length} tool call{toolCalls.length !== 1 ? 's' : ''}
-        </span>
-        {open ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-      </button>
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            className="overflow-hidden"
-          >
-            <div className="divide-y divide-border">
-              {toolCalls.map((tc, i) => (
-                <div key={i} className="p-3 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="chip chip-amber text-[10px]">{tc.name}</span>
-                    {tc.output !== undefined && (
-                      <span className="chip chip-emerald text-[10px]">completed</span>
-                    )}
+    <motion.div
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.18 }}
+      className="px-6 py-1"
+    >
+      <div className="rounded-xl border border-border/60 bg-secondary/30 overflow-hidden">
+        {/* Header row */}
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-secondary/60 transition-colors group"
+        >
+          <div className="flex-shrink-0 w-5 h-5 rounded-md bg-primary/10 border border-primary/15 flex items-center justify-center">
+            <Icon className="w-3 h-3 text-primary/70" />
+          </div>
+          <span className="font-mono text-[10px] text-muted-foreground/70 flex-shrink-0 bg-background/60 border border-border/50 rounded px-1.5 py-0.5">
+            {toolCall.name}
+          </span>
+          <span className="text-xs text-muted-foreground flex-1 truncate">
+            {summary}
+          </span>
+          <div className="flex-shrink-0 flex items-center gap-1.5">
+            <CheckCircle2 className="w-3 h-3 text-emerald-500/80" />
+            {open
+              ? <ChevronDown className="w-3 h-3 text-muted-foreground/40" />
+              : <ChevronRight className="w-3 h-3 text-muted-foreground/40 group-hover:text-muted-foreground/70 transition-colors" />
+            }
+          </div>
+        </button>
+
+        {/* Expandable detail */}
+        <AnimatePresence>
+          {open && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.18 }}
+              className="overflow-hidden"
+            >
+              <div className="border-t border-border/50 divide-y divide-border/40">
+                {/* Input */}
+                <div className="p-3 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <p className="text-[10px] text-muted-foreground/60 uppercase tracking-wider font-medium">Input</p>
+                    <CopyButton text={inputStr} />
                   </div>
-                  {tc.input !== undefined && (
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Input</p>
-                        <CopyButton text={JSON.stringify(tc.input, null, 2)} />
-                      </div>
-                      <pre className="text-[11px] font-mono text-foreground/80 bg-background rounded-lg p-2 overflow-x-auto whitespace-pre-wrap break-all">
-                        {JSON.stringify(tc.input, null, 2)}
-                      </pre>
-                    </div>
-                  )}
-                  {tc.output !== undefined && (
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
-                        <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Output</p>
-                        <CopyButton text={typeof tc.output === 'string' ? tc.output : JSON.stringify(tc.output, null, 2)} />
-                      </div>
-                      <pre className="text-[11px] font-mono text-foreground/80 bg-background rounded-lg p-2 overflow-x-auto whitespace-pre-wrap break-all max-h-40 overflow-y-auto">
-                        {typeof tc.output === 'string' ? tc.output : JSON.stringify(tc.output, null, 2)}
-                      </pre>
-                    </div>
-                  )}
+                  <pre className="text-[11px] font-mono text-foreground/70 bg-background/60 rounded-lg p-2 overflow-x-auto whitespace-pre-wrap break-all max-h-36 overflow-y-auto">
+                    {inputStr}
+                  </pre>
                 </div>
-              ))}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
+                {/* Output */}
+                {hasOutput && (
+                  <div className="p-3 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[10px] text-muted-foreground/60 uppercase tracking-wider font-medium">Output</p>
+                      <CopyButton text={outputStr} />
+                    </div>
+                    <pre className="text-[11px] font-mono text-foreground/70 bg-background/60 rounded-lg p-2 overflow-x-auto whitespace-pre-wrap break-all max-h-40 overflow-y-auto">
+                      {outputStr}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    </motion.div>
   );
 }
 
@@ -136,13 +278,11 @@ interface MessageBubbleProps {
   message: AiMessage;
   isStreaming?: boolean;
   streamContent?: string;
-  streamToolCalls?: AiToolCall[];
 }
 
-function MessageBubble({ message, isStreaming, streamContent, streamToolCalls }: MessageBubbleProps) {
+function MessageBubble({ message, isStreaming, streamContent }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const content = isStreaming ? (streamContent ?? '') : message.content;
-  const toolCalls = isStreaming ? (streamToolCalls ?? []) : parseToolCalls(message.toolCalls);
   const ts = message.createdAt;
 
   const codeComponents = useMemo(() => ({
@@ -209,15 +349,12 @@ function MessageBubble({ message, isStreaming, streamContent, streamToolCalls }:
           {isUser ? (
             <p className="whitespace-pre-wrap">{content}</p>
           ) : (
-            <>
-              <div className="prose-ai">
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={codeComponents as Record<string, unknown>}>
-                  {content}
-                </ReactMarkdown>
-                {isStreaming && <StreamingCursor />}
-              </div>
-              <ToolCallPanel toolCalls={toolCalls} />
-            </>
+            <div className="prose-ai">
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={codeComponents as Record<string, unknown>}>
+                {content}
+              </ReactMarkdown>
+              {isStreaming && <StreamingCursor />}
+            </div>
           )}
         </div>
         {ts && (
@@ -426,19 +563,25 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
   const [input, setInput] = useState('');
   const [atBottom, setAtBottom] = useState(true);
 
+  const queryClient = useQueryClient();
+
   const {
     messages: allMessages,
+    toolCalls: allToolCalls,
     streaming,
     waiting,
     errors,
     setMessages,
+    setToolCalls,
     setError,
     setWaiting,
     addMessage,
     replaceOptimisticMessage,
+    reconcileFromDb,
   } = useAiChatStore();
 
   const sessionMessages = allMessages[session.id] ?? [];
+  const sessionToolCalls = allToolCalls[session.id] ?? [];
   const streamState = streaming[session.id] ?? null;
   const isWaiting = waiting[session.id] ?? false;
   const sessionError = errors[session.id] ?? null;
@@ -446,33 +589,58 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
   const { isLoading } = useQuery({
     queryKey: ['ai-messages', session.id],
     queryFn: async () => {
-      const res = await api.aiMessages(session.id);
-      setMessages(session.id, res.messages);
-      return res;
+      const [msgRes, tcRes] = await Promise.all([
+        api.aiMessages(session.id),
+        api.aiToolCalls(session.id),
+      ]);
+      setMessages(session.id, msgRes.messages);
+      setToolCalls(session.id, tcRes.toolCalls);
+      // After merging the DB snapshot, check whether any streamed messages
+      // were missed (e.g. WS was disconnected) and recover them.
+      reconcileFromDb(session.id, msgRes.messages);
+      return msgRes;
     },
+    // Always treat the cache as stale so that re-fetches (e.g. triggered by a
+    // WS reconnect) actually hit the server and pick up any missed messages.
     staleTime: 0,
     refetchOnWindowFocus: false,
   });
 
+  // When the WebSocket reconnects, force a re-fetch of this session's messages.
+  // Any ai:token events that arrived while the connection was down are already
+  // persisted in the DB by the server; this re-fetch surfaces them.
+  useEffect(() => {
+    const unsubscribe = onWsReconnect(() => {
+      queryClient.invalidateQueries({ queryKey: ['ai-messages', session.id] });
+    });
+    return unsubscribe;
+  }, [session.id, queryClient]);
+
+  // Keep keyboard focus on the composer input whenever the session changes or
+  // the component mounts, so the user can type immediately without clicking.
+  useEffect(() => {
+    composerRef.current?.focus();
+  }, [session.id]);
+
   // Auto-scroll
   useEffect(() => {
     if (atBottom && virtuosoRef.current) {
-      virtuosoRef.current.scrollToIndex({ index: 'LAST', behavior: 'smooth' });
+      virtuosoRef.current.scrollToIndex({ index: 'LAST', behavior: 'smooth', align: 'end' });
     }
   }, [sessionMessages.length, streamState?.content, atBottom]);
 
   useEffect(() => {
     setTimeout(() => {
-      virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'auto' });
+      virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'auto', align: 'end' });
     }, 50);
-  }, [session.id]);
+  }, [session.id, isLoading]);
 
   const sendMutation = useMutation({
     mutationFn: (content: string) => api.sendAiMessage(session.id, content),
     onSuccess: (message) => {
       replaceOptimisticMessage(session.id, message);
       setWaiting(session.id, true);
-      setTimeout(() => virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'smooth' }), 50);
+      setTimeout(() => virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'smooth', align: 'end' }), 50);
     },
     onError: (err) => toast({ title: 'Failed to send message', description: String(err), variant: 'destructive' }),
   });
@@ -490,23 +658,47 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
       sessionId: session.id,
       role: 'user',
       content,
-      toolCalls: null,
       streaming: false,
       createdAt: new Date().toISOString(),
     };
     addMessage(session.id, optimisticMsg);
     sendMutation.mutate(content);
-    if (composerRef.current) composerRef.current.style.height = 'auto';
+    if (composerRef.current) {
+      composerRef.current.style.height = 'auto';
+      composerRef.current.focus();
+    }
   };
 
-  const items: Array<{ type: 'message'; msg: AiMessage } | { type: 'streaming'; state: typeof streamState } | { type: 'thinking' }> = [
-    // Exclude in-flight assistant rows — the live { type: 'streaming' } bubble
-    // below already renders them; including them here would cause a duplicate
-    // blank bubble while the stream is active.
-    ...sessionMessages.filter((msg) => !msg.streaming).map((msg) => ({ type: 'message' as const, msg })),
-    ...(isStreaming && streamState ? [{ type: 'streaming' as const, state: streamState }] : []),
-    ...(!isStreaming && isWaiting ? [{ type: 'thinking' as const }] : []),
+  type ChatItem =
+    | { type: 'message'; msg: AiMessage; key: string }
+    | { type: 'toolcall'; toolCall: AiToolCall; key: string }
+    | { type: 'streaming'; state: typeof streamState; key: string }
+    | { type: 'thinking'; key: string };
+
+  // Build a time-ordered list of all settled messages and tool calls.
+  // Exclude in-flight (streaming: true) assistant rows — the live 'streaming'
+  // bubble below already renders them.
+  const settledMessages = sessionMessages.filter((m) => !m.streaming);
+
+  type Sortable = { ts: string; item: ChatItem };
+  const sortables: Sortable[] = [
+    ...settledMessages.map((msg) => ({
+      ts: msg.createdAt ?? '',
+      item: { type: 'message' as const, msg, key: msg.id },
+    })),
+    ...sessionToolCalls.map((tc) => ({
+      ts: tc.createdAt,
+      item: { type: 'toolcall' as const, toolCall: tc, key: tc.id },
+    })),
   ];
+  sortables.sort((a, b) => a.ts.localeCompare(b.ts));
+
+  const items: ChatItem[] = sortables.map((s) => s.item);
+
+  if (isStreaming && streamState) {
+    items.push({ type: 'streaming', state: streamState, key: 'streaming' });
+  }
+  if (!isStreaming && isWaiting) items.push({ type: 'thinking', key: 'thinking' });
 
   const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
@@ -555,6 +747,8 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
             style={{ height: '100%' }}
             atBottomStateChange={setAtBottom}
             followOutput="smooth"
+            initialTopMostItemIndex={items.length > 0 ? items.length - 1 : 0}
+            alignToBottom
             itemContent={(_, item) => {
               if (item.type === 'thinking') {
                 return (
@@ -568,13 +762,20 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
                   </div>
                 );
               }
+              if (item.type === 'toolcall') {
+                return (
+                  <ToolCallActivityRow
+                    key={item.key}
+                    toolCall={item.toolCall}
+                  />
+                );
+              }
               if (item.type === 'streaming' && item.state) {
                 const streamMsg: AiMessage = {
                   id: item.state.messageId,
                   sessionId: session.id,
                   role: 'assistant',
                   content: item.state.content,
-                  toolCalls: item.state.toolCalls ? JSON.stringify(item.state.toolCalls) : null,
                   streaming: true,
                   createdAt: new Date().toISOString(),
                 };
@@ -584,7 +785,6 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
                       message={streamMsg}
                       isStreaming
                       streamContent={item.state.content}
-                      streamToolCalls={item.state.toolCalls}
                     />
                   </div>
                 );
@@ -612,7 +812,7 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
               initial={{ opacity: 0, scale: 0.8 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.8 }}
-              onClick={() => virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'smooth' })}
+              onClick={() => virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'smooth', align: 'end' })}
               className="absolute bottom-4 right-6 w-8 h-8 rounded-full glass border border-border flex items-center justify-center hover:border-primary/30 transition-colors shadow-warm-md"
             >
               <ChevronDown className="w-4 h-4 text-muted-foreground" />
@@ -672,8 +872,7 @@ function ChatWindow({ session, connected }: ChatWindowProps) {
 
 export default function AiChat() {
   const queryClient = useQueryClient();
-  const { sessions, setSessions, addSession, removeSession, updateSession } = useAiChatStore();
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const { sessions, setSessions, addSession, removeSession, updateSession, activeId, setActiveId } = useAiChatStore();
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const activeSession = sessions.find((s) => s.id === activeId) ?? null;
@@ -693,8 +892,10 @@ export default function AiChat() {
   });
   const connected = conn?.configured ?? false;
 
-  // Load sessions
-  const { isLoading: sessionsLoading } = useQuery({
+  // Load sessions — always fetches in the background to stay in sync with the
+  // server, but the UI hydrates immediately from the persisted store so there
+  // is no loading gate on return visits or after a reload.
+  useQuery({
     queryKey: ['ai-sessions'],
     queryFn: async () => {
       const list = await api.aiSessions();
@@ -721,10 +922,6 @@ export default function AiChat() {
     mutationFn: (id: string) => api.deleteAiSession(id),
     onSuccess: (_, id) => {
       removeSession(id);
-      if (activeId === id) {
-        const remaining = sessions.filter((s) => s.id !== id);
-        setActiveId(remaining[0]?.id ?? null);
-      }
       queryClient.invalidateQueries({ queryKey: ['ai-sessions'] });
       setConfirmDeleteId(null);
     },
@@ -742,14 +939,6 @@ export default function AiChat() {
       queryClient.invalidateQueries({ queryKey: ['ai-sessions'] });
     },
   });
-
-  if (sessionsLoading) {
-    return (
-      <div className="h-full flex items-center justify-center">
-        <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
 
   return (
     <div className="h-full flex flex-col overflow-hidden bg-background relative">

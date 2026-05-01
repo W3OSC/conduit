@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import { RefreshCw, AlertTriangle, Wifi, MessageSquare, Database, TrendingUp, Activity, Heart, Repeat2, ExternalLink, Bird } from 'lucide-react';
 import {
   AreaChart, Area, BarChart, Bar, LineChart, Line,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 import { api, type Tweet } from '@/lib/api';
 import { useConnectionStore, useSyncStore } from '@/store';
@@ -61,7 +61,7 @@ function StatCard({ title, value, sub, icon: Icon, amber }: {
 }) {
   return (
     <motion.div {...fade()} className={cn(
-      'card-warm p-5 flex flex-col justify-between gap-2',
+      'card-warm p-3 flex flex-col justify-between gap-1.5',
       amber && 'amber-surface border-primary/20 glow-amber-sm',
     )}>
       <div className="flex items-center justify-between">
@@ -91,9 +91,9 @@ function ServiceCard({ service, avgDuration }: { service: typeof SERVICES[number
   const lastSync  = (statusData?.lastSync[service] as { startedAt?: string } | null)?.startedAt;
 
   return (
-    <motion.div {...fade()} className="card-warm p-5 flex flex-col gap-4">
+    <motion.div {...fade()} className="card-warm p-3 flex flex-col gap-2.5">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2">
           <ServiceIcon service={service} size="sm" />
           <span className="text-sm font-semibold capitalize">{service}</span>
         </div>
@@ -103,13 +103,13 @@ function ServiceCard({ service, avgDuration }: { service: typeof SERVICES[number
         />
       </div>
 
-      <div className="grid grid-cols-2 gap-3 flex-1">
-        <div className="bg-secondary/50 rounded-xl p-3 flex flex-col items-center justify-center">
-          <p className="text-2xs text-muted-foreground uppercase tracking-wider mb-1">Messages</p>
+      <div className="grid grid-cols-2 gap-2 flex-1">
+        <div className="bg-secondary/50 rounded-xl p-2 flex flex-col items-center justify-center">
+          <p className="text-2xs text-muted-foreground uppercase tracking-wider mb-0.5">Messages</p>
           <p className="text-xl font-bold">{msgCount.toLocaleString()}</p>
         </div>
-        <div className="bg-secondary/50 rounded-xl p-3 flex flex-col items-center justify-center">
-          <p className="text-2xs text-muted-foreground uppercase tracking-wider mb-1">Chats</p>
+        <div className="bg-secondary/50 rounded-xl p-2 flex flex-col items-center justify-center">
+          <p className="text-2xs text-muted-foreground uppercase tracking-wider mb-0.5">Chats</p>
           <p className="text-xl font-bold">{chatCount}</p>
         </div>
       </div>
@@ -128,9 +128,6 @@ function ServiceCard({ service, avgDuration }: { service: typeof SERVICES[number
         <p className="text-xs text-muted-foreground">
           {lastSync ? timeAgo(lastSync) : 'Never synced'}
         </p>
-        {avgDuration != null && (
-          <p className="text-xs text-muted-foreground">{avgDuration}s avg</p>
-        )}
       </div>
     </motion.div>
   );
@@ -163,8 +160,8 @@ function ChartCard({ title, subtitle, icon: Icon, children, controls, delay = 0 
   delay?: number;
 }) {
   return (
-    <motion.div {...fade(delay)} className="card-warm p-5 flex flex-col min-h-0">
-      <div className="flex items-start justify-between gap-4 mb-4 flex-shrink-0">
+    <motion.div {...fade(delay)} className="card-warm p-3 flex flex-col min-h-0">
+      <div className="flex items-start justify-between gap-2 mb-2 flex-shrink-0">
         <div>
           <h3 className="text-sm font-semibold">{title}</h3>
           {subtitle && <p className="text-xs text-muted-foreground mt-0.5">{subtitle}</p>}
@@ -273,9 +270,9 @@ function LatestPostsCard({ delay = 0 }: { delay?: number }) {
   const tweets = data?.tweets ?? [];
 
   return (
-    <motion.div {...fade(delay)} className="card-warm p-5 flex flex-col min-h-0">
+    <motion.div {...fade(delay)} className="card-warm p-3 flex flex-col min-h-0">
       {/* Header */}
-      <div className="flex items-center justify-between gap-4 mb-4 flex-shrink-0">
+      <div className="flex items-center justify-between gap-2 mb-2 flex-shrink-0">
         <div className="flex items-center gap-2">
           <Bird className="w-4 h-4 text-sky-400" />
           <h3 className="text-sm font-semibold">Latest Posts</h3>
@@ -350,17 +347,17 @@ export default function Dashboard() {
 
   if (isLoading) {
     return (
-      <div className="p-6 grid grid-cols-4 gap-4">
+      <div className="p-2 grid grid-cols-4 gap-2">
         {Array.from({ length: 4 }).map((_, i) => <CardSkeleton key={i} />)}
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col h-full p-4 gap-4 animate-fade-in overflow-hidden">
+    <div className="flex flex-col h-full p-2 gap-2 animate-fade-in overflow-hidden">
 
       {/* Stat row */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 flex-shrink-0">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 flex-shrink-0">
         <StatCard title="Total Messages" value={totalMessages.toLocaleString()} icon={MessageSquare} amber sub="Across all services" />
         <StatCard title="Active Chats" value={Object.values(statusData?.chatCounts || {}).reduce((a, b) => a + b, 0)} icon={Database} sub="Synced conversations" />
         <StatCard title="Services Online" value={`${connectedCount}/6`} icon={Wifi} sub={connectedCount === 6 ? 'All connected' : 'Some offline'} />
@@ -368,14 +365,14 @@ export default function Dashboard() {
       </div>
 
       {/* Service cards */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 flex-shrink-0">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 flex-shrink-0">
         {SERVICES.map((s) => (
           <ServiceCard key={s} service={s} avgDuration={syncData?.avgDuration?.[s] ?? null} />
         ))}
       </div>
 
       {/* Charts — 2×2 grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 lg:grid-rows-2 gap-4 flex-1 min-h-0">
+      <div className="grid grid-cols-1 lg:grid-cols-2 lg:grid-rows-2 gap-2 flex-1 min-h-0">
 
         {/* Message Volume */}
         <ChartCard
@@ -411,7 +408,6 @@ export default function Dashboard() {
               <XAxis dataKey="date" tick={axisStyle} tickLine={false} axisLine={false} />
               <YAxis tick={axisStyle} tickLine={false} axisLine={false} width={36} />
               <Tooltip content={<ChartTooltip />} cursor={{ stroke: 'hsl(20 8% 28%)', strokeWidth: 1 }} />
-              <Legend wrapperStyle={{ fontSize: 11 }} />
               {SERVICES.map((s) => (
                 <Area key={s} type="monotone" dataKey={s} stroke={SVC_COLORS[s]}
                   fill={`url(#g-${s})`} strokeWidth={2} dot={false} />
@@ -434,7 +430,6 @@ export default function Dashboard() {
               <XAxis dataKey="date" tick={axisStyle} tickLine={false} axisLine={false} />
               <YAxis tick={axisStyle} tickLine={false} axisLine={false} width={36} />
               <Tooltip content={<ChartTooltip />} cursor={{ fill: 'hsl(20 8% 18% / 0.5)' }} />
-              <Legend wrapperStyle={{ fontSize: 11 }} />
               <Bar dataKey="success" fill="#10B981" radius={[3, 3, 0, 0]} name="Success" stackId="a" />
               <Bar dataKey="error"   fill="#EF4444" radius={[3, 3, 0, 0]} name="Error"   stackId="a" />
             </BarChart>
@@ -456,7 +451,6 @@ export default function Dashboard() {
                 <XAxis dataKey="date" tick={axisStyle} tickLine={false} axisLine={false} />
                 <YAxis tick={axisStyle} tickLine={false} axisLine={false} width={36} />
                 <Tooltip content={<ChartTooltip />} cursor={{ stroke: 'hsl(20 8% 28%)', strokeWidth: 1 }} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
                 <Line type="monotone" dataKey="received" stroke="#8B5CF6" strokeWidth={2} dot={false} name="Received" />
                 <Line type="monotone" dataKey="approved" stroke="#10B981" strokeWidth={2} dot={false} name="Approved" />
                 <Line type="monotone" dataKey="rejected" stroke="#EF4444" strokeWidth={2} dot={false} name="Rejected" />

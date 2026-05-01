@@ -12,7 +12,7 @@
 import { google, gmail_v1 } from 'googleapis';
 import { getDb } from '../db/client.js';
 import { gmailMessages, settings, syncRuns } from '../db/schema.js';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, sql } from 'drizzle-orm';
 import { broadcast, broadcastUnread } from '../websocket/hub.js';
 
 export interface GmailCreds {
@@ -304,9 +304,9 @@ export class GmailSync {
       } else {
         db.update(syncRuns).set({ status: 'success', finishedAt: new Date().toISOString(), messagesSaved: saved }).where(eq(syncRuns.id, runId)).run();
         broadcast({ type: 'sync:progress', data: { service: 'gmail', status: 'success', messagesSaved: saved } });
-        console.log(`[gmail] Full sync complete: ${saved} messages`);
+        if (process.env.DEBUG) console.debug(`[gmail] Full sync complete: ${saved} messages`);
         // Broadcast unread counts after sync
-        this.fetchUnreadCounts().catch(console.error);
+        this.fetchUnreadCounts();
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -316,15 +316,50 @@ export class GmailSync {
     }
   }
 
-  async fetchUnreadCounts(): Promise<void> {
-    if (!this.gmail) return;
+  /**
+   * Compute per-thread unread counts from the local gmail_messages table and
+   * broadcast them. A thread is "unread" if it has at least one message with
+   * is_read = false.
+   *
+   * This approach mirrors Gmail's thread model: in the Gmail UI, a thread
+   * appears bold (unread) if any message in it is unread.
+   *
+   * chatId = thread_id, source = 'gmail'.
+   */
+  fetchUnreadCounts(): void {
     try {
-      const labels = await this.getLabels();
-      const inbox = labels.find((l) => l.id === 'INBOX');
-      if (inbox?.messagesUnread) {
-        broadcastUnread([{ source: 'gmail', chatId: 'INBOX', count: inbox.messagesUnread }]);
+      const db = getDb();
+
+      // Count unread messages per thread
+      const unreadRows = db.all<{ threadId: string; count: number }>(sql`
+        SELECT thread_id AS threadId, COUNT(*) AS count
+        FROM gmail_messages
+        WHERE is_read = 0
+        GROUP BY thread_id
+      `);
+
+      // Broadcast 0-count for all threads that are now fully read,
+      // and actual counts for threads that still have unread messages.
+      const allThreadRows = db.all<{ threadId: string }>(sql`
+        SELECT DISTINCT thread_id AS threadId FROM gmail_messages
+      `);
+
+      const unreadMap = new Map<string, number>(
+        unreadRows.map(({ threadId, count }) => [threadId, Number(count)]),
+      );
+
+      const updates = allThreadRows.map(({ threadId }) => ({
+        source: 'gmail',
+        chatId: threadId,
+        count: unreadMap.get(threadId) ?? 0,
+      }));
+
+      if (updates.length > 0) {
+        broadcastUnread(updates);
       }
-    } catch { /* best-effort */ }
+    } catch (e) {
+      console.error('[gmail] fetchUnreadCounts error:', e);
+    }
   }
 
   async incrementalSync(): Promise<number> {
@@ -400,6 +435,8 @@ export class GmailSync {
         }
 
         // Handle label changes (mark read/unread, archive, etc.)
+        // Track affected thread IDs so we can re-broadcast their unread counts.
+        const affectedThreadIds = new Set<string>();
         for (const labChange of [...(h.labelsAdded || []), ...(h.labelsRemoved || [])]) {
           const stub = labChange.message;
           if (!stub?.id) continue;
@@ -408,6 +445,25 @@ export class GmailSync {
           const labels = JSON.stringify(stub.labelIds || []);
           db.update(gmailMessages).set({ isRead, isStarred, labels })
             .where(eq(gmailMessages.gmailId, stub.id)).run();
+          // Track the thread so we can update its unread count badge
+          const msgRow = db.select({ threadId: gmailMessages.threadId })
+            .from(gmailMessages).where(eq(gmailMessages.gmailId, stub.id)).get();
+          if (msgRow?.threadId) affectedThreadIds.add(msgRow.threadId);
+        }
+
+        // Re-broadcast unread counts for threads whose read state changed
+        if (affectedThreadIds.size > 0) {
+          for (const threadId of affectedThreadIds) {
+            const unreadCountRow = db.all<{ count: number }>(sql`
+              SELECT COUNT(*) AS count FROM gmail_messages
+              WHERE thread_id = ${threadId} AND is_read = 0
+            `)[0];
+            broadcastUnread([{
+              source: 'gmail',
+              chatId: threadId,
+              count: unreadCountRow?.count ?? 0,
+            }]);
+          }
         }
       }
 
@@ -416,7 +472,7 @@ export class GmailSync {
       // 404 means the historyId has expired (Gmail only retains ~7 days of history).
       // Reset and fall back to a full sync so we get back in sync.
       if (e?.code === 404 || e?.status === 404) {
-        console.warn('[gmail] historyId expired (404), resetting and running full sync');
+        if (process.env.DEBUG) console.debug('[gmail] historyId expired (404), resetting and running full sync');
         this.historyId = null;
         this.saveHistoryId();
         await this.initialFullSync();
@@ -488,6 +544,21 @@ export class GmailSync {
     });
     const db = getDb();
     db.update(gmailMessages).set({ isRead: read }).where(eq(gmailMessages.gmailId, messageId)).run();
+
+    // Re-broadcast the unread count for this message's thread
+    const msgRow = db.select({ threadId: gmailMessages.threadId })
+      .from(gmailMessages).where(eq(gmailMessages.gmailId, messageId)).get();
+    if (msgRow?.threadId) {
+      const unreadCountRow = db.all<{ count: number }>(sql`
+        SELECT COUNT(*) AS count FROM gmail_messages
+        WHERE thread_id = ${msgRow.threadId} AND is_read = 0
+      `)[0];
+      broadcastUnread([{
+        source: 'gmail',
+        chatId: msgRow.threadId,
+        count: unreadCountRow?.count ?? 0,
+      }]);
+    }
   }
 
   async star(messageId: string, starred: boolean): Promise<void> {

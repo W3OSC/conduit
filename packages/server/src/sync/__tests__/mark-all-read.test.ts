@@ -1,40 +1,20 @@
 /**
  * mark-all-read.test.ts
  *
- * Tests for the "mark all chats read" and "seed missing read state" logic.
+ * Tests for the "mark all chats read" logic.
  * Uses pure replicas of the server functions so no real DB is required.
+ *
+ * Design: Discord is excluded from mark-all-read (no read cursor tracking).
+ * Platform write-backs are always attempted for Slack and Telegram.
  */
 
 import { describe, it, expect } from 'vitest';
 
 // ── Pure replicas ─────────────────────────────────────────────────────────────
 
-interface ReadEntry {
-  source: string;
-  chatId: string;
-  lastReadAt: string;
-}
-
-/**
- * Pure replica of seedMissingReadState:
- * INSERT OR IGNORE — only inserts rows that don't already exist.
- * Returns the updated map.
- */
-function seedMissing(
-  existing: Map<string, string>,
-  updates: Array<{ source: string; chatId: string; lastReadAt: string }>,
-): Map<string, string> {
-  const result = new Map(existing);
-  for (const { source, chatId, lastReadAt } of updates) {
-    const key = `${source}:${chatId}`;
-    if (!result.has(key)) result.set(key, lastReadAt);
-  }
-  return result;
-}
-
 /**
  * Pure replica of markAllChatsRead:
- * Upserts every chat as read (INSERT OR REPLACE). Always overwrites.
+ * Upserts every non-Discord chat as read (INSERT OR REPLACE). Always overwrites.
  * Returns the updated map and the list of entries that were processed.
  */
 function markAllRead(
@@ -45,6 +25,8 @@ function markAllRead(
   const result = new Map(existing);
   const processed: Array<{ source: string; chatId: string }> = [];
   for (const { source, chatId } of chats) {
+    // Discord is excluded from read state tracking
+    if (source === 'discord') continue;
     result.set(`${source}:${chatId}`, now);
     processed.push({ source, chatId });
   }
@@ -53,7 +35,7 @@ function markAllRead(
 
 /**
  * Count unread: messages after lastReadAt cursor (null = all unread).
- * Used to verify that marking as read with a future timestamp → 0 unread.
+ * Discord always returns 0.
  */
 function countUnread(
   messages: Array<{ source: string; chatId: string; timestamp: string }>,
@@ -61,80 +43,36 @@ function countUnread(
   chatId: string,
   lastReadAt: string | null,
 ): number {
+  if (source === 'discord') return 0;
   const since = lastReadAt ?? '1970-01-01T00:00:00.000Z';
   return messages.filter(
     (m) => m.source === source && m.chatId === chatId && m.timestamp > since,
   ).length;
 }
 
-// ── Tests: seedMissingReadState ───────────────────────────────────────────────
-
-describe('seedMissing — INSERT OR IGNORE behaviour', () => {
-  it('inserts entries that do not exist yet', () => {
-    const now = '2024-01-01T12:00:00Z';
-    const result = seedMissing(new Map(), [
-      { source: 'slack',   chatId: 'ch1', lastReadAt: now },
-      { source: 'discord', chatId: 'ch2', lastReadAt: now },
-    ]);
-    expect(result.get('slack:ch1')).toBe(now);
-    expect(result.get('discord:ch2')).toBe(now);
-  });
-
-  it('does NOT overwrite an existing cursor', () => {
-    const existing = new Map([['slack:ch1', '2024-01-01T08:00:00Z']]);
-    const result = seedMissing(existing, [
-      { source: 'slack', chatId: 'ch1', lastReadAt: '2024-01-01T12:00:00Z' },
-    ]);
-    expect(result.get('slack:ch1')).toBe('2024-01-01T08:00:00Z'); // unchanged
-  });
-
-  it('inserts new chats without touching existing ones', () => {
-    const existing = new Map([['slack:ch1', '2024-01-01T08:00:00Z']]);
-    const result = seedMissing(existing, [
-      { source: 'slack',   chatId: 'ch1', lastReadAt: '2024-01-01T12:00:00Z' },
-      { source: 'discord', chatId: 'ch2', lastReadAt: '2024-01-01T12:00:00Z' },
-    ]);
-    expect(result.get('slack:ch1')).toBe('2024-01-01T08:00:00Z'); // unchanged
-    expect(result.get('discord:ch2')).toBe('2024-01-01T12:00:00Z'); // inserted
-  });
-
-  it('empty updates → read map unchanged', () => {
-    const existing = new Map([['slack:ch1', '2024-01-01T08:00:00Z']]);
-    const result = seedMissing(existing, []);
-    expect(result).toEqual(existing);
-  });
-
-  it('empty existing + empty updates → empty result', () => {
-    const result = seedMissing(new Map(), []);
-    expect(result.size).toBe(0);
-  });
-
-  it('after seeding, messages before the seed timestamp count as read', () => {
-    const seedTs = '2024-01-01T12:00:00Z';
-    const readMap = seedMissing(new Map(), [
-      { source: 'slack', chatId: 'ch1', lastReadAt: seedTs },
-    ]);
-    const messages = [
-      { source: 'slack', chatId: 'ch1', timestamp: '2024-01-01T10:00:00Z' },
-      { source: 'slack', chatId: 'ch1', timestamp: '2024-01-01T11:00:00Z' },
-    ];
-    const cursor = readMap.get('slack:ch1') ?? null;
-    expect(countUnread(messages, 'slack', 'ch1', cursor)).toBe(0);
-  });
-});
-
 // ── Tests: markAllChatsRead ───────────────────────────────────────────────────
 
-describe('markAllRead — mark all chats as read (upsert)', () => {
+describe('markAllRead — mark all non-Discord chats as read (upsert)', () => {
   const now = '2024-06-01T10:00:00Z';
 
-  it('marks every provided chat as read', () => {
+  it('marks every provided non-Discord chat as read', () => {
     const { readMap, processed } = markAllRead(new Map(), [
       { source: 'slack',   chatId: 'ch1' },
-      { source: 'discord', chatId: 'ch2' },
+      { source: 'telegram', chatId: '999' },
     ], now);
     expect(readMap.get('slack:ch1')).toBe(now);
-    expect(readMap.get('discord:ch2')).toBe(now);
+    expect(readMap.get('telegram:999')).toBe(now);
+    expect(processed).toHaveLength(2);
+  });
+
+  it('Discord chats are excluded from mark-all-read', () => {
+    const { readMap, processed } = markAllRead(new Map(), [
+      { source: 'slack',   chatId: 'ch1' },
+      { source: 'discord', chatId: 'disc-ch' },
+      { source: 'telegram', chatId: '999' },
+    ], now);
+    expect(readMap.has('discord:disc-ch')).toBe(false);
+    expect(processed.every((e) => e.source !== 'discord')).toBe(true);
     expect(processed).toHaveLength(2);
   });
 
@@ -144,13 +82,13 @@ describe('markAllRead — mark all chats as read (upsert)', () => {
     expect(readMap.get('slack:ch1')).toBe(now);
   });
 
-  it('returns processed entries for platform API calls', () => {
+  it('returns processed entries for platform API calls (Slack + Telegram only)', () => {
     const { processed } = markAllRead(new Map(), [
       { source: 'slack',   chatId: 'C111' },
       { source: 'discord', chatId: 'D222' },
       { source: 'telegram', chatId: '999' },
     ], now);
-    expect(processed.map((e) => e.source).sort()).toEqual(['discord', 'slack', 'telegram']);
+    expect(processed.map((e) => e.source).sort()).toEqual(['slack', 'telegram']);
   });
 
   it('empty chat list → no-op, returns empty processed', () => {
@@ -160,15 +98,15 @@ describe('markAllRead — mark all chats as read (upsert)', () => {
     expect(processed).toHaveLength(0);
   });
 
-  it('after marking all read, unread count is 0 for all chats', () => {
+  it('after marking all read, unread count is 0 for all eligible chats', () => {
     const messages = [
       { source: 'slack',   chatId: 'ch1', timestamp: '2024-01-01T09:00:00Z' },
       { source: 'slack',   chatId: 'ch1', timestamp: '2024-01-01T10:00:00Z' },
-      { source: 'discord', chatId: 'ch2', timestamp: '2024-01-01T11:00:00Z' },
+      { source: 'telegram', chatId: '999', timestamp: '2024-01-01T11:00:00Z' },
     ];
     const chats = [
       { source: 'slack',   chatId: 'ch1' },
-      { source: 'discord', chatId: 'ch2' },
+      { source: 'telegram', chatId: '999' },
     ];
     const { readMap } = markAllRead(new Map(), chats, now);
 
@@ -176,5 +114,54 @@ describe('markAllRead — mark all chats as read (upsert)', () => {
       const cursor = readMap.get(`${source}:${chatId}`) ?? null;
       expect(countUnread(messages, source, chatId, cursor)).toBe(0);
     }
+  });
+
+  it('Discord messages always have 0 unread regardless of cursor', () => {
+    const messages = [
+      { source: 'discord', chatId: 'ch1', timestamp: '2024-01-01T09:00:00Z' },
+      { source: 'discord', chatId: 'ch1', timestamp: '2024-01-01T10:00:00Z' },
+    ];
+    expect(countUnread(messages, 'discord', 'ch1', null)).toBe(0);
+    expect(countUnread(messages, 'discord', 'ch1', '2024-01-01T08:00:00Z')).toBe(0);
+  });
+});
+
+// ── Tests: platform cursor is source of truth ─────────────────────────────────
+
+describe('platform cursor seeding replaces old local cursor', () => {
+  /**
+   * Pure replica of seedReadState (upsert — always overwrites).
+   */
+  function seedReadState(
+    existing: Map<string, string>,
+    updates: Array<{ source: string; chatId: string; lastReadAt: string }>,
+  ): Map<string, string> {
+    const result = new Map(existing);
+    for (const { source, chatId, lastReadAt } of updates) {
+      result.set(`${source}:${chatId}`, lastReadAt);
+    }
+    return result;
+  }
+
+  it('platform last_read overwrites a stale local cursor', () => {
+    // User previously marked as read locally at 8am
+    const local = new Map([['slack:ch1', '2024-01-01T08:00:00Z']]);
+    // Platform says actually read at 11am (user read it on mobile)
+    const result = seedReadState(local, [
+      { source: 'slack', chatId: 'ch1', lastReadAt: '2024-01-01T11:00:00Z' },
+    ]);
+    expect(result.get('slack:ch1')).toBe('2024-01-01T11:00:00Z');
+  });
+
+  it('platform cursor correctly determines unread count', () => {
+    const readMap = seedReadState(new Map(), [
+      { source: 'slack', chatId: 'ch1', lastReadAt: '2024-01-01T10:30:00Z' },
+    ]);
+    const messages = [
+      { source: 'slack', chatId: 'ch1', timestamp: '2024-01-01T10:00:00Z' }, // read
+      { source: 'slack', chatId: 'ch1', timestamp: '2024-01-01T11:00:00Z' }, // unread
+    ];
+    const cursor = readMap.get('slack:ch1') ?? null;
+    expect(countUnread(messages, 'slack', 'ch1', cursor)).toBe(1);
   });
 });

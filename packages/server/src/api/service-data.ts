@@ -20,12 +20,17 @@ import { getDb } from '../db/client.js';
 import {
   telegramMessages, discordMessages, slackMessages,
   gmailMessages, calendarEvents, twitterDms,
-  syncState, syncRuns, settings, contacts,
+  syncState, syncRuns, settings, contacts, meetNotes,
+  chatReadState, chatMuteState,
+  aiSessions, aiMessages, aiToolCalls,
+  auditLog, outbox, errorLog,
+  discordChannelMuteState,
 } from '../db/schema.js';
 import { eq, and, like } from 'drizzle-orm';
 import { optionalAuth } from '../auth/middleware.js';
 import { getConnectionManager, type ServiceName } from '../connections/manager.js';
 import { broadcast } from '../websocket/hub.js';
+import { getSqlite } from '../db/client.js';
 
 const router = Router();
 
@@ -52,9 +57,20 @@ router.post('/service/:service/reset', optionalAuth, async (req, res) => {
   db.delete(syncRuns).where(eq(syncRuns.source, service)).run();
   db.delete(contacts).where(eq(contacts.source, service)).run();
 
+  // 3. Wipe read/mute cursors for this service so unread counts reset cleanly
+  db.delete(chatReadState).where(eq(chatReadState.source, service)).run();
+  db.delete(chatMuteState).where(eq(chatMuteState.source, service)).run();
+
+  // 4. For Gmail/calendar: also clear persisted incremental-sync tokens from settings
+  if (service === 'gmail' || service === 'calendar') {
+    db.delete(settings).where(like(settings.key, 'gmail.historyId.%')).run();
+    db.delete(settings).where(like(settings.key, 'calendar.syncToken.%')).run();
+    db.delete(meetNotes).run();
+  }
+
   broadcast({ type: 'sync:progress', data: { service, status: 'idle' } });
 
-  // 3. Re-connect first (registers the live listener), THEN trigger sync.
+  // 5. Re-connect first (registers the live listener), THEN trigger sync.
   //    Order matters: listener must be active before the sync loop starts so
   //    that any message arriving mid-sync is captured by the listener and the
   //    DB unique constraint prevents duplicates from both paths.
@@ -65,6 +81,8 @@ router.post('/service/:service/reset', optionalAuth, async (req, res) => {
     else if (service === 'telegram') await manager.connectTelegram();
     else if (service === 'gmail' || service === 'calendar') await manager.connectGmail();
     else if (service === 'twitter') {
+      // Clear Twitter in-memory state so feed/DM dedup sets don't carry over
+      manager.getTwitter()?.resetInMemoryState();
       // Twitter just re-syncs DMs — no listener reconnect needed
       await manager.triggerSync('twitter');
       return res.json({ success: true, message: 'Twitter data cleared — resync started' });
@@ -103,9 +121,15 @@ router.post('/service/gmail/reset/:email', optionalAuth, async (req, res) => {
   // 4. Clear syncState for this account
   db.delete(syncState).where(and(eq(syncState.source, 'gmail'), eq(syncState.accountId, email))).run();
 
+  // 5. Clear contacts sourced from this Gmail account
+  db.delete(contacts).where(and(eq(contacts.source, 'gmail'), eq(contacts.accountId, email))).run();
+
+  // 6. Clear meet notes for this account
+  db.delete(meetNotes).where(eq(meetNotes.accountId, email)).run();
+
   broadcast({ type: 'sync:progress', data: { service: 'gmail', status: 'idle' } });
 
-  // 5. Reconnect this specific account and trigger full sync
+  // 7. Reconnect this specific account and trigger full sync
   const manager = getConnectionManager();
   try {
     const { getGmailCredsByEmail } = await import('./google-auth.js');
@@ -120,6 +144,61 @@ router.post('/service/gmail/reset/:email', optionalAuth, async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   }
+});
+
+// ── Reset all app data ────────────────────────────────────────────────────────
+// Wipes all synced/generated data while preserving credentials and configuration.
+// Preserved: settings, accounts, permissions, api_keys, api_key_permissions,
+//            obsidian_vault_config, smb_share_config, passkey_credentials,
+//            __drizzle_migrations
+// Wiped: all messages, contacts, AI sessions, audit log, outbox, sync state, etc.
+
+router.post('/reset-app-data', optionalAuth, (req, res) => {
+  const db = getDb();
+  const sqlite = getSqlite();
+
+  const wipeAll = sqlite.transaction(() => {
+    // Messages
+    db.delete(telegramMessages).run();
+    db.delete(discordMessages).run();
+    db.delete(slackMessages).run();
+    db.delete(gmailMessages).run();
+    db.delete(calendarEvents).run();
+    db.delete(twitterDms).run();
+    db.delete(meetNotes).run();
+
+    // Contacts, read/mute state
+    db.delete(contacts).run();
+    db.delete(chatReadState).run();
+    db.delete(chatMuteState).run();
+    db.delete(discordChannelMuteState).run();
+
+    // Sync history
+    db.delete(syncState).run();
+    db.delete(syncRuns).run();
+
+    // AI
+    db.delete(aiSessions).run();
+    db.delete(aiMessages).run();
+    db.delete(aiToolCalls).run();
+
+    // Operational
+    db.delete(auditLog).run();
+    db.delete(outbox).run();
+    db.delete(errorLog).run();
+
+    // Incremental sync tokens stored in settings (gmail historyId, calendar syncToken)
+    db.delete(settings).where(like(settings.key, 'gmail.historyId.%')).run();
+    db.delete(settings).where(like(settings.key, 'calendar.syncToken.%')).run();
+  });
+
+  wipeAll();
+
+  // Notify all connected clients to refresh
+  broadcast({ type: 'sync:progress', data: { service: 'all', status: 'idle' } });
+
+  console.log('[reset] All app data wiped');
+  res.json({ success: true, message: 'All app data cleared. Credentials and configuration preserved.' });
 });
 
 // ── Discord guild management ───────────────────────────────────────────────────
@@ -143,6 +222,48 @@ router.get('/discord/guilds', optionalAuth, (_req, res) => {
 
   const result = guilds.map((g) => ({ ...g, synced: syncedIds.includes(g.id) }));
   res.json(result);
+});
+
+// ── Slack channel list ─────────────────────────────────────────────────────────
+// Returns all channels/DMs/MPDMs the connected Slack user is a member of.
+// Used by the fine-grained permissions UI to populate the channel multi-select.
+
+router.get('/slack/channels', optionalAuth, async (_req, res) => {
+  const manager = getConnectionManager();
+  const slack = manager.getSlack();
+  if (!slack) {
+    return res.status(503).json({ error: 'Slack not connected' });
+  }
+  try {
+    const channels = await slack.getChannels();
+    res.json({ channels: channels.map((c) => ({ id: c.id, name: c.name, type: c.type })) });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ── Telegram chat list ────────────────────────────────────────────────────────
+// Returns all Telegram dialogs the connected account can see.
+// Used by the fine-grained permissions UI to populate the chat multi-select.
+
+router.get('/telegram/chats', optionalAuth, async (_req, res) => {
+  const manager = getConnectionManager();
+  const telegram = manager.getTelegram();
+  if (!telegram) {
+    return res.status(503).json({ error: 'Telegram not connected' });
+  }
+  try {
+    const chats = await telegram.getChats();
+    res.json({
+      chats: chats.map((c) => ({
+        id: c.chat_id,
+        name: c.name,
+        type: c.chat_type,
+      })),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 router.post('/discord/sync-guilds', optionalAuth, async (req, res) => {

@@ -1,20 +1,55 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Eye, EyeOff, Loader2, ShieldCheck, Lock } from 'lucide-react';
+import { Eye, EyeOff, Loader2, ShieldCheck, Lock, Fingerprint } from 'lucide-react';
+import { startAuthentication } from '@simplewebauthn/browser';
+import type { PublicKeyCredentialRequestOptionsJSON } from '@simplewebauthn/browser';
 import { uiAuth } from '@/lib/api';
+import type { UiAuthStatus } from '@/lib/api';
 import { AppIcon } from '@/components/shared/AppIcon';
 
 interface LoginProps {
   onAuthenticated: () => void;
 }
 
+type LoginStep = 'choose' | 'password' | 'totp' | 'passkey';
+
 export default function Login({ onAuthenticated }: LoginProps) {
-  const [step, setStep] = useState<'password' | 'totp'>('password');
+  const [authStatus, setAuthStatus] = useState<UiAuthStatus | null>(null);
+  const [step, setStep] = useState<LoginStep>('choose');
+
+  // Password state
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+
+  // TOTP state
   const [totpCode, setTotpCode] = useState('');
+
+  // Shared
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // Load auth status to know which methods are enabled
+  useEffect(() => {
+    uiAuth.status().then((s) => {
+      setAuthStatus(s);
+      // If only one method is enabled, skip the choose step
+      const enabled = [
+        s.methods.password.enabled,
+        s.methods.passkey.enabled,
+      ].filter(Boolean).length;
+      // TOTP is not a standalone method — it follows password
+      if (enabled === 1) {
+        if (s.methods.passkey.enabled && !s.methods.password.enabled) {
+          setStep('passkey');
+        } else {
+          setStep('password');
+        }
+      }
+    }).catch(() => {
+      // Fall back to password step on error
+      setStep('password');
+    });
+  }, []);
 
   // Auto-focus TOTP input when that step appears
   useEffect(() => {
@@ -56,12 +91,41 @@ export default function Login({ onAuthenticated }: LoginProps) {
     setLoading(false);
   };
 
+  const handlePasskey = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const options = await uiAuth.passkeyLoginBegin();
+      const assertion = await startAuthentication({ optionsJSON: options as unknown as PublicKeyCredentialRequestOptionsJSON });
+      await uiAuth.passkeyLoginFinish(assertion as unknown as Record<string, unknown>);
+      onAuthenticated();
+    } catch (err) {
+      if (err instanceof Error && err.name === 'NotAllowedError') {
+        setError('Passkey authentication was cancelled');
+      } else {
+        setError(err instanceof Error ? err.message : 'Passkey authentication failed');
+      }
+    }
+    setLoading(false);
+  };
+
   // Auto-submit TOTP when 6 digits are entered
   useEffect(() => {
     if (totpCode.length === 6 && step === 'totp') {
       handleTotp(new Event('submit') as unknown as React.FormEvent);
     }
   }, [totpCode]);
+
+  // Auto-trigger passkey on passkey step
+  useEffect(() => {
+    if (step === 'passkey' && !loading && !error) {
+      handlePasskey();
+    }
+  }, [step]);
+
+  const passwordEnabled = authStatus?.methods.password.enabled ?? true;
+  const passkeyEnabled  = authStatus?.methods.passkey.enabled  ?? false;
+  const showChoose = step === 'choose' && passwordEnabled && passkeyEnabled;
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-4">
@@ -79,7 +143,53 @@ export default function Login({ onAuthenticated }: LoginProps) {
 
         <div className="card-warm p-7 space-y-6">
           <AnimatePresence mode="wait">
-            {step === 'password' ? (
+
+            {/* ── Choose method ─────────────────────────────────────────── */}
+            {showChoose && (
+              <motion.div key="choose" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 8 }}>
+                <div className="text-center space-y-1 mb-6">
+                  <div className="flex justify-center mb-3">
+                    <div className="w-10 h-10 rounded-full bg-primary/15 flex items-center justify-center">
+                      <Lock className="w-5 h-5 text-primary" />
+                    </div>
+                  </div>
+                  <h1 className="text-lg font-semibold">Welcome back</h1>
+                  <p className="text-xs text-muted-foreground">Choose how to sign in</p>
+                </div>
+
+                <div className="space-y-3">
+                  {passkeyEnabled && (
+                    <button
+                      onClick={() => { setError(''); setStep('passkey'); }}
+                      className="btn-primary w-full flex items-center justify-center gap-2"
+                    >
+                      <Fingerprint className="w-4 h-4" />
+                      Sign in with Passkey
+                    </button>
+                  )}
+                  {passwordEnabled && (
+                    <button
+                      onClick={() => { setError(''); setStep('password'); }}
+                      className={passkeyEnabled ? 'btn-secondary w-full' : 'btn-primary w-full'}
+                    >
+                      Sign in with Password
+                    </button>
+                  )}
+                </div>
+
+                {error && (
+                  <motion.p
+                    initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }}
+                    className="text-xs text-red-400 text-center mt-3"
+                  >
+                    {error}
+                  </motion.p>
+                )}
+              </motion.div>
+            )}
+
+            {/* ── Password ──────────────────────────────────────────────── */}
+            {step === 'password' && (
               <motion.div key="password" initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 8 }}>
                 <div className="text-center space-y-1 mb-6">
                   <div className="flex justify-center mb-3">
@@ -119,17 +229,36 @@ export default function Login({ onAuthenticated }: LoginProps) {
                     </motion.p>
                   )}
 
-                  <button
-                    type="submit"
-                    disabled={!password || loading}
-                    className="btn-primary w-full"
-                  >
+                  <button type="submit" disabled={!password || loading} className="btn-primary w-full">
                     {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
                     {loading ? 'Signing in…' : 'Sign In'}
                   </button>
+
+                  {passkeyEnabled && (
+                    <button
+                      type="button"
+                      onClick={() => { setError(''); setStep(showChoose ? 'choose' : 'passkey'); }}
+                      className="btn-ghost w-full text-xs text-muted-foreground"
+                    >
+                      <Fingerprint className="w-3.5 h-3.5 inline mr-1" />
+                      Use a passkey instead
+                    </button>
+                  )}
+                  {showChoose && (
+                    <button
+                      type="button"
+                      onClick={() => { setError(''); setStep('choose'); }}
+                      className="btn-ghost w-full text-xs text-muted-foreground"
+                    >
+                      ← Back
+                    </button>
+                  )}
                 </form>
               </motion.div>
-            ) : (
+            )}
+
+            {/* ── TOTP ─────────────────────────────────────────────────── */}
+            {step === 'totp' && (
               <motion.div key="totp" initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }}>
                 <div className="text-center space-y-1 mb-6">
                   <div className="flex justify-center mb-3">
@@ -163,11 +292,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
                     </motion.p>
                   )}
 
-                  <button
-                    type="submit"
-                    disabled={totpCode.length !== 6 || loading}
-                    className="btn-primary w-full"
-                  >
+                  <button type="submit" disabled={totpCode.length !== 6 || loading} className="btn-primary w-full">
                     {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
                     {loading ? 'Verifying…' : 'Verify'}
                   </button>
@@ -182,6 +307,56 @@ export default function Login({ onAuthenticated }: LoginProps) {
                 </form>
               </motion.div>
             )}
+
+            {/* ── Passkey ──────────────────────────────────────────────── */}
+            {step === 'passkey' && (
+              <motion.div key="passkey" initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }}>
+                <div className="text-center space-y-1 mb-6">
+                  <div className="flex justify-center mb-3">
+                    <div className="w-10 h-10 rounded-full bg-blue-500/15 flex items-center justify-center">
+                      <Fingerprint className="w-5 h-5 text-blue-400" />
+                    </div>
+                  </div>
+                  <h1 className="text-lg font-semibold">Passkey sign-in</h1>
+                  <p className="text-xs text-muted-foreground">
+                    {loading ? 'Waiting for your device…' : 'Use your device passkey to sign in'}
+                  </p>
+                </div>
+
+                {loading && (
+                  <div className="flex justify-center py-4">
+                    <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+                  </div>
+                )}
+
+                {error && (
+                  <motion.p
+                    initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }}
+                    className="text-xs text-red-400 text-center mb-4"
+                  >
+                    {error}
+                  </motion.p>
+                )}
+
+                {!loading && (
+                  <button onClick={handlePasskey} className="btn-primary w-full flex items-center justify-center gap-2 mb-3">
+                    <Fingerprint className="w-4 h-4" />
+                    Try again
+                  </button>
+                )}
+
+                {(passwordEnabled || (passkeyEnabled && passwordEnabled)) && (
+                  <button
+                    type="button"
+                    onClick={() => { setError(''); setStep(passwordEnabled && passkeyEnabled ? 'choose' : 'password'); }}
+                    className="btn-ghost w-full text-xs text-muted-foreground"
+                  >
+                    ← {passwordEnabled ? 'Use password instead' : 'Back'}
+                  </button>
+                )}
+              </motion.div>
+            )}
+
           </AnimatePresence>
         </div>
       </motion.div>

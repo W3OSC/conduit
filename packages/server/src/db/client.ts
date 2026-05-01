@@ -5,7 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import * as schema from './schema.js';
-import { permissions, settings, syncRuns } from './schema.js';
+import { permissions, settings, syncRuns, obsidianVaultConfig } from './schema.js';
 import { eq, isNull, and } from 'drizzle-orm';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -47,7 +47,52 @@ export async function runMigrations(): Promise<void> {
   migrate(db, { migrationsFolder: getMigrationsPath() });
   console.log('[db] Migrations applied');
   cleanupOrphanedSyncs();
+  migrateVaultPaths();
   await seedDefaults();
+}
+
+/**
+ * Multi-vault migration: rename existing vault directories from name-based paths
+ * (data/vault/<name>) to id-based paths (data/vault/<id>).
+ * Safe to run multiple times — skips vaults already on id-based paths.
+ */
+function migrateVaultPaths(): void {
+  const db = getDb();
+  const vaults = db.select().from(obsidianVaultConfig).all();
+  if (vaults.length === 0) return;
+
+  const dataDir = process.env.DATA_DIR || path.join(__dirname, '../../../../data');
+  const vaultBase = path.join(dataDir, 'vault');
+
+  for (const vault of vaults) {
+    const idBasedPath = path.join(vaultBase, String(vault.id));
+    if (vault.localPath === idBasedPath) continue; // already migrated
+
+    // Rename the directory on disk if the old path exists
+    if (fs.existsSync(vault.localPath) && !fs.existsSync(idBasedPath)) {
+      try {
+        fs.mkdirSync(vaultBase, { recursive: true });
+        fs.renameSync(vault.localPath, idBasedPath);
+        console.log(`[db] Migrated vault ${vault.id} (${vault.name}): ${vault.localPath} → ${idBasedPath}`);
+      } catch (e) {
+        console.error(`[db] Failed to rename vault directory for vault ${vault.id}:`, e);
+        // Don't update DB if rename failed — leave consistent
+        continue;
+      }
+    } else if (!fs.existsSync(vault.localPath) && !fs.existsSync(idBasedPath)) {
+      // Not cloned yet — just update the path in DB
+      console.log(`[db] Updating uncloned vault ${vault.id} (${vault.name}) path to id-based`);
+    } else if (fs.existsSync(idBasedPath)) {
+      // Already renamed on disk but DB not updated
+      console.log(`[db] Updating vault ${vault.id} (${vault.name}) DB path (dir already at id-based path)`);
+    }
+
+    // Update DB record
+    db.update(obsidianVaultConfig)
+      .set({ localPath: idBasedPath, updatedAt: new Date().toISOString() })
+      .where(eq(obsidianVaultConfig.id, vault.id))
+      .run();
+  }
 }
 
 /**
@@ -75,7 +120,7 @@ async function seedDefaults(): Promise<void> {
   const db = getDb();
 
   // Seed default permissions for each service
-  const services = ['slack', 'discord', 'telegram', 'gmail', 'calendar', 'twitter', 'notion', 'obsidian'] as const;
+  const services = ['slack', 'discord', 'telegram', 'gmail', 'calendar', 'twitter', 'notion', 'obsidian', 'smb'] as const;
   for (const service of services) {
     const existing = db
       .select()
@@ -83,8 +128,8 @@ async function seedDefaults(): Promise<void> {
       .where(eq(permissions.service, service))
       .get();
     if (!existing) {
-      // Obsidian, Notion, and Twitter write/outbox is off by default — must be explicitly enabled
-      const sendEnabled = !(['obsidian', 'notion', 'twitter'] as const).includes(service as 'obsidian' | 'notion' | 'twitter');
+      // Obsidian, Notion, Twitter, and SMB write/outbox is off by default — must be explicitly enabled
+      const sendEnabled = !(['obsidian', 'notion', 'twitter', 'smb'] as const).includes(service as 'obsidian' | 'notion' | 'twitter' | 'smb');
       db.insert(permissions)
         .values({
           service,
