@@ -215,8 +215,14 @@ function applyPatchEdits(original: string, edits: PatchEdit[]): { result: string
       pos = current.indexOf(search, pos + 1);
     }
 
-    if (count === 0) return { error: `Edit ${i + 1}: search string not found in file.` };
-    if (count > 1)  return { error: `Edit ${i + 1}: search string matches more than one location.` };
+    if (count === 0) {
+      const preview = search.length > 120 ? search.slice(0, 120).replace(/\n/g, '↵') + '…' : search.replace(/\n/g, '↵');
+      return { error: `Edit ${i + 1}: search string not found in file.\nSearch string (${search.length} chars): "${preview}"\nMake sure it matches the file content exactly (including whitespace and line endings).` };
+    }
+    if (count > 1) {
+      const preview = search.length > 120 ? search.slice(0, 120).replace(/\n/g, '↵') + '…' : search.replace(/\n/g, '↵');
+      return { error: `Edit ${i + 1}: search string matches more than one location.\nSearch string (${search.length} chars): "${preview}"\nMake it more specific by including more surrounding context.` };
+    }
 
     if (position === 'before') {
       current = current.slice(0, firstPos) + content + current.slice(firstPos);
@@ -303,9 +309,9 @@ export function FileDiffView({ filePath, vaultId, newContent = '', isNewFile = f
           <span className="font-mono text-[11px] text-foreground/80 truncate flex-1">{filePath}</span>
           <span className="chip chip-red text-[9px] shrink-0">patch error</span>
         </div>
-        <div className="flex items-center gap-2 px-4 py-3 text-red-400 text-[11px]">
-          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-          {patchError}
+        <div className="flex items-start gap-2 px-4 py-3 text-red-400 text-[11px]">
+          <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+          <pre className="whitespace-pre-wrap break-words font-mono">{patchError}</pre>
         </div>
       </div>
     );

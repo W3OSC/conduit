@@ -129,6 +129,7 @@ export const outbox = sqliteTable('outbox', {
   requester: text('requester').notNull().default('ui'),
   apiKeyId: integer('api_key_id'),
   errorMessage: text('error_message'),
+  aiToolCallId: text('ai_tool_call_id'),
   createdAt: text('created_at').default(sql`(datetime('now'))`),
   approvedAt: text('approved_at'),
   sentAt: text('sent_at'),
@@ -143,9 +144,6 @@ export const permissions = sqliteTable('permissions', {
   sendEnabled: integer('send_enabled', { mode: 'boolean' }).notNull().default(false),
   requireApproval: integer('require_approval', { mode: 'boolean' }).notNull().default(true),
   directSendFromUi: integer('direct_send_from_ui', { mode: 'boolean' }).notNull().default(false),
-  // When true, opening a conversation marks it as read on the platform API.
-  // When false (default), read state is only tracked in the client store.
-  markReadEnabled: integer('mark_read_enabled', { mode: 'boolean' }).notNull().default(false),
   // JSON blob with per-service fine-grained read/write allowlists.
   // Shape: { readChannelIds?: string[], writeChannelIds?: string[], ... } (service-specific)
   // NULL = unrestricted (all resources allowed).
@@ -351,46 +349,6 @@ export const meetNotes = sqliteTable('meet_notes', {
   updatedAt:       text('updated_at'),
 });
 
-// ─── Chat read state ──────────────────────────────────────────────────────────
-// Server-side "last read" cursor per conversation. Written when the user opens
-// a chat (via POST /api/unread/:source/:chatId/read). Used to compute unread
-// counts as COUNT(messages WHERE timestamp > last_read_at).
-
-export const chatReadState = sqliteTable('chat_read_state', {
-  source:     text('source').notNull(),
-  chatId:     text('chat_id').notNull(),
-  lastReadAt: text('last_read_at').notNull(),
-  updatedAt:  text('updated_at').default(sql`(datetime('now'))`),
-}, (t) => ({
-  pk: unique().on(t.source, t.chatId),
-}));
-
-// ─── Chat mute state ──────────────────────────────────────────────────────────
-// Persisted authoritative mute state for all service chats.
-// Discord: written by fetchUnreadCounts() / userGuildSettingsUpdate.
-// Slack:   written by fetchUnreadCounts() from conversations.info.
-// Telegram: written by fetchUnreadCounts() from dialog notifySettings.
-
-export const chatMuteState = sqliteTable('chat_mute_state', {
-  source:    text('source').notNull(),
-  chatId:    text('chat_id').notNull(),
-  isMuted:   integer('is_muted', { mode: 'boolean' }).notNull().default(false),
-  updatedAt: text('updated_at').default(sql`(datetime('now'))`),
-}, (t) => ({
-  pk: unique().on(t.source, t.chatId),
-}));
-
-// ─── Discord channel mute state (legacy — kept for migration compat) ──────────
-// New code writes to chat_mute_state. This table is no longer written to but
-// may exist in deployed databases from earlier versions.
-
-export const discordChannelMuteState = sqliteTable('discord_channel_mute_state', {
-  channelId: text('channel_id').primaryKey(),
-  guildId:   text('guild_id'),
-  isMuted:   integer('is_muted', { mode: 'boolean' }).notNull().default(false),
-  updatedAt: text('updated_at').default(sql`(datetime('now'))`),
-});
-
 // ─── AI Chat Sessions ─────────────────────────────────────────────────────────
 
 export const aiSessions = sqliteTable('ai_sessions', {
@@ -551,9 +509,6 @@ export type InsertOutbox = typeof outbox.$inferInsert;
 export type InsertAuditLog = typeof auditLog.$inferInsert;
 export type MeetNote = typeof meetNotes.$inferSelect;
 export type InsertMeetNote = typeof meetNotes.$inferInsert;
-export type DiscordChannelMuteState = typeof discordChannelMuteState.$inferSelect;
-export type ChatReadState = typeof chatReadState.$inferSelect;
-export type ChatMuteState = typeof chatMuteState.$inferSelect;
 
 export type AiSession = typeof aiSessions.$inferSelect;
 export type InsertAiSession = typeof aiSessions.$inferInsert;

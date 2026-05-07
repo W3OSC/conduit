@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { cn, copyToClipboard } from '@/lib/utils';
-import { useOutboxStore, useConnectionStore, useUnreadStore, useUpdateStore, useSyncStore, useThemeStore } from '@/store';
+import { useOutboxStore, useConnectionStore, useUpdateStore, useSyncStore, useThemeStore } from '@/store';
 import { api } from '@/lib/api';
 import { toast } from '@/store';
 import { AppIcon } from '@/components/shared/AppIcon';
@@ -189,7 +189,6 @@ export function Sidebar() {
   const location = useLocation();
   const pendingCount = useOutboxStore((s) => s.pendingCount);
   const statuses = useConnectionStore((s) => s.statuses);
-  const totalUnread = useUnreadStore((s) => s.getTotalUnread());
   const syncProgress = useSyncStore((s) => s.progress);
   const sidebarCompact = useThemeStore((s) => s.sidebarCompact);
 
@@ -259,20 +258,8 @@ export function Sidebar() {
                       {pendingCount > 99 ? '99+' : pendingCount}
                     </motion.span>
                   )}
-                  {!sidebarCompact && to === '/chat' && totalUnread > 0 && (
-                    <motion.span
-                      initial={{ scale: 0 }}
-                      animate={{ scale: 1 }}
-                      className="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-bold text-primary-foreground"
-                    >
-                      {totalUnread > 99 ? '99+' : totalUnread}
-                    </motion.span>
-                  )}
                   {/* Compact mode badges — dot only */}
                   {sidebarCompact && badge && to === '/outbox' && pendingCount > 0 && (
-                    <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-primary" />
-                  )}
-                  {sidebarCompact && to === '/chat' && totalUnread > 0 && (
                     <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-primary" />
                   )}
                 </div>

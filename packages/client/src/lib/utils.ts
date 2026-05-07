@@ -6,10 +6,26 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/**
+ * Normalise a date value so that bare SQLite datetime strings (which lack a
+ * timezone suffix) are treated as UTC rather than local time.
+ * SQLite's datetime('now') returns e.g. "2026-05-07 15:30:00" — without the
+ * trailing "Z", JS parses this as local time, causing timestamps to appear
+ * several hours in the future for users west of UTC.
+ */
+function toDate(date: string | Date | undefined): Date {
+  if (!date) return new Date(NaN);
+  if (date instanceof Date) return date;
+  // If the string has no timezone indicator, append "Z" to force UTC parsing.
+  const s = date.trim();
+  const hasZone = /Z$/.test(s) || /[+-]\d{2}:\d{2}$/.test(s);
+  return new Date(hasZone ? s : s + 'Z');
+}
+
 export function timeAgo(date: string | Date | undefined): string {
   if (!date) return '—';
   try {
-    return formatDistanceToNow(new Date(date), { addSuffix: true });
+    return formatDistanceToNow(toDate(date), { addSuffix: true });
   } catch {
     return '—';
   }
@@ -18,7 +34,7 @@ export function timeAgo(date: string | Date | undefined): string {
 export function formatDate(date: string | Date | undefined, fmt = 'MMM d, yyyy HH:mm'): string {
   if (!date) return '—';
   try {
-    return format(new Date(date), fmt);
+    return format(toDate(date), fmt);
   } catch {
     return '—';
   }

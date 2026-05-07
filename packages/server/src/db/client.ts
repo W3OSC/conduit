@@ -137,7 +137,6 @@ async function seedDefaults(): Promise<void> {
           sendEnabled,
           requireApproval: true,
           directSendFromUi: false,
-          markReadEnabled: false,
         })
         .run();
     }

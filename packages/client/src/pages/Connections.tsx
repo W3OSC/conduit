@@ -975,7 +975,6 @@ function PermissionsSection({ service }: { service: Service }) {
           { key: 'readEnabled',      label: 'Read Access',         desc: 'Allow Conduit to read messages from this service' },
           { key: 'sendEnabled',      label: 'Send Messages',       desc: 'Allow sending messages through this service' },
           { key: 'requireApproval',  label: 'Require Approval',    desc: 'All outgoing messages must be manually approved first. When off, messages sent from the UI go immediately without outbox review.' },
-          { key: 'markReadEnabled',  label: 'Mark as Read',        desc: 'Opening a conversation in Chat marks it as read on the platform. When off, read state is only tracked locally.' },
         ] as { key: keyof Permission; label: string; desc: string }[]).map(({ key, label, desc }) => (
           <div key={key} className="px-4 bg-secondary/20">
             <Toggle
@@ -2116,8 +2115,8 @@ function FineGrainedPanel({ service, config, onChange, isConnected }: FineGraine
 }
 
 // ── UiPermissionsCards ────────────────────────────────────────────────────────
-// Simplified UI user permissions — just outbox/direct-send toggle per service
-// and mark-read toggle where applicable. UI user is unrestricted on read/send.
+// Simplified UI user permissions — outbox/direct-send toggle per service.
+// UI user is unrestricted on read/send.
 
 function UiPermissionsCards({
   perms,
@@ -2126,36 +2125,18 @@ function UiPermissionsCards({
   perms: Permission[];
   onUpdate: (service: string, field: keyof Permission, value: boolean) => void;
 }) {
-  const NO_MARK_READ = ['obsidian', 'notion', 'twitter', 'calendar'];
-
   return (
     <div className="rounded-xl border border-border overflow-hidden divide-y divide-border">
       {perms.map((perm) => {
-        const hasMarkRead = !NO_MARK_READ.includes(perm.service);
         const directSend = !perm.requireApproval;
         return (
           <div key={perm.service} className="flex items-center gap-3 px-4 py-3 hover:bg-secondary/10 transition-colors">
-            {/* Service */}
             <div className="flex items-center gap-2.5 flex-1 min-w-0">
               <ServiceLogo service={perm.service} className="w-4 h-4 flex-shrink-0" />
               <span className={cn('text-sm font-medium', SVC_COLOR[perm.service] || 'text-foreground')}>
                 {SVC_LABEL[perm.service] || perm.service}
               </span>
             </div>
-
-            {/* Mark as read (where applicable) */}
-            {hasMarkRead && (
-              <div className="flex flex-col items-center gap-0.5 flex-shrink-0">
-                <MiniToggle
-                  checked={!!perm.markReadEnabled}
-                  onChange={(v) => onUpdate(perm.service, 'markReadEnabled', v)}
-                />
-                <span className="text-[9px] text-muted-foreground/50 leading-tight">mark read</span>
-              </div>
-            )}
-            {!hasMarkRead && <div className="w-9 flex-shrink-0" />}
-
-            {/* Outbox / direct send */}
             <div className="flex flex-col items-center gap-0.5 flex-shrink-0">
               <MiniToggle
                 checked={directSend}
@@ -2184,26 +2165,6 @@ function UiPermissionsTable({ perms, onUpdate }: { perms: Permission[]; onUpdate
           <tr className="border-b border-border bg-secondary/10">
             <th className="px-4 py-2 text-left text-2xs font-semibold uppercase tracking-wider text-muted-foreground" rowSpan={2}>
               Service
-            </th>
-            <th
-              className="w-[22%] px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-b border-border"
-              rowSpan={2}
-              title="View messages, contacts, and data in the UI"
-            >
-              Read
-            </th>
-            <th
-              className="w-[44%] px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-l border-border"
-              colSpan={2}
-            >
-              Send
-            </th>
-            <th
-              className="w-[22%] px-3 py-1.5 text-center text-2xs font-semibold uppercase tracking-wider text-muted-foreground border-b border-border border-l border-border"
-              rowSpan={2}
-              title="Opening a chat marks it as read via the platform API. Off = local-only read state."
-            >
-              Mark Read
             </th>
           </tr>
           <tr className="border-b border-border bg-secondary/10">
@@ -2242,13 +2203,6 @@ function UiPermissionsTable({ perms, onUpdate }: { perms: Permission[]; onUpdate
                   <div className="flex justify-center">
                     <MiniCheckbox checked={!!perm.requireApproval} onChange={(v) => onUpdate(perm.service, 'requireApproval', v)} disabled={sendOff} />
                   </div>
-                </td>
-                <td className="px-3 py-2.5 text-center border-l border-border">
-                  {(['obsidian', 'notion', 'twitter'] as string[]).includes(perm.service) ? (
-                    <span className="text-muted-foreground/30 text-xs">—</span>
-                  ) : (
-                    <MiniToggle checked={!!perm.markReadEnabled} onChange={(v) => onUpdate(perm.service, 'markReadEnabled', v)} />
-                  )}
                 </td>
               </tr>
             );
@@ -3148,7 +3102,7 @@ function ResetAppDataSection() {
   const reset = useMutation({
     mutationFn: () => api.resetAppData(),
     onSuccess: () => {
-      toast({ title: 'App data cleared', description: 'All messages, contacts, and history have been wiped. Credentials are intact.', variant: 'success' });
+      toast({ title: 'App data cleared', description: 'All messages, contacts, and history have been wiped. Connected services are resyncing.', variant: 'success' });
       setConfirming(false);
       // Invalidate all data queries so the UI reflects the empty state
       qc.invalidateQueries();
@@ -3171,7 +3125,7 @@ function ResetAppDataSection() {
           <p className="text-xs font-medium text-foreground">Reset all app data</p>
           <p className="text-[11px] text-muted-foreground mt-0.5">
             Wipes all synced messages, contacts, AI sessions, audit log, and outbox.
-            Connection credentials and configuration are preserved.
+            Connection credentials and configuration are preserved. Connected services will resync automatically.
           </p>
         </div>
         {!confirming && (

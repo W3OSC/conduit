@@ -198,15 +198,6 @@ export const api = {
   updatePermission: (service: string, updates: Partial<Permission>) =>
     request<Permission>(`/permissions/${service}`, { method: 'PUT', body: JSON.stringify(updates) }),
 
-  // Unread state — server-authoritative
-  getUnread: () => request<Array<{ source: string; chatId: string; count: number; isMuted: boolean }>>('/unread'),
-  markChatRead: (source: string, chatId: string) =>
-    request<{ success: boolean }>(`/unread/${source}/${encodeURIComponent(chatId)}/read`, { method: 'POST' }),
-  markChatUnread: (source: string, chatId: string) =>
-    request<{ success: boolean }>(`/unread/${source}/${encodeURIComponent(chatId)}/unread`, { method: 'POST' }),
-  markAllChatsRead: () =>
-    request<{ success: boolean }>('/unread/all/read', { method: 'POST' }),
-
   // Audit Log
   auditLog: (params?: AuditParams) => {
     const q = new URLSearchParams();
@@ -487,6 +478,8 @@ export const api = {
   },
   aiToolCalls: (sessionId: string) =>
     request<{ toolCalls: AiToolCall[] }>(`/ai/sessions/${sessionId}/tool-calls`),
+  aiToolCall: (id: string) =>
+    request<AiToolCall>(`/ai/tool-calls/${id}`),
   sendAiMessage: (sessionId: string, content: string) =>
     request<AiMessage>(`/ai/sessions/${sessionId}/messages`, { method: 'POST', body: JSON.stringify({ content }) }),
 
@@ -758,6 +751,7 @@ export interface OutboxItem {
   requester: 'ui' | 'api';
   apiKeyId?: number;
   errorMessage?: string;
+  aiToolCallId?: string;
   createdAt: string;
   approvedAt?: string;
   sentAt?: string;
@@ -864,7 +858,6 @@ export interface Permission {
   sendEnabled: boolean;
   requireApproval: boolean;
   directSendFromUi: boolean;
-  markReadEnabled: boolean;
   fineGrainedConfig: ServiceFineGrained | null;
   updatedAt?: string;
 }

@@ -582,6 +582,21 @@ router.get('/sessions/:id/messages', optionalAuth, (req, res) => {
   res.json({ session, messages });
 });
 
+// ── GET /ai/tool-calls/:id ────────────────────────────────────────────────────
+// Returns a single tool call by its ID (used to surface raw AI request context).
+
+router.get('/tool-calls/:id', optionalAuth, (req, res) => {
+  const db = getDb();
+  const { id } = req.params as { id: string };
+  const call = db.select().from(aiToolCalls).where(eq(aiToolCalls.id, id)).get();
+  if (!call) { res.status(404).json({ error: 'Tool call not found' }); return; }
+
+  res.json({
+    ...call,
+    input: (() => { try { return JSON.parse(call.input); } catch { return call.input; } })(),
+  });
+});
+
 // ── GET /ai/sessions/:id/tool-calls ──────────────────────────────────────────
 // Returns all tool calls (AI API accesses) for a session, ordered by time.
 

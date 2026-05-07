@@ -4,6 +4,7 @@ import { permissions, apiKeyPermissions, apiKeys } from '../db/schema.js';
 import type { ServiceFineGrained } from '../db/schema.js';
 import { eq, and } from 'drizzle-orm';
 import { optionalAuth } from '../auth/middleware.js';
+import { getConnectionManager } from '../connections/manager.js';
 
 const router = Router();
 
@@ -33,11 +34,11 @@ router.put('/:service', optionalAuth, (req, res) => {
   const db = getDb();
   const service = req.params['service'] as string;
   const {
-    readEnabled, sendEnabled, requireApproval, directSendFromUi, markReadEnabled,
+    readEnabled, sendEnabled, requireApproval, directSendFromUi,
     fineGrainedConfig,
   } = req.body as {
     readEnabled?: boolean; sendEnabled?: boolean;
-    requireApproval?: boolean; directSendFromUi?: boolean; markReadEnabled?: boolean;
+    requireApproval?: boolean; directSendFromUi?: boolean;
     fineGrainedConfig?: ServiceFineGrained | null;
   };
 
@@ -49,14 +50,30 @@ router.put('/:service', optionalAuth, (req, res) => {
   if (sendEnabled       !== undefined) updates.sendEnabled       = sendEnabled;
   if (requireApproval   !== undefined) updates.requireApproval   = requireApproval;
   if (directSendFromUi  !== undefined) updates.directSendFromUi  = directSendFromUi;
-  if (markReadEnabled   !== undefined) updates.markReadEnabled   = markReadEnabled;
   if ('fineGrainedConfig' in req.body) {
     updates.fineGrainedConfig = fineGrainedConfig != null ? JSON.stringify(fineGrainedConfig) : null;
   }
 
+  // Capture the old readEnabled value before updating, so we can detect a
+  // disabled → enabled transition and kick off a catch-up resync.
+  const wasReadEnabled = existing.readEnabled ?? true;
+
   db.update(permissions).set(updates).where(eq(permissions.service, service)).run();
   const updated = db.select().from(permissions).where(eq(permissions.service, service)).get()!;
   res.json({ ...updated, fineGrainedConfig: parseFineGrained(updated.fineGrainedConfig) });
+
+  // If read access was just re-enabled for a connected service, trigger a full
+  // resync so it catches up on messages received while it was disabled.
+  if (readEnabled === true && !wasReadEnabled) {
+    const manager = getConnectionManager();
+    const syncableServices = ['slack', 'discord', 'telegram', 'gmail', 'calendar', 'twitter'] as const;
+    if (syncableServices.includes(service as typeof syncableServices[number])) {
+      const svc = service as typeof syncableServices[number];
+      if (manager.getStatus(svc).status === 'connected') {
+        manager.triggerSync(svc, true).catch((e) => console.error(`[permissions] Post-enable resync failed for ${svc}:`, e));
+      }
+    }
+  }
 });
 
 // ── Per-API-key permissions ───────────────────────────────────────────────────

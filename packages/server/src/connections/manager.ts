@@ -326,8 +326,6 @@ export class ConnectionManager {
       if (!ok) throw new Error('Login failed');
       const info = this.discord.accountInfo;
       this.setStatus('discord', { status: 'connected', accountId: info?.userId, displayName: info?.displayName, mode: 'gateway' });
-      // Broadcast initial unread counts with mute state from guild settings
-      this.discord.fetchUnreadCounts().catch((e) => console.error('[discord] fetchUnreadCounts failed:', e));
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e);
       this.setStatus('discord', { status: 'error', error: err });

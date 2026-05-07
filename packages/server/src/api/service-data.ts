@@ -21,10 +21,8 @@ import {
   telegramMessages, discordMessages, slackMessages,
   gmailMessages, calendarEvents, twitterDms,
   syncState, syncRuns, settings, contacts, meetNotes,
-  chatReadState, chatMuteState,
   aiSessions, aiMessages, aiToolCalls,
   auditLog, outbox, errorLog,
-  discordChannelMuteState,
 } from '../db/schema.js';
 import { eq, and, like } from 'drizzle-orm';
 import { optionalAuth } from '../auth/middleware.js';
@@ -57,11 +55,7 @@ router.post('/service/:service/reset', optionalAuth, async (req, res) => {
   db.delete(syncRuns).where(eq(syncRuns.source, service)).run();
   db.delete(contacts).where(eq(contacts.source, service)).run();
 
-  // 3. Wipe read/mute cursors for this service so unread counts reset cleanly
-  db.delete(chatReadState).where(eq(chatReadState.source, service)).run();
-  db.delete(chatMuteState).where(eq(chatMuteState.source, service)).run();
-
-  // 4. For Gmail/calendar: also clear persisted incremental-sync tokens from settings
+  // 3. For Gmail/calendar: also clear persisted incremental-sync tokens from settings
   if (service === 'gmail' || service === 'calendar') {
     db.delete(settings).where(like(settings.key, 'gmail.historyId.%')).run();
     db.delete(settings).where(like(settings.key, 'calendar.syncToken.%')).run();
@@ -153,7 +147,7 @@ router.post('/service/gmail/reset/:email', optionalAuth, async (req, res) => {
 //            __drizzle_migrations
 // Wiped: all messages, contacts, AI sessions, audit log, outbox, sync state, etc.
 
-router.post('/reset-app-data', optionalAuth, (req, res) => {
+router.post('/reset-app-data', optionalAuth, async (req, res) => {
   const db = getDb();
   const sqlite = getSqlite();
 
@@ -167,11 +161,8 @@ router.post('/reset-app-data', optionalAuth, (req, res) => {
     db.delete(twitterDms).run();
     db.delete(meetNotes).run();
 
-    // Contacts, read/mute state
+    // Contacts
     db.delete(contacts).run();
-    db.delete(chatReadState).run();
-    db.delete(chatMuteState).run();
-    db.delete(discordChannelMuteState).run();
 
     // Sync history
     db.delete(syncState).run();
@@ -199,6 +190,65 @@ router.post('/reset-app-data', optionalAuth, (req, res) => {
 
   console.log('[reset] All app data wiped');
   res.json({ success: true, message: 'All app data cleared. Credentials and configuration preserved.' });
+
+  // Resync all currently-connected services so data repopulates immediately.
+  // Mirror the per-service reset logic: reconnect first (re-establishes live
+  // listeners), then trigger a full sync. Run all in parallel.
+  const manager = getConnectionManager();
+  const resyncTasks: Promise<unknown>[] = [];
+
+  if (manager.getStatus('slack').status === 'connected') {
+    resyncTasks.push(
+      manager.connectSlack()
+        .then(() => { manager.triggerSync('slack', true).catch(console.error); })
+        .catch((e) => console.error('[reset] Slack resync failed:', e)),
+    );
+  }
+
+  if (manager.getStatus('discord').status === 'connected') {
+    resyncTasks.push(
+      manager.connectDiscord()
+        .then(() => { manager.triggerSync('discord', true).catch(console.error); })
+        .catch((e) => console.error('[reset] Discord resync failed:', e)),
+    );
+  }
+
+  if (manager.getStatus('telegram').status === 'connected') {
+    resyncTasks.push(
+      manager.connectTelegram()
+        .then(() => { manager.triggerSync('telegram', true).catch(console.error); })
+        .catch((e) => console.error('[reset] Telegram resync failed:', e)),
+    );
+  }
+
+  if (manager.getStatus('gmail').status === 'connected') {
+    resyncTasks.push(
+      manager.connectGmail()
+        .then(() => { manager.triggerSync('gmail', true).catch(console.error); })
+        .catch((e) => console.error('[reset] Gmail resync failed:', e)),
+    );
+  }
+
+  if (manager.getStatus('calendar').status === 'connected') {
+    // Calendar shares the Gmail connection; triggerSync handles it independently
+    resyncTasks.push(
+      manager.triggerSync('calendar', true)
+        .catch((e) => console.error('[reset] Calendar resync failed:', e)),
+    );
+  }
+
+  if (manager.getStatus('twitter').status === 'connected') {
+    // Twitter: clear in-memory dedup state then resync DMs
+    manager.getTwitter()?.resetInMemoryState();
+    resyncTasks.push(
+      manager.triggerSync('twitter', true)
+        .catch((e) => console.error('[reset] Twitter resync failed:', e)),
+    );
+  }
+
+  Promise.allSettled(resyncTasks).then(() => {
+    console.log('[reset] Post-reset resync initiated for all connected services');
+  });
 });
 
 // ── Discord guild management ───────────────────────────────────────────────────

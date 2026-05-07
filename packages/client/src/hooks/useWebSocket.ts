@@ -1,10 +1,9 @@
 import { useEffect } from 'react';
 import {
   useConnectionStore, useOutboxStore, useSyncStore, useMessageStreamStore,
-  useUnreadStore, useNotificationStore, useAiChatStore, useUpdateStore,
+  useNotificationStore, useAiChatStore, useUpdateStore,
 } from '../store';
 import type { ConnectionStatus, Message } from '../lib/api';
-import { api } from '../lib/api';
 
 const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
 
@@ -40,14 +39,6 @@ function nextBackoffMs(): number {
   return Math.round(base + jitter);
 }
 
-/** Fetch authoritative unread state from the server and replace the client store. */
-async function syncUnreadFromServer(): Promise<void> {
-  try {
-    const entries = await api.getUnread();
-    useUnreadStore.getState().setFromServer(entries);
-  } catch { /* ignore — retries on next reconnect */ }
-}
-
 /** Fetch authoritative connection status from the server and seed the store.
  *  The server fires connection:status events at startup — if the browser
  *  connects after those events, it would never receive them. Polling the
@@ -73,9 +64,6 @@ function connectGlobal() {
     // Reset backoff on successful connection
     backoffAttempt = 0;
 
-    // Re-seed unread state from the server on every (re)connect.
-    // This is the single authoritative load — no client-side counting, no localStorage.
-    syncUnreadFromServer();
     // Seed connection status — server fires connection:status events at startup,
     // which the browser would miss if it connects after those events fired.
     syncConnectionStatusFromServer();
@@ -157,23 +145,14 @@ export function useWebSocket() {
           break;
         }
 
-        case 'unread:update': {
-          // Server pushes updated counts after every new message, mark-read, or mute change.
-          const d = event.data as { updates: Array<{ source: string; chatId: string; count: number; isMuted?: boolean }> };
-          useUnreadStore.getState().applyUpdate(d.updates || []);
-          break;
-        }
-
         case 'message:new': {
           const msg = event.data as Message;
           addMessage(msg);
 
-          // Notification for non-muted chats
           const src = msg.source;
           const msgData = msg as unknown as Record<string, unknown>;
           const cid = String(msgData.chatId || msgData.channelId || '');
-          const isMuted = src && cid ? useUnreadStore.getState().getIsMuted(src, cid) : false;
-          if (!isMuted && src && cid) {
+          if (src && cid) {
             const senderName = String(msgData.authorName || msgData.userName || msgData.sender_name || 'Unknown');
             const channelName = String(msgData.channelName || msgData.chat_name || cid);
             useNotificationStore.getState().add({
