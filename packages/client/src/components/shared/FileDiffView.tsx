@@ -16,8 +16,12 @@ export interface PatchEdit {
 interface FileDiffViewProps {
   /** Vault-relative path to the file being written. */
   filePath: string;
-  /** Vault ID — required for multi-vault setups. */
-  vaultId: number;
+  /**
+   * Vault ID to read from. When omitted (or 0 / negative), the component
+   * automatically falls back to the first connected vault so that outbox items
+   * created without an explicit vaultId still render correctly.
+   */
+  vaultId?: number;
   /**
    * The new content that will be written (write_file / create_file).
    * Leave empty when using patchEdits.
@@ -238,33 +242,57 @@ function applyPatchEdits(original: string, edits: PatchEdit[]): { result: string
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function FileDiffView({ filePath, vaultId, newContent = '', isNewFile = false, patchEdits }: FileDiffViewProps) {
+export function FileDiffView({ filePath, vaultId: vaultIdProp, newContent = '', isNewFile = false, patchEdits }: FileDiffViewProps) {
   const isPatch = !!patchEdits && patchEdits.length > 0;
 
+  // When vaultId is missing or invalid (e.g. AI-created outbox items that omit vaultId),
+  // fall back to the first connected vault so the diff renders correctly.
+  const needsVaultLookup = !vaultIdProp || vaultIdProp <= 0;
+  const { data: vaultsData, isLoading: isLoadingVaults } = useQuery({
+    queryKey: ['obsidian-vaults'],
+    queryFn: () => api.listObsidianVaults(),
+    enabled: needsVaultLookup && !isNewFile,
+    staleTime: 30_000,
+  });
+  const vaultId: number = needsVaultLookup
+    ? (vaultsData?.vaults?.[0]?.id ?? 0)
+    : vaultIdProp!;
+
   // Fetch the current file contents from the vault (skip for new files; always fetch for patches)
-  const { data, isLoading, isError } = useQuery({
+  const { data, isPending: isFilePending, isError } = useQuery({
     queryKey: ['obsidian-file', vaultId, filePath],
     queryFn: () => api.obsidianReadFile(vaultId, filePath),
-    enabled: !isNewFile,
+    // Don't attempt the file read until we have a valid vault ID
+    enabled: !isNewFile && vaultId > 0,
     retry: false,
     throwOnError: false,
   });
 
   const originalContent = data?.content ?? '';
 
+  // ── Loading ───────────────────────────────────────────────────────────────
+  // Wait for vault lookup to resolve, then wait for file fetch.
+  // isPending covers disabled queries (vaultId still 0) as well as in-flight ones.
+  if (isLoadingVaults || isFilePending) {
+    return (
+      <div className="flex items-center gap-2 py-3 text-muted-foreground text-xs">
+        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+        <span>Loading current file…</span>
+      </div>
+    );
+  }
+
   // ── New-file mode ─────────────────────────────────────────────────────────
-  if (isNewFile || (isError && !isLoading && !isPatch)) {
+  if (isNewFile || (isError && !isPatch)) {
     const lines = newContent.split('\n');
     if (lines[lines.length - 1] === '') lines.pop();
     return (
       <div className="rounded-xl overflow-hidden border border-emerald-500/20 bg-background text-xs">
-        {/* Header */}
         <div className="flex items-center gap-2 px-3 py-2 bg-secondary/60 border-b border-border/50">
           <FilePlus className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
           <span className="font-mono text-[11px] text-foreground/80 truncate flex-1">{filePath}</span>
           <span className="chip chip-emerald text-[9px] shrink-0">new file</span>
         </div>
-        {/* Content — all lines are additions */}
         <div className="overflow-x-auto max-h-72 overflow-y-auto">
           {lines.map((content, i) => (
             <DiffLine
@@ -273,16 +301,6 @@ export function FileDiffView({ filePath, vaultId, newContent = '', isNewFile = f
             />
           ))}
         </div>
-      </div>
-    );
-  }
-
-  // ── Loading ───────────────────────────────────────────────────────────────
-  if (isLoading) {
-    return (
-      <div className="flex items-center gap-2 py-3 text-muted-foreground text-xs">
-        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-        <span>Loading current file…</span>
       </div>
     );
   }

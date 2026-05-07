@@ -236,7 +236,7 @@ function StructuredContentView({ item, editing, editDraft, setEditDraft }: Conte
           </p>
           <FileDiffView
             filePath={diffFilePath}
-            vaultId={typeof parsed['vaultId'] === 'number' ? parsed['vaultId'] : 0}
+            vaultId={typeof parsed['vaultId'] === 'number' ? parsed['vaultId'] : undefined}
             newContent={diffNewContent}
             isNewFile={isObsidianCreate}
             patchEdits={patchEdits}
