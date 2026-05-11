@@ -8,6 +8,7 @@ import { TwitterSync, type TwitterAction, type TwitterCreds } from '../sync/twit
 import { NotionSync, type NotionWriteAction } from '../sync/notion.js';
 import { ObsidianVaultSync, type ObsidianWriteAction, type VaultConfig } from '../sync/obsidian.js';
 import { SmbSync, type SmbWriteAction, type SmbConfig } from '../sync/smb.js';
+import { GdriveSyncManager, type DriveWriteAction, POLL_INTERVAL_MS } from '../sync/gdrive.js';
 import { syncGmailContactsFromDb, syncCalendarContactsFromDb } from '../sync/contacts.js';
 import { broadcast, onNextBroadcast } from '../websocket/hub.js';
 import { randomBytes } from 'crypto';
@@ -15,10 +16,10 @@ import { getCreds, type SlackCreds, type DiscordCreds, type TelegramCreds, type 
 import { getAllGmailCreds } from '../api/google-auth.js';
 import type { GmailCreds as GmailCredsType } from '../sync/gmail.js';
 import { getDb } from '../db/client.js';
-import { settings, obsidianVaultConfig, smbShareConfig } from '../db/schema.js';
+import { settings, obsidianVaultConfig, smbShareConfig, googleDriveFolderConfig } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 
-export type ServiceName = 'slack' | 'discord' | 'telegram' | 'gmail' | 'calendar' | 'twitter' | 'notion' | 'obsidian' | 'smb' | 'ai';
+export type ServiceName = 'slack' | 'discord' | 'telegram' | 'gmail' | 'calendar' | 'twitter' | 'notion' | 'obsidian' | 'smb' | 'gdrive' | 'ai';
 // Vault-specific status key format: 'obsidian:<id>'
 export type VaultStatusKey = `obsidian:${number}`;
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
@@ -50,6 +51,11 @@ export class ConnectionManager {
   private smbShares = new Map<number, SmbSync>();
   private smbStatuses = new Map<number, ServiceStatus>();
 
+  // Google Drive: one GdriveSyncManager per connected Gmail account (keyed by email)
+  private gdriveManagers = new Map<string, GdriveSyncManager>();
+  // Per-folder status: keyed by googleDriveFolderConfig.id
+  private gdriveFolderStatuses = new Map<number, ServiceStatus>();
+
   private statuses: Record<ServiceName, ServiceStatus> = {
     slack:    { status: 'disconnected' },
     discord:  { status: 'disconnected' },
@@ -60,6 +66,7 @@ export class ConnectionManager {
     notion:   { status: 'disconnected' },
     obsidian: { status: 'disconnected' },
     smb:      { status: 'disconnected' },
+    gdrive:   { status: 'disconnected' },
     ai:       { status: 'disconnected' },
   };
 
@@ -161,6 +168,48 @@ export class ConnectionManager {
     broadcast({ type: 'connection:status', data: { service: 'obsidian', ...this.statuses['obsidian'] } });
   }
 
+  private setGdriveFolderStatus(folderId: number, status: Partial<ServiceStatus>): void {
+    const current = this.gdriveFolderStatuses.get(folderId) ?? { status: 'disconnected' as const };
+    const next = { ...current, ...status };
+    this.gdriveFolderStatuses.set(folderId, next);
+    broadcast({ type: 'connection:status', data: { service: `gdrive:${folderId}`, ...next } });
+    this.updateAggregateGdriveStatus();
+  }
+
+  private updateAggregateGdriveStatus(): void {
+    const statuses = [...this.gdriveFolderStatuses.values()];
+    if (statuses.length === 0 && this.gdriveManagers.size === 0) {
+      this.setStatus('gdrive', { status: 'disconnected', displayName: undefined });
+      return;
+    }
+    const anyConnected = statuses.some((s) => s.status === 'connected') || this.gdriveManagers.size > 0;
+    const anyError = statuses.some((s) => s.status === 'error');
+    const emails = [...this.gdriveManagers.keys()].join(', ');
+    if (anyConnected) {
+      this.statuses['gdrive'] = { status: 'connected', displayName: emails, mode: 'oauth2' };
+    } else if (anyError) {
+      this.statuses['gdrive'] = { status: 'error', error: 'One or more Drive folders failed', displayName: emails };
+    } else {
+      this.statuses['gdrive'] = { status: 'connecting', displayName: emails };
+    }
+    broadcast({ type: 'connection:status', data: { service: 'gdrive', ...this.statuses['gdrive'] } });
+  }
+
+  /** Start background polling for a single Drive folder. */
+  startGdriveFolderPolling(folderId: number, email: string): void {
+    const gdrive = this.gdriveManagers.get(email);
+    if (gdrive) gdrive.startFolderPolling(folderId, POLL_INTERVAL_MS);
+  }
+
+  /** Stop background polling for a single Drive folder. */
+  stopGdriveFolderPolling(folderId: number): void {
+    for (const mgr of this.gdriveManagers.values()) {
+      mgr.stopFolderPolling(folderId);
+    }
+    this.gdriveFolderStatuses.delete(folderId);
+    this.updateAggregateGdriveStatus();
+  }
+
   private updateAggregateGmailStatus(): void {
     const statuses = [...this.gmailStatuses.values()];
     const anyConnected = statuses.some((s) => s.status === 'connected');
@@ -185,6 +234,20 @@ export class ConnectionManager {
   getAllObsidianVaults(): Map<number, ObsidianVaultSync> { return new Map(this.obsidianVaults); }
   getSmbShare(shareId: number): SmbSync | null { return this.smbShares.get(shareId) ?? null; }
   getAllSmbShares(): Map<number, SmbSync> { return new Map(this.smbShares); }
+
+  // Google Drive accessors
+  getGdrive(email: string): GdriveSyncManager | null { return this.gdriveManagers.get(email) ?? null; }
+  getAllGdriveManagers(): Map<string, GdriveSyncManager> { return new Map(this.gdriveManagers); }
+  getGdriveAccounts(): Array<{ email: string; status: ServiceStatus }> {
+    return [...this.gdriveManagers.entries()].map(([email, mgr]) => ({
+      email,
+      status: mgr.connected ? { status: 'connected' as const } : { status: 'disconnected' as const },
+    }));
+  }
+  getGdriveFolderStatus(folderId: number): ServiceStatus {
+    return this.gdriveFolderStatuses.get(folderId) ?? { status: 'disconnected' };
+  }
+  getAllGdriveFolderStatuses(): Map<number, ServiceStatus> { return new Map(this.gdriveFolderStatuses); }
   /** Returns the first connected Gmail instance (legacy compat) */
   getGmail(): GmailSync | null {
     for (const g of this.gmailAccounts.values()) if (g.connected) return g;
@@ -392,6 +455,23 @@ export class ConnectionManager {
       const { syncRuns: sr } = await import('../db/schema.js');
       const { eq: eqFn, and: andFn } = await import('drizzle-orm');
       const db = getDb();
+
+      // Google Drive — connect using same OAuth creds (uses db which is now available)
+      const gdrive = new GdriveSyncManager(email, creds);
+      const gdriveOk = await gdrive.connect();
+      if (gdriveOk) {
+        this.gdriveManagers.set(email, gdrive);
+        const folderRows = db.select().from(googleDriveFolderConfig)
+          .where(eqFn(googleDriveFolderConfig.email, email))
+          .all();
+        for (const folderRow of folderRows) {
+          this.setGdriveFolderStatus(folderRow.id, { status: 'connected', displayName: folderRow.folderName, mode: 'oauth2' });
+          gdrive.startFolderPolling(folderRow.id, POLL_INTERVAL_MS);
+          gdrive.syncFolder(folderRow.id).catch((e) =>
+            console.error(`[gdrive:${folderRow.id}] Initial sync failed:`, e));
+        }
+        this.updateAggregateGdriveStatus();
+      }
       const hasPriorSync = db.select().from(sr)
         .where(andFn(eqFn(sr.source, 'gmail'), eqFn(sr.status, 'success')))
         .get();
@@ -467,6 +547,22 @@ export class ConnectionManager {
     this.meetNotesAccounts.delete(email);
     this.gmailStatuses.delete(email);
     this.calendarStatuses.delete(email);
+
+    // Also disconnect Drive for this account
+    const gdrive = this.gdriveManagers.get(email);
+    if (gdrive) {
+      gdrive.disconnect();
+      this.gdriveManagers.delete(email);
+      // Remove all folder statuses for this account
+      const db = getDb();
+      const folderRows = db.select().from(googleDriveFolderConfig)
+        .where(eq(googleDriveFolderConfig.email, email))
+        .all();
+      for (const row of folderRows) {
+        this.gdriveFolderStatuses.delete(row.id);
+      }
+    }
+    this.updateAggregateGdriveStatus();
     this.updateAggregateGmailStatus();
   }
 
@@ -779,6 +875,16 @@ export class ConnectionManager {
   async executeNotionAction(action: NotionWriteAction): Promise<string> {
     if (!this.notion) throw new Error('Notion not connected');
     return this.notion.executeAction(action);
+  }
+
+  async executeGdriveAction(action: DriveWriteAction): Promise<string> {
+    const folderId = action.folderId;
+    const db = getDb();
+    const row = db.select().from(googleDriveFolderConfig).where(eq(googleDriveFolderConfig.id, folderId)).get();
+    if (!row) throw new Error(`Drive folder config ${folderId} not found`);
+    const gdrive = this.gdriveManagers.get(row.email);
+    if (!gdrive) throw new Error(`No Drive connection for ${row.email}`);
+    return gdrive.executeAction(action);
   }
 
   async executeObsidianAction(action: ObsidianWriteAction & { vaultId?: number }): Promise<string> {
@@ -1228,7 +1334,7 @@ export class ConnectionManager {
     if (this.slack) await this.slack.disconnect();
     if (this.discord) await this.discord.disconnect();
     if (this.telegram) this.telegram.disconnect();
-    this.disconnectAllGmailAccounts();
+    this.disconnectAllGmailAccounts(); // also cleans up Drive managers
     if (this.twitter) this.twitter.disconnect();
     if (this.notion) this.notion.disconnect();
     for (const sync of this.obsidianVaults.values()) sync.disconnect();

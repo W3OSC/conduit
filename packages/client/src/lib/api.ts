@@ -545,6 +545,34 @@ export const api = {
     return request<NotionBlockChildrenResponse>(`/notion/blocks/${blockId}/children${qs}`);
   },
 
+  // ── Google Drive ─────────────────────────────────────────────────────────────
+  gdriveAccounts: () =>
+    request<{ accounts: Array<{ email: string; status: { status: string } }> }>('/gdrive/accounts'),
+  gdriveAvailableFolders: (email: string, driveType: 'personal' | 'shared' = 'personal') => {
+    const q = new URLSearchParams({ email, driveType });
+    return request<{ folders: DriveAvailableFolder[] }>(`/gdrive/available-folders?${q}`);
+  },
+  listGdriveFolders: () =>
+    request<{ folders: GoogleDriveFolderConfig[] }>('/gdrive/folders'),
+  addGdriveFolder: (body: { email: string; folderId: string; folderName: string; driveType?: string; driveId?: string }) =>
+    request<GoogleDriveFolderConfig>('/gdrive/folders', { method: 'POST', body: JSON.stringify(body) }),
+  getGdriveFolder: (id: number) =>
+    request<GoogleDriveFolderConfig>(`/gdrive/folders/${id}`),
+  updateGdriveFolder: (id: number, body: { folderName?: string }) =>
+    request<GoogleDriveFolderConfig>(`/gdrive/folders/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteGdriveFolder: (id: number) =>
+    request<{ success: boolean }>(`/gdrive/folders/${id}`, { method: 'DELETE' }),
+  testGdriveFolder: (id: number) =>
+    request<{ accessible: boolean; folderFound?: boolean; message?: string; error?: string }>(`/gdrive/folders/${id}/test`, { method: 'POST' }),
+  syncGdriveFolder: (id: number) =>
+    request<{ success: boolean; folder: GoogleDriveFolderConfig }>(`/gdrive/folders/${id}/sync`, { method: 'POST' }),
+  gdriveFileTree: (id: number, forceRefresh = false) => {
+    const q = forceRefresh ? '?refresh=true' : '';
+    return request<{ folderId: number; folderName: string; files: DriveFileNode[] }>(`/gdrive/folders/${id}/files${q}`);
+  },
+  gdriveReadFile: (folderId: number, fileId: string) =>
+    request<DriveFileContent>(`/gdrive/folders/${folderId}/files/${fileId}`),
+
   // Update
   updateStatus: () => request<UpdateStatus>('/update/status'),
   applyUpdate: () => request<{ success: boolean; message: string; followUp?: string }>('/update/apply', { method: 'POST' }),
@@ -1309,8 +1337,100 @@ export interface AiPermissions {
   readContacts: boolean;
   readVault: boolean;
   writeVault: boolean;
+  readDrive: boolean;
+  writeDrive: boolean;
   sendOutbox: boolean;
   requireApproval: boolean;
+}
+
+// ─── Google Drive types ───────────────────────────────────────────────────────
+
+export type DriveEditability = 'direct' | 'find-replace' | 'read-only';
+
+export interface DriveFileNode {
+  fileId: string;
+  name: string;
+  mimeType: string;
+  isFolder: boolean;
+  size: number;
+  modifiedTime: string | null;
+  createdTime: string | null;
+  webViewLink: string | null;
+  parentId: string | null;
+  driveId: string | null;
+  depth: number;
+  path: string;
+  children?: DriveFileNode[];
+  editability: DriveEditability;
+  warning: string | null;
+}
+
+export interface DriveFileContent {
+  fileId: string;
+  fileName: string;
+  mimeType: string;
+  originalMimeType: string;
+  content: string;
+  editability: DriveEditability;
+  warning: string | null;
+  size: number;
+}
+
+export interface GoogleDriveFolderConfig {
+  id: number;
+  email: string;
+  driveType: 'personal' | 'shared';
+  folderId: string;
+  folderName: string;
+  driveId: string | null;
+  syncStatus: 'idle' | 'syncing' | 'error';
+  syncError: string | null;
+  lastChangeId: string | null;
+  lastSyncedAt: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  connectionStatus?: {
+    status: 'connected' | 'disconnected' | 'connecting' | 'error';
+    mode?: string;
+    error?: string;
+    displayName?: string;
+  };
+}
+
+export interface GdriveFolderPermission {
+  read: boolean;
+  write: boolean;
+  requireApproval?: boolean;
+}
+
+export interface GdriveFineGrained {
+  folderPermissions?: Record<string, GdriveFolderPermission>;
+}
+
+export interface DriveAvailableFolder {
+  folderId: string;
+  folderName: string;
+  driveId?: string;
+  path: string;
+}
+
+export interface DriveEditDelta {
+  search: string;
+  replace: string;
+}
+
+export type DriveActionType = 'create_file' | 'write_file' | 'patch_file' | 'delete_file' | 'rename_file';
+
+export interface DriveOutboxAction {
+  action: DriveActionType;
+  folderId: number;
+  fileId?: string;
+  fileName?: string;
+  parentFolderId?: string;
+  content?: string;
+  mimeType?: string;
+  edits?: DriveEditDelta[];
+  newName?: string;
 }
 
 export interface AiSession {

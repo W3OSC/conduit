@@ -399,6 +399,44 @@ export const obsidianVaultConfig = sqliteTable('obsidian_vault_config', {
   updatedAt:       text('updated_at').default(sql`(datetime('now'))`),
 });
 
+// ─── Google Drive Folder ──────────────────────────────────────────────────────
+
+export const googleDriveFolderConfig = sqliteTable('google_drive_folder_config', {
+  id:           integer('id').primaryKey({ autoIncrement: true }),
+  email:        text('email').notNull(),                            // owner Gmail account
+  driveType:    text('drive_type').notNull().default('personal'),   // 'personal' | 'shared'
+  folderId:     text('folder_id').notNull(),                        // Google Drive folder ID ('root' for root)
+  folderName:   text('folder_name').notNull(),                      // user-visible display name
+  driveId:      text('drive_id'),                                   // shared drive ID (null for personal)
+  syncStatus:   text('sync_status').notNull().default('idle'),      // 'idle' | 'syncing' | 'error'
+  syncError:    text('sync_error'),
+  lastChangeId: text('last_change_id'),                             // Drive API changes.list() page token
+  lastSyncedAt: text('last_synced_at'),
+  createdAt:    text('created_at').default(sql`(datetime('now'))`),
+  updatedAt:    text('updated_at').default(sql`(datetime('now'))`),
+});
+
+// ─── Google Drive File Metadata Cache ─────────────────────────────────────────
+
+export const googleDriveFileCache = sqliteTable('google_drive_file_cache', {
+  id:              integer('id').primaryKey({ autoIncrement: true }),
+  folderConfigId:  integer('folder_config_id').notNull(),            // FK → googleDriveFolderConfig.id
+  fileId:          text('file_id').notNull(),                        // Google Drive file ID
+  fileName:        text('file_name').notNull(),
+  mimeType:        text('mime_type').notNull(),
+  size:            integer('size').default(0),
+  modifiedTime:    text('modified_time'),
+  createdTime:     text('created_time'),
+  isFolder:        integer('is_folder', { mode: 'boolean' }).default(false),
+  parentId:        text('parent_id'),                                // parent folder's Drive fileId
+  webViewLink:     text('web_view_link'),
+  driveId:         text('drive_id'),                                 // shared drive ID if applicable
+  depth:           integer('depth').default(0),                      // recursion depth from root
+  indexedAt:       text('indexed_at').default(sql`(datetime('now'))`),
+}, (t) => ({
+  uniqFolderFile: unique().on(t.folderConfigId, t.fileId),
+}));
+
 // ─── SMB File Share ───────────────────────────────────────────────────────────
 
 export const smbShareConfig = sqliteTable('smb_share_config', {
@@ -473,6 +511,18 @@ export interface SmbFineGrained {
   writePaths?: string[];   // path prefixes the key may write to (null = all paths)
 }
 
+export interface GdriveFolderPermission {
+  read: boolean;
+  write: boolean;
+  requireApproval?: boolean; // overrides global requireApproval for this specific folder
+}
+
+export interface GdriveFineGrained {
+  // Per-folder access control. Key = googleDriveFolder.id (number as string).
+  // Absent folder entry = inherit global readEnabled/writeEnabled.
+  folderPermissions?: Record<string, GdriveFolderPermission>;
+}
+
 export type ServiceFineGrained =
   | SlackFineGrained
   | DiscordFineGrained
@@ -482,7 +532,8 @@ export type ServiceFineGrained =
   | TwitterFineGrained
   | NotionFineGrained
   | ObsidianFineGrained
-  | SmbFineGrained;
+  | SmbFineGrained
+  | GdriveFineGrained;
 
 // ─── Type exports ─────────────────────────────────────────────────────────────
 
@@ -519,3 +570,6 @@ export type ObsidianVaultConfig = typeof obsidianVaultConfig.$inferSelect;
 export type SmbShareConfig = typeof smbShareConfig.$inferSelect;
 export type InsertSmbShareConfig = typeof smbShareConfig.$inferInsert;
 export type InsertObsidianVaultConfig = typeof obsidianVaultConfig.$inferInsert;
+export type GoogleDriveFolderConfig = typeof googleDriveFolderConfig.$inferSelect;
+export type InsertGoogleDriveFolderConfig = typeof googleDriveFolderConfig.$inferInsert;
+export type GoogleDriveFileCache = typeof googleDriveFileCache.$inferSelect;

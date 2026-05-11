@@ -5,7 +5,7 @@ import { getDb } from '../db/client.js';
 import { outbox, permissions, apiKeyPermissions, aiToolCalls } from '../db/schema.js';
 import type {
   SlackFineGrained, DiscordFineGrained, TelegramFineGrained,
-  GmailFineGrained, CalendarFineGrained, NotionFineGrained, ObsidianFineGrained, SmbFineGrained,
+  GmailFineGrained, CalendarFineGrained, NotionFineGrained, ObsidianFineGrained, SmbFineGrained, GdriveFineGrained,
   ServiceFineGrained,
 } from '../db/schema.js';
 import { eq, and, desc, sql } from 'drizzle-orm';
@@ -143,6 +143,17 @@ function checkWriteAllowlist(
       }
       return null;
     }
+    case 'gdrive': {
+      // For Drive, check per-folder write permission
+      const gdriveFg = fg as GdriveFineGrained;
+      if (!gdriveFg.folderPermissions) return null; // no fine-grained config = unrestricted
+      const folderPerm = gdriveFg.folderPermissions[recipientId];
+      if (!folderPerm) return null; // folder not specifically listed = use global
+      if (!folderPerm.write) {
+        return `Write access to Google Drive folder "${recipientId}" is not permitted for this API key`;
+      }
+      return null;
+    }
     default:
       return null;
   }
@@ -275,6 +286,39 @@ async function validateObsidianPatchFile(content: string): Promise<void> {
   }
 }
 
+// ── Google Drive patch_file pre-flight validation ─────────────────────────────
+
+/**
+ * For `patch_file` outbox items targeting a Google Drive file, validate each
+ * search string against the current file content before committing.
+ * Only applies to plain-text files — Google Workspace docs are skipped
+ * (the Docs/Sheets API handles reporting at execution time).
+ */
+async function validateGdrivePatchFile(content: string): Promise<void> {
+  let action: { action?: string; fileId?: string; folderId?: number; edits?: Array<{ search?: string; replace?: string }> };
+  try {
+    action = JSON.parse(content);
+  } catch {
+    return;
+  }
+  if (action.action !== 'patch_file') return;
+  if (!action.fileId || !action.folderId) return;
+  if (!action.edits?.length) return;
+
+  const manager = getConnectionManager();
+  const { getDb } = await import('../db/client.js');
+  const { googleDriveFolderConfig } = await import('../db/schema.js');
+  const { eq: eqFn } = await import('drizzle-orm');
+  const db = getDb();
+  const row = db.select().from(googleDriveFolderConfig).where(eqFn(googleDriveFolderConfig.id, action.folderId)).get();
+  if (!row) throw new Error(`Drive folder config ${action.folderId} not found`);
+
+  const gdrive = manager.getGdrive(row.email);
+  if (!gdrive) throw new Error(`No Google Drive connection for ${row.email}`);
+
+  await gdrive.validatePatchFile({ action: 'patch_file', folderId: action.folderId, fileId: action.fileId, edits: action.edits as Array<{ search: string; replace: string }> });
+}
+
 // ── Shared dispatch helper ────────────────────────────────────────────────────
 
 /**
@@ -299,6 +343,8 @@ async function dispatchOutboxItem(
     await manager.executeObsidianAction(JSON.parse(content) as Parameters<typeof manager.executeObsidianAction>[0]);
   } else if (source === 'smb') {
     await manager.executeSmbAction(JSON.parse(content) as Parameters<typeof manager.executeSmbAction>[0]);
+  } else if (source === 'gdrive') {
+    await manager.executeGdriveAction(JSON.parse(content) as Parameters<typeof manager.executeGdriveAction>[0]);
   } else {
     await manager.sendMessage(source as 'slack' | 'discord' | 'telegram', recipientId, content);
   }
@@ -364,6 +410,15 @@ router.post('/', optionalAuth, async (req, res) => {
   if (source === 'obsidian') {
     try {
       await validateObsidianPatchFile(content);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      res.status(400).json({ error: msg });
+      return;
+    }
+  }
+  if (source === 'gdrive') {
+    try {
+      await validateGdrivePatchFile(content);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       res.status(400).json({ error: msg });
@@ -456,6 +511,15 @@ router.post('/batch', optionalAuth, async (req, res) => {
       return;
     }
   }
+  if (source === 'gdrive') {
+    try {
+      await validateGdrivePatchFile(content);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      res.status(400).json({ error: msg });
+      return;
+    }
+  }
 
   const batchId = randomUUID();
   const items = [];
@@ -540,6 +604,15 @@ router.post('/batch/multi', optionalAuth, async (req, res) => {
     if (op.source === 'obsidian') {
       try {
         await validateObsidianPatchFile(op.content);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        res.status(400).json({ error: `${msg} (operations[${i}])` });
+        return;
+      }
+    }
+    if (op.source === 'gdrive') {
+      try {
+        await validateGdrivePatchFile(op.content);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         res.status(400).json({ error: `${msg} (operations[${i}])` });
