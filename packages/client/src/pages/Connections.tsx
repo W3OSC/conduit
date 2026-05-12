@@ -34,7 +34,7 @@ import {
   type SlackChannel, type TelegramChat, type GmailLabel,
   type GoogleCalendarInfo, type VaultFileEntry,
   type GoogleDriveFolderConfig, type DriveFileNode, type DriveFileContent,
-  type DriveAvailableFolder, type DriveEditDelta, type GdriveFineGrained,
+  type DriveAvailableFolder, type DriveEditDelta, type GdriveFineGrained, // DriveFileContent used by DriveFileViewer
 } from '@/lib/api';
 import { startRegistration } from '@simplewebauthn/browser';
 import type { PublicKeyCredentialCreationOptionsJSON } from '@simplewebauthn/browser';
@@ -6645,7 +6645,6 @@ function GdriveFolderDetailPanel({
   onDeleted: () => void;
 }) {
   const qc = useQueryClient();
-  const [selectedFile, setSelectedFile] = useState<DriveFileNode | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -6702,7 +6701,7 @@ function GdriveFolderDetailPanel({
   const files = treeData?.files ?? [];
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col">
       {/* Folder header */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-secondary/10 flex-shrink-0">
         <HardDrive className="w-3.5 h-3.5 text-muted-foreground" />
@@ -6752,46 +6751,36 @@ function GdriveFolderDetailPanel({
         </div>
       )}
 
-      {/* Body: file tree + viewer */}
-      <div className="flex flex-1 min-h-0 overflow-hidden">
-        {/* File tree */}
-        <div className="w-44 flex-shrink-0 border-r border-border overflow-y-auto py-1">
-          {treeLoading && (
-            <div className="flex items-center justify-center py-4">
-              <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
-            </div>
-          )}
-          {!treeLoading && files.length === 0 && (
-            <p className="px-3 py-2 text-[11px] text-muted-foreground italic">
-              {folder.lastSyncedAt ? 'No files found' : 'Click sync to load files'}
-            </p>
-          )}
-          {files.map((node) => (
-            <DriveFileTreeNode
-              key={node.fileId}
-              node={node}
-              depth={0}
-              onSelect={setSelectedFile}
-              selectedId={selectedFile?.fileId ?? null}
-            />
-          ))}
-        </div>
+      {/* File tree — fixed height, scrollable */}
+      <div className="overflow-y-auto py-1" style={{ height: '260px' }}>
+        {treeLoading && (
+          <div className="flex items-center justify-center py-4">
+            <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+          </div>
+        )}
+        {!treeLoading && files.length === 0 && (
+          <p className="px-3 py-2 text-[11px] text-muted-foreground italic">
+            {folder.lastSyncedAt ? 'No files found' : 'Click sync to load files'}
+          </p>
+        )}
+        {files.map((node) => (
+          <DriveFileTreeNode
+            key={node.fileId}
+            node={node}
+            depth={0}
+            onSelect={() => {}}
+            selectedId={null}
+          />
+        ))}
+      </div>
 
-        {/* File viewer / empty state */}
-        <div className="flex-1 min-w-0 overflow-hidden flex flex-col">
-          {selectedFile ? (
-            <DriveFileViewer
-              folderId={folder.id}
-              node={selectedFile}
-              onClose={() => setSelectedFile(null)}
-            />
-          ) : (
-            <div className="flex flex-col items-center justify-center h-full gap-2 text-center p-6">
-              <FolderOpen className="w-8 h-8 text-muted-foreground/30" />
-              <p className="text-xs text-muted-foreground">Select a file to preview or edit</p>
-            </div>
-          )}
-        </div>
+      {/* Hint to browse files in the Files tab */}
+      <div className="px-3 py-2 border-t border-border/50 flex items-center gap-2">
+        <FolderOpen className="w-3 h-3 text-muted-foreground flex-shrink-0" />
+        <p className="text-[11px] text-muted-foreground">
+          To browse and open files, visit the{' '}
+          <a href="/files" className="text-primary hover:underline">Files tab</a>.
+        </p>
       </div>
     </div>
   );
@@ -7005,7 +6994,7 @@ function SmbSharesTab() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Obsidian Vault Tab — multi-vault list + detail panel
+// Obsidian Files Tab — multi-vault list + detail panel
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -7419,9 +7408,9 @@ function VaultDetailPanel({ vault, onDeleted }: { vault: ObsidianVaultConfigRow;
                     <RefreshCw className={cn('w-3 h-3', syncVault.isPending && 'animate-spin')} />
                     Sync Now
                   </button>
-                  <a href="/vault" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/10 border border-primary/20 text-xs font-medium text-primary hover:bg-primary/15 transition-colors">
+                  <a href="/files" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/10 border border-primary/20 text-xs font-medium text-primary hover:bg-primary/15 transition-colors">
                     <BookOpen className="w-3 h-3" />
-                    Open Vault
+                    Open Files
                   </a>
                 </div>
               </div>
@@ -7587,7 +7576,7 @@ function NewVaultForm({ onCreated }: { onCreated: (vault: ObsidianVaultConfigRow
   );
 }
 
-// ── Main ObsidianVaultTab ─────────────────────────────────────────────────────
+// ── Main ObsidianFilesTab ─────────────────────────────────────────────────────
 
 function ObsidianVaultTab() {
   const { data: vaultsData, isLoading } = useQuery({

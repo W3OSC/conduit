@@ -140,6 +140,25 @@ export class SmbSync {
     );
   }
 
+  // ── Direct buffer write (used for uploads bypassing outbox) ──────────────────
+
+  /**
+   * Write a raw Buffer to the SMB share. Used for binary file uploads that
+   * bypass the outbox string-content model.
+   */
+  async writeFileBuffer(filePath: string, buffer: Buffer): Promise<void> {
+    const client = this.assertConnected();
+    validatePath(filePath);
+    const smbPath = toSmbPath(filePath);
+    await ensureParentDir(client, smbPath);
+    await withTimeout(
+      client.writeFile(smbPath, buffer),
+      CONNECTION_TIMEOUT_MS,
+      `Write timed out: ${filePath}`,
+    );
+    console.log(`[smb:${this.config!.id}] Uploaded: ${filePath} (${buffer.length} bytes)`);
+  }
+
   // ── Write actions (called on outbox approval) ──────────────────────────────
 
   async executeAction(action: SmbWriteAction): Promise<string> {

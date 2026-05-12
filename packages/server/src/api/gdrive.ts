@@ -16,16 +16,23 @@
  * File operations:
  *   GET    /api/gdrive/folders/:id/files              — get file tree for folder
  *   GET    /api/gdrive/folders/:id/files/*            — read file contents (with format conversion)
+ *   GET    /api/gdrive/folders/:id/download/*         — download raw file as browser download
+ *   POST   /api/gdrive/folders/:id/upload             — upload a file (multipart/form-data)
  *
  * Writes go through POST /api/outbox with source: 'gdrive'.
  */
 
 import { Router } from 'express';
+import multer from 'multer';
+import { Readable } from 'stream';
 import { getDb } from '../db/client.js';
 import { googleDriveFolderConfig, googleDriveFileCache } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { optionalAuth, uiOnlyAuth } from '../auth/middleware.js';
 import { getConnectionManager } from '../connections/manager.js';
+
+// Multer: store uploads in memory (max 100 MB per file)
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
 
 const router = Router();
 
@@ -251,6 +258,124 @@ router.get('/folders/:id/files', optionalAuth, async (req, res) => {
     res.json({ folderId: id, folderName: row.folderName, files });
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ── GET /gdrive/folders/:id/download/* — download raw file as browser blob ─────
+
+router.get('/folders/:id/download/*path', optionalAuth, async (req, res) => {
+  const id = parseFolderId(req.params['id'] as string);
+  if (id === null) return res.status(400).json({ error: 'Invalid folder ID' });
+
+  const fileId = (req.params as Record<string, string>)['path'] ?? '';
+  if (!fileId) return res.status(400).json({ error: 'File ID is required' });
+
+  const db = getDb();
+  const row = db.select().from(googleDriveFolderConfig).where(eq(googleDriveFolderConfig.id, id)).get();
+  if (!row) return res.status(404).json({ error: 'Folder not found' });
+
+  const cached = db.select().from(googleDriveFileCache).where(eq(googleDriveFileCache.fileId, fileId)).get();
+  if (cached && cached.folderConfigId !== id) {
+    return res.status(403).json({ error: 'File does not belong to this folder config' });
+  }
+
+  const manager = getConnectionManager();
+  const gdrive = manager.getGdrive(row.email);
+  if (!gdrive) return res.status(503).json({ error: `No active Drive connection for ${row.email}` });
+
+  try {
+    // Use raw Drive API to download as binary
+    const driveApi = (gdrive as unknown as { drive: { files: { get: (p: object, o: object) => Promise<{ data: unknown; headers: Record<string, string> }> } } }).drive;
+    const mimeType = cached?.mimeType;
+    const fileName = cached?.fileName ?? fileId;
+
+    // For Google Workspace files, export as PDF
+    const isWorkspace = mimeType?.startsWith('application/vnd.google-apps.');
+    let buf: Buffer;
+    let contentType: string;
+    let downloadName: string;
+
+    if (isWorkspace) {
+      // Export as PDF for Google Workspace files
+      const res2 = await driveApi.files.get(
+        { fileId, mimeType: 'application/pdf' } as object,
+        { responseType: 'arraybuffer' },
+      );
+      buf = Buffer.from(res2.data as ArrayBuffer);
+      contentType = 'application/pdf';
+      downloadName = `${fileName}.pdf`;
+    } else {
+      const res2 = await driveApi.files.get(
+        { fileId, alt: 'media', supportsAllDrives: true } as object,
+        { responseType: 'arraybuffer' },
+      );
+      buf = Buffer.from(res2.data as ArrayBuffer);
+      contentType = mimeType ?? 'application/octet-stream';
+      downloadName = fileName;
+    }
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(downloadName)}"`);
+    res.setHeader('Content-Length', String(buf.length));
+    res.send(buf);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(500).json({ error: msg });
+  }
+});
+
+// ── POST /gdrive/folders/:id/upload — upload a file to the folder ──────────────
+
+router.post('/folders/:id/upload', uiOnlyAuth, upload.single('file'), async (req, res) => {
+  const id = parseFolderId(req.params['id'] as string);
+  if (id === null) return res.status(400).json({ error: 'Invalid folder ID' });
+
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: 'No file provided' });
+
+  const db = getDb();
+  const row = db.select().from(googleDriveFolderConfig).where(eq(googleDriveFolderConfig.id, id)).get();
+  if (!row) return res.status(404).json({ error: 'Folder not found' });
+
+  const manager = getConnectionManager();
+  const gdrive = manager.getGdrive(row.email);
+  if (!gdrive) return res.status(503).json({ error: `No active Drive connection for ${row.email}` });
+
+  // Optional: target subfolder within the configured folder
+  const parentFolderId = (req.body as { parentFolderId?: string }).parentFolderId || row.folderId;
+
+  try {
+    // Access the drive API directly on the manager's instance
+    const driveApi = (gdrive as unknown as { drive: { files: { create: (p: object) => Promise<{ data: { id?: string; name?: string } }> } } }).drive;
+    const mimeType = file.mimetype || 'application/octet-stream';
+    const stream = Readable.from(file.buffer);
+
+    const uploadRes = await driveApi.files.create({
+      supportsAllDrives: true,
+      requestBody: {
+        name: file.originalname,
+        parents: [parentFolderId],
+        mimeType,
+      },
+      media: { mimeType, body: stream },
+      fields: 'id,name',
+    } as object);
+
+    // Trigger cache refresh
+    gdrive.syncFolder(id).catch(() => {});
+
+    res.status(201).json({
+      success: true,
+      fileId: uploadRes.data.id,
+      fileName: uploadRes.data.name,
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // Propagate size limit errors clearly
+    if (msg.includes('too large') || msg.includes('LIMIT_FILE_SIZE')) {
+      return res.status(413).json({ error: 'File too large (max 100 MB)' });
+    }
+    res.status(500).json({ error: msg });
   }
 });
 

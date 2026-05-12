@@ -530,6 +530,31 @@ export const api = {
     request<{ success: boolean; status: unknown }>(`/smb/shares/${id}/connect`, { method: 'POST' }),
   disconnectSmbShare: (id: number) =>
     request<{ success: boolean }>(`/smb/shares/${id}/disconnect`, { method: 'POST' }),
+  listSmbDirectory: (id: number, path = '') => {
+    const q = path ? `?path=${encodeURIComponent(path)}` : '';
+    return request<{ path: string; entries: SmbEntry[] }>(`/smb/shares/${id}/files${q}`);
+  },
+  readSmbFile: (id: number, filePath: string) =>
+    request<string>(`/smb/shares/${id}/files/${filePath.split('/').map(encodeURIComponent).join('/')}`),
+  smbDownloadUrl: (id: number, filePath: string) =>
+    `${BASE}/smb/shares/${id}/download/${filePath.split('/').map(encodeURIComponent).join('/')}`,
+  uploadSmbFile: async (id: number, file: File, dirPath = '') => {
+    const csrfToken = getCsrfToken();
+    const form = new FormData();
+    form.append('file', file);
+    const q = dirPath ? `?path=${encodeURIComponent(dirPath)}` : '';
+    const res = await fetch(`${BASE}/smb/shares/${id}/upload${q}`, {
+      method: 'POST',
+      headers: { ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}) },
+      credentials: 'include',
+      body: form,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error((err as { error: string }).error || `HTTP ${res.status}`);
+    }
+    return res.json() as Promise<{ success: boolean; path: string }>;
+  },
 
   // ── Notion ───────────────────────────────────────────────────────────────────
   /** Search the Notion workspace. Pass no query to get top-level pages. */
@@ -572,6 +597,25 @@ export const api = {
   },
   gdriveReadFile: (folderId: number, fileId: string) =>
     request<DriveFileContent>(`/gdrive/folders/${folderId}/files/${fileId}`),
+  gdriveDownloadUrl: (folderId: number, fileId: string) =>
+    `${BASE}/gdrive/folders/${folderId}/download/${fileId}`,
+  gdriveUploadFile: async (folderId: number, file: File, parentFolderId?: string) => {
+    const csrfToken = getCsrfToken();
+    const form = new FormData();
+    form.append('file', file);
+    if (parentFolderId) form.append('parentFolderId', parentFolderId);
+    const res = await fetch(`${BASE}/gdrive/folders/${folderId}/upload`, {
+      method: 'POST',
+      headers: { ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}) },
+      credentials: 'include',
+      body: form,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error((err as { error: string }).error || `HTTP ${res.status}`);
+    }
+    return res.json() as Promise<{ success: boolean; fileId: string; fileName: string }>;
+  },
 
   // Update
   updateStatus: () => request<UpdateStatus>('/update/status'),
@@ -1528,6 +1572,12 @@ export interface UpdateStatus {
 }
 
 // ─── SMB types ────────────────────────────────────────────────────────────────
+
+export interface SmbEntry {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+}
 
 export interface SmbShareRow {
   id: number;
