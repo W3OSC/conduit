@@ -772,10 +772,11 @@ interface VaultSectionProps {
   selectedItem: SelectedItem | null;
   onSelect: (vaultId: number, entry: VaultFileEntry) => void;
   onWikilinkNavigate: (vaultId: number, target: string, allFiles: VaultFileEntry[]) => void;
+  open: boolean;
+  onToggle: () => void;
 }
 
-function VaultSection({ vault, selectedItem, onSelect }: VaultSectionProps) {
-  const [open, setOpen] = useState(true);
+function VaultSection({ vault, selectedItem, onSelect, open, onToggle }: VaultSectionProps) {
   const [filter, setFilter] = useState('');
 
   const allStatuses = useConnectionStore((s) => s.statuses);
@@ -813,10 +814,10 @@ function VaultSection({ vault, selectedItem, onSelect }: VaultSectionProps) {
     : null;
 
   return (
-    <div className="flex flex-col border-b border-white/8" style={{ maxHeight: '40%', minHeight: open ? '120px' : undefined }}>
+    <div className={cn('flex flex-col border-b border-white/8', open ? 'flex-1 min-h-0' : 'flex-shrink-0')}>
       <SectionHeader
         open={open}
-        onToggle={() => setOpen(!open)}
+        onToggle={onToggle}
         icon={<BookOpen className="w-3.5 h-3.5" />}
         label={vault.name}
         actions={
@@ -903,12 +904,12 @@ function VaultSection({ vault, selectedItem, onSelect }: VaultSectionProps) {
               <div className="px-3 py-1.5 flex items-center gap-1.5">
                 <Wifi className="w-3 h-3 text-emerald-500 flex-shrink-0" />
                 <span className="text-[10px] text-muted-foreground">Connected via git</span>
-              </div>
-            </>
+                </div>
+              </>
+            )}
+            </div>
           )}
         </div>
-      )}
-    </div>
   );
 }
 
@@ -920,10 +921,11 @@ interface GDriveSectionProps {
   onSelect: (folderId: number, folderName: string, node: DriveFileNode) => void;
   onUpload: (folderId: number, files: File[], parentFolderId?: string) => void;
   uploading: boolean;
+  open: boolean;
+  onToggle: () => void;
 }
 
-function GDriveSection({ folder, selectedItem, onSelect, onUpload, uploading }: GDriveSectionProps) {
-  const [open, setOpen] = useState(true);
+function GDriveSection({ folder, selectedItem, onSelect, onUpload, uploading, open, onToggle }: GDriveSectionProps) {
   const [filter, setFilter] = useState('');
   const fileInputId = useId();
 
@@ -942,10 +944,10 @@ function GDriveSection({ folder, selectedItem, onSelect, onUpload, uploading }: 
     : folder.syncStatus === 'error' ? 'bg-red-500' : 'bg-emerald-500';
 
   return (
-    <div className="flex flex-col border-b border-white/8" style={{ maxHeight: '40%', minHeight: open ? '120px' : undefined }}>
+    <div className={cn('flex flex-col border-b border-white/8', open ? 'flex-1 min-h-0' : 'flex-shrink-0')}>
       <SectionHeader
         open={open}
-        onToggle={() => setOpen(!open)}
+        onToggle={onToggle}
         icon={<HardDrive className="w-3.5 h-3.5" />}
         label={folder.folderName}
         meta={<span className={cn('w-1.5 h-1.5 rounded-full ml-1 flex-shrink-0', statusColor)} />}
@@ -1031,10 +1033,11 @@ interface SmbSectionProps {
   onSelect: (shareId: number, shareName: string, entry: SmbEntry) => void;
   onUpload: (shareId: number, files: File[], dirPath?: string) => void;
   uploading: boolean;
+  open: boolean;
+  onToggle: () => void;
 }
 
-function SmbSection({ share, selectedItem, onSelect, onUpload, uploading }: SmbSectionProps) {
-  const [open, setOpen] = useState(true);
+function SmbSection({ share, selectedItem, onSelect, onUpload, uploading, open, onToggle }: SmbSectionProps) {
   const [filter, setFilter] = useState('');
   const [rootEntries, setRootEntries] = useState<SmbEntry[] | null>(null);
   const [rootLoading, setRootLoading] = useState(false);
@@ -1071,10 +1074,10 @@ function SmbSection({ share, selectedItem, onSelect, onUpload, uploading }: SmbS
   const statusDot = isConnected ? 'bg-emerald-500' : status?.status === 'connecting' ? 'bg-amber-500 animate-pulse' : 'bg-red-500';
 
   return (
-    <div className="flex flex-col border-b border-white/8" style={{ maxHeight: '40%', minHeight: open ? '120px' : undefined }}>
+    <div className={cn('flex flex-col border-b border-white/8', open ? 'flex-1 min-h-0' : 'flex-shrink-0')}>
       <SectionHeader
         open={open}
-        onToggle={() => setOpen(!open)}
+        onToggle={onToggle}
         icon={<Network className="w-3.5 h-3.5" />}
         label={share.name}
         meta={<span className={cn('w-1.5 h-1.5 rounded-full ml-1 flex-shrink-0', statusDot)} />}
@@ -1196,7 +1199,13 @@ export default function ObsidianVault() {
   const [gdriveUploading, setGdriveUploading] = useState<Record<number, boolean>>({});
   const [smbUploading, setSmbUploading] = useState<Record<number, boolean>>({});
 
-  const [notionOpen, setNotionOpen] = useState(true);
+  // Accordion state: only one section open at a time; null = all collapsed
+  // Section IDs: `vault-{id}`, `gdrive-{id}`, `smb-{id}`, `notion`
+  const [openSectionId, setOpenSectionId] = useState<string | null>(null);
+
+  const toggleSection = useCallback((id: string) => {
+    setOpenSectionId((prev) => (prev === id ? null : id));
+  }, []);
   const [notionFilter, setNotionFilter] = useState('');
   const [notionChildrenCache, setNotionChildrenCache] = useState<Map<string, NotionSearchResult[]>>(new Map());
 
@@ -1529,12 +1538,14 @@ export default function ObsidianVault() {
             selectedItem={selected}
             onSelect={handleObsidianSelect}
             onWikilinkNavigate={(vaultId, target) => handleWikilinkClick(vaultId, target)}
+            open={openSectionId === `vault-${vault.id}`}
+            onToggle={() => toggleSection(`vault-${vault.id}`)}
           />
         ))}
 
         {/* Empty Obsidian state */}
         {vaults.length === 0 && (
-          <div className="px-4 py-4 border-b border-white/8 space-y-2">
+          <div className="px-4 py-4 border-b border-white/8 space-y-2 flex-shrink-0">
             <div className="flex items-center gap-1.5">
               <BookOpen className="w-3.5 h-3.5 text-primary" />
               <span className="text-xs font-semibold text-foreground">Obsidian Vaults</span>
@@ -1557,6 +1568,8 @@ export default function ObsidianVault() {
             onSelect={handleGdriveSelect}
             onUpload={handleGdriveUpload}
             uploading={gdriveUploading[folder.id] ?? false}
+            open={openSectionId === `gdrive-${folder.id}`}
+            onToggle={() => toggleSection(`gdrive-${folder.id}`)}
           />
         ))}
 
@@ -1569,34 +1582,37 @@ export default function ObsidianVault() {
             onSelect={handleSmbSelect}
             onUpload={handleSmbUpload}
             uploading={smbUploading[share.id] ?? false}
+            open={openSectionId === `smb-${share.id}`}
+            onToggle={() => toggleSection(`smb-${share.id}`)}
           />
         ))}
 
         {/* ── Notion section ───────────────────────────────────────────────────── */}
-        <SectionHeader
-          open={notionOpen}
-          onToggle={() => setNotionOpen(!notionOpen)}
-          icon={<StickyNote className="w-3.5 h-3.5" />}
-          label="Notion"
-          meta={
-            notionConnected && (
-              <span className="flex items-center gap-0.5 ml-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 flex-shrink-0" />
-              </span>
-            )
-          }
-          actions={
-            notionConnected && (
-              <button onClick={() => refetchNotion()}
-                className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors flex-shrink-0" title="Refresh Notion">
-                <RefreshCw className="w-3.5 h-3.5" />
-              </button>
-            )
-          }
-        />
+        <div className={cn('flex flex-col border-b border-white/8', openSectionId === 'notion' ? 'flex-1 min-h-0' : 'flex-shrink-0')}>
+          <SectionHeader
+            open={openSectionId === 'notion'}
+            onToggle={() => toggleSection('notion')}
+            icon={<StickyNote className="w-3.5 h-3.5" />}
+            label="Notion"
+            meta={
+              notionConnected && (
+                <span className="flex items-center gap-0.5 ml-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 flex-shrink-0" />
+                </span>
+              )
+            }
+            actions={
+              notionConnected && (
+                <button onClick={() => refetchNotion()}
+                  className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors flex-shrink-0" title="Refresh Notion">
+                  <RefreshCw className="w-3.5 h-3.5" />
+                </button>
+              )
+            }
+          />
 
-        {notionOpen && (
-          <div className="flex flex-col flex-1 min-h-0">
+          {openSectionId === 'notion' && (
+            <div className="flex flex-col min-h-0 flex-1">
             {!notionConnected ? (
               <div className="px-4 py-4 space-y-2">
                 <p className="text-xs text-muted-foreground">Notion not connected.</p>
@@ -1655,6 +1671,7 @@ export default function ObsidianVault() {
             )}
           </div>
         )}
+        </div>
 
         {/* All-empty state */}
         {!hasAnySources && !notionConnected && (

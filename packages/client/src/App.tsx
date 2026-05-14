@@ -123,7 +123,7 @@ function AppInner() {
               <Route path="/connections" element={<Navigate to="/settings/connections" replace />} />
               <Route path="/settings" element={<Navigate to="/settings/connections" replace />} />
               <Route path="/settings/:tab" element={<Connections />} />
-              <Route path="/vault" element={<ObsidianVault />} />
+              <Route path="/files" element={<ObsidianVault />} />
               <Route path="/audit-log" element={<AuditLog />} />
             </Routes>
           </Suspense>

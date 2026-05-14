@@ -22,7 +22,7 @@ const SERVICES = [
   { id: 'gmail',    label: 'Gmail'    },
   { id: 'calendar', label: 'Calendar' },
   { id: 'notion',   label: 'Notion'   },
-  { id: 'obsidian', label: 'Vault'    },
+  { id: 'obsidian', label: 'Files'    },
   { id: 'ai',       label: 'AI'       },
 ] as const;
 
@@ -30,7 +30,7 @@ const NAV_ITEMS = [
   { to: '/',            icon: Inbox,           label: 'Inbox'      },
   { to: '/dashboard',   icon: LayoutDashboard, label: 'Dashboard'  },
   { to: '/ai',          icon: Bot,             label: 'AI',        service: 'ai'       },
-  { to: '/vault',       icon: BookOpen,        label: 'Vault',     service: 'obsidian' },
+  { to: '/files',       icon: BookOpen,        label: 'Files',     service: 'obsidian' },
   { to: '/chat',        icon: MessageSquare,   label: 'Chat',      service: 'slack'    },
   { to: '/outbox',      icon: SendHorizonal,   label: 'Outbox',    badge: true         },
   { to: '/contacts',    icon: Users,           label: 'Contacts'   },

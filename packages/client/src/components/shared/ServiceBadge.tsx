@@ -17,7 +17,7 @@ const SERVICE_CONFIG: Record<string, {
   gmail:    { label: 'Gmail',    letter: 'G', bg: 'bg-red-500/10',    text: 'text-red-400',    border: 'border-red-500/25',   dot: 'bg-red-400'    },
   calendar: { label: 'Calendar', letter: 'C', bg: 'bg-amber-500/10',  text: 'text-amber-400',  border: 'border-amber-500/25', dot: 'bg-amber-400'  },
   notion:   { label: 'Notion',   letter: 'N', bg: 'bg-zinc-500/10',   text: 'text-zinc-300',   border: 'border-zinc-500/25',  dot: 'bg-zinc-300'   },
-  obsidian: { label: 'Vault',    letter: 'V', bg: 'bg-purple-500/10', text: 'text-purple-300', border: 'border-purple-500/25',dot: 'bg-purple-300'  },
+  obsidian: { label: 'Files',    letter: 'F', bg: 'bg-purple-500/10', text: 'text-purple-300', border: 'border-purple-500/25',dot: 'bg-purple-300'  },
   ai:       { label: 'AI',       letter: 'A', bg: 'bg-emerald-500/10',text: 'text-emerald-300',border: 'border-emerald-500/25',dot: 'bg-emerald-300' },
 };
 
