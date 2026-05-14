@@ -363,7 +363,22 @@ export class GdriveSyncManager {
       }
     }
 
-    return roots;
+    // Sort each level: folders first (alphabetical), then files by modifiedTime desc
+    const sortNodes = (nodes: DriveFileNode[]): DriveFileNode[] => {
+      nodes.sort((a, b) => {
+        if (a.isFolder !== b.isFolder) return a.isFolder ? -1 : 1;
+        if (a.isFolder) return a.name.localeCompare(b.name);
+        const aTime = a.modifiedTime ? new Date(a.modifiedTime).getTime() : 0;
+        const bTime = b.modifiedTime ? new Date(b.modifiedTime).getTime() : 0;
+        return bTime - aTime;
+      });
+      for (const node of nodes) {
+        if (node.children?.length) sortNodes(node.children);
+      }
+      return nodes;
+    };
+
+    return sortNodes(roots);
   }
 
   // ── Sync (cache refresh) ───────────────────────────────────────────────────

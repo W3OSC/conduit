@@ -1,4 +1,5 @@
 import { TelegramClient } from 'telegram';
+import { LogLevel } from 'telegram/extensions/Logger.js';
 import { StringSession } from 'telegram/sessions/index.js';
 import { NewMessage, NewMessageEvent } from 'telegram/events/index.js';
 import { getDb } from '../db/client.js';
@@ -123,6 +124,12 @@ export class TelegramBridge {
       connectionRetries: 5,
       retryDelay: 2000,
     });
+
+    // Silence GramJS's own console.error calls. The update loop in updates.js
+    // calls console.error(e) whenever _log.canSend(LogLevel.ERROR) is true,
+    // even after _errorHandler has already handled the error. Setting the log
+    // level to NONE prevents that duplicate output.
+    this.client.setLogLevel(LogLevel.NONE);
 
     // Catch unhandled errors from GramJS's update loop — these are normally
     // TIMEOUT errors from Telegram's servers that GramJS retries internally.
