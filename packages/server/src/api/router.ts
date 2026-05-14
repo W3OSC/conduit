@@ -25,6 +25,8 @@ import gdriveRouter from './gdrive.js';
 import openapiRouter from './openapi.js';
 import aiRouter from './ai.js';
 import updateRouter from './update.js';
+import contextRouter from './context.js';
+import topologyRouter from './topology.js';
 
 const router = Router();
 
@@ -161,6 +163,8 @@ router.use('/smb', smbRouter);
 router.use('/gdrive', gdriveRouter);
 router.use('/ai', aiRouter);
 router.use('/update', updateRouter);
+router.use('/', contextRouter);
+router.use('/', topologyRouter);
 router.use('/', openapiRouter);
 router.use('/', serviceDataRouter);
 

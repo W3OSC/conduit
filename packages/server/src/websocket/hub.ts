@@ -227,3 +227,12 @@ export function collectBroadcast(
 export function getConnectedCount(): number {
   return clients.size;
 }
+
+/**
+ * Subscribe to all broadcast events permanently.
+ * Returns an unsubscribe function.
+ */
+export function subscribeBroadcast(fn: (event: WsEvent) => void): () => void {
+  internalListeners.add(fn);
+  return () => internalListeners.delete(fn);
+}
