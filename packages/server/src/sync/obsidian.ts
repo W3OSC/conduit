@@ -356,10 +356,24 @@ export class ObsidianVaultSync {
           }
 
           if (count === 0) {
-            throw new Error(`Edit ${i + 1}: search string not found in file. Make sure it matches the file content exactly (including whitespace and line endings).`);
+            const searchPreview = search.length > 120
+              ? search.slice(0, 120).replace(/\n/g, '↵') + '…'
+              : search.replace(/\n/g, '↵');
+            throw new Error(
+              `Edit ${i + 1}: search string not found in file.\n` +
+              `Search string (${search.length} chars): "${searchPreview}"\n` +
+              `Make sure it matches the file content exactly (including whitespace and line endings).`
+            );
           }
           if (count > 1) {
-            throw new Error(`Edit ${i + 1}: search string matches more than one location in the file. Make it more specific by including more surrounding context.`);
+            const searchPreview = search.length > 120
+              ? search.slice(0, 120).replace(/\n/g, '↵') + '…'
+              : search.replace(/\n/g, '↵');
+            throw new Error(
+              `Edit ${i + 1}: search string matches more than one location in the file.\n` +
+              `Search string (${search.length} chars): "${searchPreview}"\n` +
+              `Make it more specific by including more surrounding context.`
+            );
           }
 
           if (position === 'before') {

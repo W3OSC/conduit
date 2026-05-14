@@ -478,41 +478,6 @@ router.get('/openapi.json', (req, res) => {
         },
       },
 
-      '/unread/{service}/{chatId}/read': {
-        post: {
-          operationId: 'markChatRead',
-          summary: 'Mark a conversation as read on the platform',
-          description: 'Signals to the platform that all messages in this conversation have been read. This clears the unread badge in the platform app. Use this after an agent has processed and responded to a conversation to keep the user\'s read state clean.',
-          parameters: [
-            {
-              name: 'service', in: 'path', required: true,
-              schema: { type: 'string', enum: ['slack', 'discord', 'telegram'] },
-              description: 'The platform that owns this conversation',
-            },
-            {
-              name: 'chatId', in: 'path', required: true,
-              schema: { type: 'string' },
-              description: 'The conversation ID to mark as read (from GET /chats)',
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Conversation marked as read',
-              content: {
-                'application/json': {
-                  schema: {
-                    type: 'object',
-                    properties: {
-                      success: { type: 'boolean' },
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-
       // ── Contacts ─────────────────────────────────────────────────────────────
 
       '/contacts': {

@@ -13,7 +13,7 @@ export interface WsEvent {
     | 'message:new'       // new chat message (discord/slack/telegram)
     | 'email:new'         // new Gmail message
     | 'calendar:updated'  // calendar event created/updated
-    | 'unread:update'     // unread count + mute state push
+    | 'email:unread'      // Gmail unread count update
     | 'sync:progress'     // sync job progress
     | 'outbox:new'        // new outbox item
     | 'outbox:updated'    // outbox item status change
@@ -29,10 +29,10 @@ export interface WsEvent {
   data: unknown;
 }
 
-/** Broadcast authoritative unread counts + mute state to all connected clients. */
-export function broadcastUnread(updates: Array<{ source: string; chatId: string; count: number; isMuted?: boolean }>): void {
+/** Broadcast Gmail unread counts to all connected clients. */
+export function broadcastUnread(updates: Array<{ source: string; chatId: string; count: number }>): void {
   if (updates.length === 0) return;
-  broadcast({ type: 'unread:update', data: { updates } });
+  broadcast({ type: 'email:unread', data: { updates } });
 }
 
 interface AuthedWsClient {
@@ -226,4 +226,13 @@ export function collectBroadcast(
 
 export function getConnectedCount(): number {
   return clients.size;
+}
+
+/**
+ * Subscribe to all broadcast events permanently.
+ * Returns an unsubscribe function.
+ */
+export function subscribeBroadcast(fn: (event: WsEvent) => void): () => void {
+  internalListeners.add(fn);
+  return () => internalListeners.delete(fn);
 }

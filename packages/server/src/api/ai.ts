@@ -26,6 +26,8 @@ export interface AiPermissions {
   readContacts:    boolean; // /api/contacts
   readVault:       boolean; // /api/obsidian/files (read vault notes)
   writeVault:      boolean; // POST /api/outbox source:obsidian (queue vault writes)
+  readDrive:       boolean; // /api/gdrive/* (read Google Drive files)
+  writeDrive:      boolean; // POST /api/outbox source:gdrive (queue Drive writes)
   sendOutbox:      boolean; // POST /api/outbox (queue for approval)
   requireApproval: boolean; // all outbox items require human approval (sub-toggle of sendOutbox)
 }
@@ -37,6 +39,8 @@ const DEFAULT_PERMISSIONS: AiPermissions = {
   readContacts:    true,
   readVault:       true,
   writeVault:      true,
+  readDrive:       true,
+  writeDrive:      true,
   sendOutbox:      true,
   requireApproval: true,
 };
@@ -177,6 +181,37 @@ function buildSystemPrompt(baseUrl: string, sessionId: string, perms: AiPermissi
     );
   } else {
     denied.push('writing to the Obsidian vault (not permitted)');
+  }
+
+  if (perms.readDrive) {
+    allowed.push(
+      '- `GET /api/gdrive/accounts` — list connected Google Drive accounts',
+      '- `GET /api/gdrive/folders` — list all whitelisted Drive folders',
+      '- `GET /api/gdrive/folders/:id/files` — browse files in a Drive folder (returns file tree with IDs)',
+      '- `GET /api/gdrive/folders/:id/files/:fileId` — read file contents (auto-converts Google Docs/Sheets to Markdown/CSV)',
+    );
+  } else {
+    denied.push('reading Google Drive files (not permitted)');
+  }
+
+  if (perms.writeDrive) {
+    allowed.push(
+      perms.requireApproval
+        ? `- \`POST /api/outbox\` with \`source: "gdrive"\` — queue a Google Drive file operation for approval. Available actions:
+  - \`patch_file\` **(preferred for editing existing files)** — find/replace edits applied in sequence. For Google Docs/Sheets, edits are applied via the native API preserving formatting. For plain text, edits are applied in memory and re-uploaded. Each edit: \`{"search":"old text","replace":"new text"}\`. Example: \`{"action":"patch_file","folderId":1,"fileId":"1abc...","edits":[{"search":"Q1 results","replace":"Q2 results"}]}\`
+  - \`create_file\` — create a new file: \`{"action":"create_file","folderId":1,"fileName":"notes.md","parentFolderId":"<drive-folder-id>","content":"...","mimeType":"text/markdown"}\`
+  - \`write_file\` — overwrite entire file: \`{"action":"write_file","folderId":1,"fileId":"1abc...","content":"..."}\`
+  - \`rename_file\` — rename a file: \`{"action":"rename_file","folderId":1,"fileId":"1abc...","newName":"new-name.md"}\`
+  - \`delete_file\` — move to trash: \`{"action":"delete_file","folderId":1,"fileId":"1abc..."}\``
+        : `- \`POST /api/outbox\` with \`source: "gdrive"\` — queue a Google Drive file operation (approval not required). Available actions:
+  - \`patch_file\` **(preferred for editing existing files)** — find/replace edits. Each edit: \`{"search":"old","replace":"new"}\`
+  - \`create_file\` — create a new file: \`{"action":"create_file","folderId":1,"fileName":"notes.md","parentFolderId":"<drive-folder-id>","content":"...","mimeType":"text/markdown"}\`
+  - \`write_file\` — overwrite entire file: \`{"action":"write_file","folderId":1,"fileId":"1abc...","content":"..."}\`
+  - \`rename_file\` — rename a file: \`{"action":"rename_file","folderId":1,"fileId":"1abc...","newName":"new-name.md"}\`
+  - \`delete_file\` — move to trash: \`{"action":"delete_file","folderId":1,"fileId":"1abc..."}\``,
+    );
+  } else {
+    denied.push('writing to Google Drive (not permitted)');
   }
 
   if (perms.sendOutbox) {
@@ -494,6 +529,8 @@ router.put('/permissions', optionalAuth, (req, res) => {
     readContacts:    typeof body.readContacts    === 'boolean' ? body.readContacts    : current.readContacts,
     readVault:       typeof body.readVault       === 'boolean' ? body.readVault       : current.readVault,
     writeVault:      typeof body.writeVault      === 'boolean' ? body.writeVault      : current.writeVault,
+    readDrive:       typeof body.readDrive       === 'boolean' ? body.readDrive       : current.readDrive,
+    writeDrive:      typeof body.writeDrive      === 'boolean' ? body.writeDrive      : current.writeDrive,
     sendOutbox:      typeof body.sendOutbox      === 'boolean' ? body.sendOutbox      : current.sendOutbox,
     requireApproval: typeof body.requireApproval === 'boolean' ? body.requireApproval : current.requireApproval,
   };
@@ -580,6 +617,21 @@ router.get('/sessions/:id/messages', optionalAuth, (req, res) => {
     .all();
 
   res.json({ session, messages });
+});
+
+// ── GET /ai/tool-calls/:id ────────────────────────────────────────────────────
+// Returns a single tool call by its ID (used to surface raw AI request context).
+
+router.get('/tool-calls/:id', optionalAuth, (req, res) => {
+  const db = getDb();
+  const { id } = req.params as { id: string };
+  const call = db.select().from(aiToolCalls).where(eq(aiToolCalls.id, id)).get();
+  if (!call) { res.status(404).json({ error: 'Tool call not found' }); return; }
+
+  res.json({
+    ...call,
+    input: (() => { try { return JSON.parse(call.input); } catch { return call.input; } })(),
+  });
 });
 
 // ── GET /ai/sessions/:id/tool-calls ──────────────────────────────────────────

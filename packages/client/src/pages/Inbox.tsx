@@ -23,11 +23,11 @@ import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import {
   MessageSquare, Mail, CalendarDays, X as Twitter,
-  CheckCheck, ChevronRight, Clock, MapPin, Video, Star,
-  ExternalLink, AtSign, BellOff,
+  ChevronRight, Clock, MapPin, Video, Star,
+  ExternalLink, AtSign,
 } from 'lucide-react';
 import { api, type GmailMessage, type CalendarEvent, type Tweet, type ChatTreeMap } from '@/lib/api';
-import { useConnectionStore, useUnreadStore } from '@/store';
+import { useConnectionStore } from '@/store';
 import { ServiceIcon } from '@/components/shared/ServiceBadge';
 import { Skeleton } from '@/components/shared/Skeleton';
 import { cn, timeAgo, formatDate } from '@/lib/utils';
@@ -117,83 +117,35 @@ function NotConnected({ service, label }: { service: string; label: string }) {
 function ChatRow({
   entry,
   onOpen,
-  muted = false,
-  mutedIcon = false,
 }: {
-  entry: {
-    chatId: string; source: string; name: string;
-    avatarUrl?: string | null; count: number; lastTs?: string;
-  };
+  entry: { chatId: string; source: string; name: string; avatarUrl?: string | null; lastTs?: string };
   onOpen: () => void;
-  muted?: boolean;
-  mutedIcon?: boolean;
 }) {
   const hue = entry.name.split('').reduce((h, c) => (h * 31 + c.charCodeAt(0)) & 0xffff, 0) % 360;
 
   return (
     <button
       onClick={onOpen}
-      className={cn(
-        'w-full flex items-center gap-2.5 py-2 rounded-xl text-left transition-colors',
-        'hover:bg-white/[0.04] group',
-        // Always reserve the border-l-2 space (2px) to prevent layout shift.
-        // Use border-transparent for non-unread rows so the column width is stable.
-        'border-l-2',
-        !muted && entry.count > 0 ? 'border-primary/50 pl-1.5 pr-2' : 'border-transparent px-2',
-      )}
+      className="w-full flex items-center gap-2.5 px-2 py-2 rounded-xl text-left transition-colors hover:bg-white/[0.04] group"
     >
-      {/* Avatar */}
       {entry.avatarUrl ? (
-        <img
-          src={entry.avatarUrl}
-          alt={entry.name}
-          className={cn('w-7 h-7 rounded-full object-cover flex-shrink-0', muted && 'opacity-50')}
-        />
+        <img src={entry.avatarUrl} alt={entry.name} className="w-7 h-7 rounded-full object-cover flex-shrink-0" />
       ) : (
         <div
-          className={cn(
-            'w-7 h-7 rounded-full flex-shrink-0 flex items-center justify-center text-[11px] font-bold text-white',
-            muted && 'opacity-40',
-          )}
+          className="w-7 h-7 rounded-full flex-shrink-0 flex items-center justify-center text-[11px] font-bold text-white"
           style={{ background: `hsl(${hue},52%,38%)` }}
         >
           {entry.name.charAt(0).toUpperCase()}
         </div>
       )}
-
-      {/* Text */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
-          <span className={cn('text-xs truncate flex-1', muted ? 'text-muted-foreground/70' : 'font-semibold text-foreground')}>
-            {entry.name}
-          </span>
-          <ServiceIcon
-            service={entry.source}
-            size="sm"
-            className={cn('flex-shrink-0', muted ? 'opacity-20' : 'opacity-60')}
-          />
+          <span className="text-xs font-semibold text-foreground truncate flex-1">{entry.name}</span>
+          <ServiceIcon service={entry.source} size="sm" className="flex-shrink-0 opacity-60" />
         </div>
         {entry.lastTs && (
-          <p className="text-[10px] text-muted-foreground/50 leading-none mt-0.5">
-            {timeAgo(entry.lastTs)}
-          </p>
+          <p className="text-[10px] text-muted-foreground/50 leading-none mt-0.5">{timeAgo(entry.lastTs)}</p>
         )}
-      </div>
-
-      {/* Unread badge / mute indicator — always same width to prevent shift */}
-      <div className="w-5 flex-shrink-0 flex justify-end">
-        {mutedIcon && entry.count > 0 ? (
-          <div className="flex flex-col items-center gap-0.5">
-            <BellOff className="w-3 h-3 text-muted-foreground/30" />
-            <span className="text-[9px] text-muted-foreground/40 font-medium leading-none">
-              {entry.count > 99 ? '99+' : entry.count}
-            </span>
-          </div>
-        ) : entry.count > 0 ? (
-          <span className="min-w-[18px] h-[18px] rounded-full bg-primary text-primary-foreground text-[9px] font-bold flex items-center justify-center px-1">
-            {entry.count > 99 ? '99+' : entry.count}
-          </span>
-        ) : null}
       </div>
     </button>
   );
@@ -203,16 +155,11 @@ function MessagesSkeleton() {
   return (
     <div className="space-y-1 overflow-hidden">
       {Array.from({ length: 5 }).map((_, i) => (
-        /* border-l-2 border-transparent mirrors ChatRow's always-reserved border column */
-        <div key={i} className="flex items-center gap-2.5 border-l-2 border-transparent px-2 py-2">
+        <div key={i} className="flex items-center gap-2.5 px-2 py-2">
           <Skeleton className="w-7 h-7 rounded-full flex-shrink-0" />
           <div className="flex-1 min-w-0 space-y-1.5 overflow-hidden">
             <Skeleton className="h-2.5 w-3/5" />
             <Skeleton className="h-2 w-2/5" />
-          </div>
-          {/* Fixed-width badge placeholder matches ChatRow's w-5 badge wrapper */}
-          <div className="w-5 flex-shrink-0 flex justify-end">
-            <Skeleton className="w-4 h-4 rounded-full" />
           </div>
         </div>
       ))}
@@ -220,23 +167,8 @@ function MessagesSkeleton() {
   );
 }
 
-function SectionDivider({ label, hasAbove }: { label: string; hasAbove: boolean }) {
-  return (
-    <div className={cn('flex items-center gap-2 py-1', hasAbove && 'mt-1')}>
-      {hasAbove && <div className="flex-1 h-px bg-border/30" />}
-      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/40 px-1 flex-shrink-0">
-        {label}
-      </span>
-      {hasAbove && <div className="flex-1 h-px bg-border/30" />}
-    </div>
-  );
-}
-
 function InboxMessagesSection() {
-  const navigate     = useNavigate();
-  const unreadCounts = useUnreadStore((s) => s.unreadCounts);
-  const mutedChats   = useUnreadStore((s) => s.mutedChats);
-  const markReadOptimistic = useUnreadStore((s) => s.markReadOptimistic);
+  const navigate = useNavigate();
 
   const { data: treeData, isLoading } = useQuery({
     queryKey: ['chats'],
@@ -244,120 +176,44 @@ function InboxMessagesSection() {
     staleTime: 30_000,
   });
 
-  type ChatRow = {
-    chatId: string; source: string; name: string;
-    avatarUrl?: string | null; count: number; lastTs?: string; isDm: boolean;
-  };
+  type ChatEntry = { chatId: string; source: string; name: string; avatarUrl?: string | null; lastTs?: string };
 
-  const { unreadEntries, mutedEntries, recentEntries } = useMemo(() => {
-    if (!treeData) return { unreadEntries: [], mutedEntries: [], recentEntries: [] };
-    const all: ChatRow[] = [];
+  const recentEntries = useMemo((): ChatEntry[] => {
+    if (!treeData) return [];
+    const all: ChatEntry[] = [];
     const tree = treeData as ChatTreeMap;
-
     for (const [, svcTree] of Object.entries(tree)) {
       for (const section of svcTree.sections) {
-        const isDm = section.type === 'dms' || section.type === 'flat';
+        if (section.type !== 'dms' && section.type !== 'flat') continue;
         for (const chat of section.chats) {
-          const count = unreadCounts[`${svcTree.source}:${chat.id}`] || 0;
-          all.push({ chatId: chat.id, source: svcTree.source, name: chat.name, avatarUrl: chat.avatarUrl, count, lastTs: chat.lastTs, isDm });
+          if (chat.lastTs) all.push({ chatId: chat.id, source: svcTree.source, name: chat.name, avatarUrl: chat.avatarUrl, lastTs: chat.lastTs });
         }
       }
     }
-
-    // Unread: has messages, NOT muted — needs attention
-    const unread = all
-      .filter((c) => c.count > 0 && !mutedChats[`${c.source}:${c.chatId}`])
-      .sort((a, b) => b.count !== a.count ? b.count - a.count : (b.lastTs || '').localeCompare(a.lastTs || ''));
-
-    // Muted: has unread messages but the chat is muted — shown separately, dimmed
-    const muted = all
-      .filter((c) => c.count > 0 && mutedChats[`${c.source}:${c.chatId}`])
-      .sort((a, b) => b.count !== a.count ? b.count - a.count : (b.lastTs || '').localeCompare(a.lastTs || ''));
-
-    // Recent: no unread, DM-type only, sorted by last message time
-    const seenIds = new Set([...unread, ...muted].map((c) => `${c.source}:${c.chatId}`));
-    const recent = all
-      .filter((c) => c.count === 0 && c.isDm && (c.lastTs || '') !== '')
-      .filter((c) => !seenIds.has(`${c.source}:${c.chatId}`))
-      .sort((a, b) => (b.lastTs || '').localeCompare(a.lastTs || ''))
-      .slice(0, 30);
-
-    return { unreadEntries: unread, mutedEntries: muted, recentEntries: recent };
-  }, [treeData, unreadCounts, mutedChats]);
-
-  // Sidebar-badge-equivalent count: only non-muted unread
-  const totalUnread = unreadEntries.reduce((s, e) => s + e.count, 0);
-  const hasContent  = unreadEntries.length > 0 || mutedEntries.length > 0 || recentEntries.length > 0;
-
-  const openChat = (entry: ChatRow) => {
-    markReadOptimistic(entry.source, entry.chatId);
-    api.markChatRead(entry.source, entry.chatId).catch(() => {/* best-effort */});
-    navigate('/chat', {
-      state: { chatId: entry.chatId, source: entry.source, name: entry.name, messageCount: 0 },
-    });
-  };
+    return all.sort((a, b) => (b.lastTs || '').localeCompare(a.lastTs || '')).slice(0, 30);
+  }, [treeData]);
 
   return (
     <motion.div {...fade(0)} className="card-warm p-4 h-full flex flex-col min-h-0 overflow-hidden">
-      <CardHeader
-        icon={MessageSquare}
-        title="Messages"
-        iconClass="text-primary"
-        count={totalUnread}
-        linkLabel="All chats"
-        linkTo="/chat"
-      />
+      <CardHeader icon={MessageSquare} title="Messages" iconClass="text-primary" linkLabel="All chats" linkTo="/chat" />
 
-      {/* Scrollable body */}
       <div className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 -mx-1 px-1">
         {isLoading ? (
           <MessagesSkeleton />
-        ) : !hasContent ? (
+        ) : recentEntries.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
-            <CheckCheck className="w-7 h-7 opacity-20" />
-            <p className="text-xs">All caught up</p>
+            <MessageSquare className="w-7 h-7 opacity-20" />
+            <p className="text-xs">No recent conversations</p>
           </div>
         ) : (
           <div className="space-y-0.5">
-            {/* ── Unread (non-muted) ── */}
-            {unreadEntries.map((entry) => (
+            {recentEntries.map((entry) => (
               <ChatRow
                 key={`${entry.source}:${entry.chatId}`}
                 entry={entry}
-                onOpen={() => openChat(entry)}
+                onOpen={() => navigate('/chat', { state: { chatId: entry.chatId, source: entry.source, name: entry.name, messageCount: 0 } })}
               />
             ))}
-
-            {/* ── Muted (unread but silenced) ── */}
-            {mutedEntries.length > 0 && (
-              <>
-                <SectionDivider label="Muted" hasAbove={unreadEntries.length > 0} />
-                {mutedEntries.map((entry) => (
-                  <ChatRow
-                    key={`${entry.source}:${entry.chatId}`}
-                    entry={entry}
-                    onOpen={() => openChat(entry)}
-                    muted
-                    mutedIcon
-                  />
-                ))}
-              </>
-            )}
-
-            {/* ── Recent (no unread, DM-only) ── */}
-            {recentEntries.length > 0 && (
-              <>
-                <SectionDivider label="Recent" hasAbove={unreadEntries.length > 0 || mutedEntries.length > 0} />
-                {recentEntries.map((entry) => (
-                  <ChatRow
-                    key={`${entry.source}:${entry.chatId}`}
-                    entry={entry}
-                    onOpen={() => openChat(entry)}
-                    muted
-                  />
-                ))}
-              </>
-            )}
           </div>
         )}
       </div>

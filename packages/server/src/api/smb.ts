@@ -17,17 +17,23 @@
  * File operations:
  *   GET    /api/smb/shares/:id/files          — list directory (?path=subfolder)
  *   GET    /api/smb/shares/:id/files/*        — read file contents (path in URL)
+ *   GET    /api/smb/shares/:id/download/*     — download raw file as browser download
+ *   POST   /api/smb/shares/:id/upload         — upload a file (multipart/form-data, ?path=dir)
  *
  * Writes go through POST /api/outbox with source: 'smb' and { shareId } in the JSON payload.
  */
 
 import { Router } from 'express';
+import multer from 'multer';
 import { getDb } from '../db/client.js';
 import { smbShareConfig } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { optionalAuth, uiOnlyAuth } from '../auth/middleware.js';
 import { getConnectionManager } from '../connections/manager.js';
 import { SmbSync } from '../sync/smb.js';
+
+// Multer: store uploads in memory (max 100 MB per file)
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
 
 const router = Router();
 
@@ -272,6 +278,77 @@ router.get('/shares/:id/files/*path', optionalAuth, async (req, res) => {
     const msg = e instanceof Error ? e.message : String(e);
     if (msg.includes('not found') || msg.includes('STATUS_OBJECT_NAME_NOT_FOUND')) {
       return res.status(404).json({ error: `File not found: ${filePath}` });
+    }
+    res.status(500).json({ error: msg });
+  }
+});
+
+// ── GET /smb/shares/:id/download/* — download raw file as browser blob ────────
+
+router.get('/shares/:id/download/*path', optionalAuth, async (req, res) => {
+  const id = parseShareId(req.params['id'] as string);
+  if (id === null) return res.status(400).json({ error: 'Invalid share ID' });
+
+  const filePath = (req.params as Record<string, string>)['path'] ?? '';
+  if (!filePath) return res.status(400).json({ error: 'File path is required' });
+
+  const manager = getConnectionManager();
+  const sync = manager.getSmbShare(id);
+  if (!sync) return res.status(503).json({ error: 'Share not connected' });
+
+  try {
+    const content = await sync.readFile(filePath);
+    const fileName = filePath.split('/').pop() ?? filePath;
+    // Detect MIME type from extension
+    const ext = fileName.split('.').pop()?.toLowerCase() ?? '';
+    const mimeMap: Record<string, string> = {
+      pdf: 'application/pdf',
+      png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
+      mp4: 'video/mp4', mov: 'video/quicktime', mkv: 'video/x-matroska',
+      mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg',
+      zip: 'application/zip', gz: 'application/gzip', tar: 'application/x-tar',
+      txt: 'text/plain', md: 'text/markdown', json: 'application/json',
+      csv: 'text/csv', html: 'text/html', xml: 'application/xml',
+    };
+    const contentType = mimeMap[ext] ?? 'application/octet-stream';
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+    res.setHeader('Content-Length', String(content.length));
+    res.send(content);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes('not found') || msg.includes('STATUS_OBJECT_NAME_NOT_FOUND')) {
+      return res.status(404).json({ error: `File not found: ${filePath}` });
+    }
+    res.status(500).json({ error: msg });
+  }
+});
+
+// ── POST /smb/shares/:id/upload — upload a file to the share ─────────────────
+
+router.post('/shares/:id/upload', uiOnlyAuth, upload.single('file'), async (req, res) => {
+  const id = parseShareId(req.params['id'] as string);
+  if (id === null) return res.status(400).json({ error: 'Invalid share ID' });
+
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: 'No file provided' });
+
+  const manager = getConnectionManager();
+  const sync = manager.getSmbShare(id);
+  if (!sync) return res.status(503).json({ error: 'Share not connected' });
+
+  // Target directory path within the share (default: root)
+  const dirPath = ((req.query['path'] as string | undefined) ?? '').replace(/\\/g, '/').replace(/^\/*/, '');
+  const targetPath = dirPath ? `${dirPath}/${file.originalname}` : file.originalname;
+
+  try {
+    // Write the raw buffer directly to the SMB share (bypasses the string-only outbox path)
+    await sync.writeFileBuffer(targetPath, file.buffer);
+    res.status(201).json({ success: true, path: targetPath });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes('LIMIT_FILE_SIZE')) {
+      return res.status(413).json({ error: 'File too large (max 100 MB)' });
     }
     res.status(500).json({ error: msg });
   }

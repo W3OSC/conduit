@@ -7,11 +7,11 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Send, Search, MessageSquare, ArrowDown, ChevronDown, ChevronRight,
   Hash, MessageCircle, Users, Radio, Inbox, X as Twitter, Loader2 as Loader2Chat,
-  CheckCheck, ExternalLink, MailOpen, RefreshCw,
+  ExternalLink, RefreshCw,
 } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { api, type Message, type ChatEntry, type ChatSection, type ServiceTree, type ChatTreeMap, type MessageAttachments, type MessageAttachmentFile, type ChatNavState } from '@/lib/api';
-import { useMessageStreamStore, useUnreadStore } from '@/store';
+import { useMessageStreamStore } from '@/store';
 import { ServiceFilterChip, AllFilterChip } from '@/components/shared/ServiceBadge';
 import { Skeleton } from '@/components/shared/Skeleton';
 import { cn, timeAgo, formatDate, SERVICE_ACCENT } from '@/lib/utils';
@@ -521,17 +521,12 @@ function BubbleRow({ msg, prevMsg, nextMsg, highlighted = false }: {
 // ─── Tree sidebar ─────────────────────────────────────────────────────────────
 
 // A single leaf chat entry in the tree
-function ChatLeaf({ entry, section, selected, onClick, unreadCount, isMuted }: {
+function ChatLeaf({ entry, section, selected, onClick }: {
   entry: ChatEntry;
   section: ChatSection;
   selected: boolean;
   onClick: () => void;
-  unreadCount: number;
-  isMuted: boolean;
 }) {
-  const hasUnread = unreadCount > 0;
-  // Muted chats with unreads don't show the urgency cues (bold, colored badge)
-  const showUrgency = hasUnread && !isMuted;
   return (
     <button
       onClick={onClick}
@@ -545,27 +540,11 @@ function ChatLeaf({ entry, section, selected, onClick, unreadCount, isMuted }: {
       {selected && <span className="absolute left-0 inset-y-1 w-0.5 bg-primary rounded-r-full" />}
 
       <EntryAvatar type={section.type} name={entry.name} avatarUrl={entry.avatarUrl} />
-      <span className={cn(
-        'flex-1 text-xs truncate',
-        selected && 'font-semibold text-foreground',
-        showUrgency && !selected && 'font-semibold text-foreground/90',
-      )}>
+      <span className={cn('flex-1 text-xs truncate', selected && 'font-semibold text-foreground')}>
         {entry.name}
       </span>
-      {/* Unread count badge — colored for active unreads, grey for muted unreads */}
-      {hasUnread && !selected ? (
-        <span className={cn(
-          'flex-shrink-0 min-w-[18px] h-[18px] rounded-full text-[10px] font-bold flex items-center justify-center px-1',
-          isMuted
-            ? 'bg-muted-foreground/20 text-muted-foreground/50'
-            : 'bg-primary text-primary-foreground',
-        )}>
-          {unreadCount > 99 ? '99+' : unreadCount}
-        </span>
-      ) : (
-        !hasUnread && entry.messageCount > 0 && !selected && (
-          <span className="text-[10px] text-muted-foreground/35 flex-shrink-0">{entry.messageCount.toLocaleString()}</span>
-        )
+      {entry.messageCount > 0 && !selected && (
+        <span className="text-[10px] text-muted-foreground/35 flex-shrink-0">{entry.messageCount.toLocaleString()}</span>
       )}
     </button>
   );
@@ -579,8 +558,6 @@ function SectionNode({ section, source, selectedId, onSelect, search }: {
   onSelect: (entry: ChatEntry) => void;
   search: string;
 }) {
-  const getUnreadForEntry = useUnreadStore((s) => s.getUnreadForEntry);
-  const getIsMuted = useUnreadStore((s) => s.getIsMuted);
   const [open, setOpen] = useState(true);
 
   const filteredChats = useMemo(() => {
@@ -588,13 +565,6 @@ function SectionNode({ section, source, selectedId, onSelect, search }: {
     const q = search.toLowerCase();
     return section.chats.filter((c) => c.name.toLowerCase().includes(q));
   }, [section.chats, search]);
-
-  const sectionUnread = filteredChats.reduce((sum, c) => sum + getUnreadForEntry(source, c.id), 0);
-  // Unmuted unread count — used to decide badge colour
-  const sectionUnreadUnmuted = filteredChats.reduce(
-    (sum, c) => sum + (getIsMuted(source, c.id) ? 0 : getUnreadForEntry(source, c.id)), 0,
-  );
-  const sectionBadgeMuted = sectionUnread > 0 && sectionUnreadUnmuted === 0;
 
   if (filteredChats.length === 0 && !section.children?.length) return null;
 
@@ -611,16 +581,6 @@ function SectionNode({ section, source, selectedId, onSelect, search }: {
         <span className="flex-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground/60 truncate">
           {section.label}
         </span>
-        {sectionUnread > 0 && (
-          <span className={cn(
-            'min-w-[18px] h-[18px] rounded-full text-[10px] font-bold flex items-center justify-center px-1 flex-shrink-0',
-            sectionBadgeMuted
-              ? 'bg-muted-foreground/20 text-muted-foreground/50'
-              : 'bg-primary text-primary-foreground',
-          )}>
-            {sectionUnread > 99 ? '99+' : sectionUnread}
-          </span>
-        )}
         <span className="text-[10px] text-muted-foreground/30 ml-1">{filteredChats.length}</span>
       </button>
 
@@ -640,8 +600,6 @@ function SectionNode({ section, source, selectedId, onSelect, search }: {
                 section={section}
                 selected={selectedId === entry.id}
                 onClick={() => onSelect(entry)}
-                unreadCount={getUnreadForEntry(source, entry.id)}
-                isMuted={getIsMuted(source, entry.id)}
               />
             ))}
           </motion.div>
@@ -659,18 +617,10 @@ function ServiceNode({ tree, selectedId, onSelect, search, collapsed }: {
   search: string;
   collapsed: boolean;
 }) {
-  const getUnreadForEntry = useUnreadStore((s) => s.getUnreadForEntry);
-  const getIsMuted = useUnreadStore((s) => s.getIsMuted);
   const [open, setOpen] = useState(true);
   const source = tree.source;
 
-  const allChats = tree.sections.flatMap((s) => s.chats);
   const totalChats = tree.sections.reduce((n, s) => n + s.chats.length, 0);
-  const serviceUnread = allChats.reduce((sum, c) => sum + getUnreadForEntry(source, c.id), 0);
-  const serviceUnreadUnmuted = allChats.reduce(
-    (sum, c) => sum + (getIsMuted(source, c.id) ? 0 : getUnreadForEntry(source, c.id)), 0,
-  );
-  const serviceBadgeMuted = serviceUnread > 0 && serviceUnreadUnmuted === 0;
 
   if (collapsed) return null;
 
@@ -684,16 +634,6 @@ function ServiceNode({ tree, selectedId, onSelect, search, collapsed }: {
         <span className={cn('text-xs font-bold tracking-tight flex-1', SERVICE_COLOR[source] || 'text-foreground')}>
           {SERVICE_LABEL[source] || source}
         </span>
-        {serviceUnread > 0 && (
-          <span className={cn(
-            'min-w-[18px] h-[18px] rounded-full text-[10px] font-bold flex items-center justify-center px-1 flex-shrink-0',
-            serviceBadgeMuted
-              ? 'bg-muted-foreground/20 text-muted-foreground/50'
-              : 'bg-primary text-primary-foreground',
-          )}>
-            {serviceUnread > 99 ? '99+' : serviceUnread}
-          </span>
-        )}
         <span className="text-[10px] text-muted-foreground/30 ml-1">{totalChats}</span>
       </button>
 
@@ -725,107 +665,6 @@ function ServiceNode({ tree, selectedId, onSelect, search, collapsed }: {
 
 // ─── Main Chat page ───────────────────────────────────────────────────────────
 
-// ─── Unread folder ────────────────────────────────────────────────────────────
-
-function UnreadFolder({ treeData, selectedId, onSelect, filter }: {
-  treeData: ChatTreeMap | undefined;
-  selectedId: string | null;
-  onSelect: (entry: ChatEntry, source: string) => void;
-  filter: string;
-}) {
-  const unreadCounts = useUnreadStore((s) => s.unreadCounts);
-  const mutedChats = useUnreadStore((s) => s.mutedChats);
-  const [open, setOpen] = useState(true);
-
-  // Build list of entries that have unread > 0 and are NOT muted,
-  // scoped to the active service filter when not 'all'.
-  // (muted chats only show a grey badge in the service tree, not here)
-  const unreadEntries = useMemo(() => {
-    const result: Array<{ entry: ChatEntry; count: number }> = [];
-    if (!treeData) return result;
-    for (const [key, count] of Object.entries(unreadCounts)) {
-      if (count <= 0) continue;
-      if (mutedChats[key]) continue; // skip muted chats
-      const colonIdx = key.indexOf(':');
-      const source   = key.slice(0, colonIdx);
-      const chatId   = key.slice(colonIdx + 1);
-      if (filter !== 'all' && filter !== source) continue; // respect active filter
-      const tree = treeData[source];
-      if (!tree) continue;
-      for (const section of tree.sections) {
-        const entry = section.chats.find((c) => c.id === chatId);
-        if (entry) { result.push({ entry, count }); break; }
-      }
-    }
-    return result.sort((a, b) => b.count - a.count);
-  }, [unreadCounts, mutedChats, treeData, filter]);
-
-  const totalUnread = unreadEntries.reduce((sum, { count }) => sum + count, 0);
-  const isEmpty = totalUnread === 0;
-
-  return (
-    <div className="border-b border-border/30">
-      <button
-        onClick={() => setOpen(!open)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-white/[0.02] transition-colors"
-      >
-        <ChevronDown className={cn('w-3 h-3 text-muted-foreground/50 transition-transform flex-shrink-0', !open && '-rotate-90')} />
-        <CheckCheck className={cn('w-3.5 h-3.5 flex-shrink-0', isEmpty ? 'text-muted-foreground/40' : 'text-primary')} />
-        <span className={cn('text-xs font-bold tracking-tight flex-1', isEmpty ? 'text-muted-foreground/50' : 'text-foreground/80')}>
-          Unread
-        </span>
-        {!isEmpty ? (
-          <span className="min-w-[18px] h-[18px] rounded-full bg-primary text-primary-foreground text-[10px] font-bold flex items-center justify-center px-1 flex-shrink-0">
-            {totalUnread > 99 ? '99+' : totalUnread}
-          </span>
-        ) : (
-          <span className="text-[10px] text-muted-foreground/30">0</span>
-        )}
-      </button>
-
-      <AnimatePresence initial={false}>
-        {open && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-            className="overflow-hidden"
-          >
-            {isEmpty ? (
-              <p className="px-8 py-2.5 text-[11px] text-muted-foreground/40 italic">
-                All caught up
-              </p>
-            ) : (
-              <div className="pb-1">
-                {unreadEntries.map(({ entry, count }) => (
-                  <button
-                    key={`${entry.source}:${entry.id}`}
-                    onClick={() => onSelect(entry, entry.source)}
-                    className={cn(
-                      'w-full flex items-center gap-2 pl-5 pr-3 py-1.5 text-left transition-all',
-                      selectedId === entry.id
-                        ? 'bg-primary/10 text-foreground'
-                        : 'text-muted-foreground hover:text-foreground hover:bg-white/[0.03]',
-                    )}
-                  >
-                    <EntryAvatar type="dms" name={entry.name} avatarUrl={entry.avatarUrl} />
-                    <span className="flex-1 text-xs font-semibold truncate text-foreground/90">{entry.name}</span>
-                    <span className="flex-shrink-0 text-[10px] text-muted-foreground/50 capitalize mr-1">{SERVICE_LABEL[entry.source] || entry.source}</span>
-                    <span className="flex-shrink-0 min-w-[18px] h-[18px] rounded-full bg-primary text-primary-foreground text-[10px] font-bold flex items-center justify-center px-1">
-                      {count > 99 ? '99+' : count}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-}
-
 const PAGE_SIZE = 50;
 
 export default function Chat() {
@@ -839,9 +678,6 @@ export default function Chat() {
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const qc = useQueryClient();
   const recentMessages = useMessageStreamStore((s) => s.recentMessages);
-  const markReadOptimistic = useUnreadStore((s) => s.markReadOptimistic);
-  const markUnreadOptimistic = useUnreadStore((s) => s.markUnreadOptimistic);
-  const markAllReadOptimistic = useUnreadStore((s) => s.markAllReadOptimistic);
   const navApplied = useRef(false);
   // Persists the full nav state so it's available in async fetchInitial even after
   // navApplied is set to true by the auto-select effect
@@ -875,7 +711,7 @@ export default function Chat() {
     return SERVICE_ORDER.filter((s) => treeData[s]).map((s) => treeData[s]);
   }, [treeData]);
 
-  // Reset pagination when conversation changes + mark as read immediately on open
+  // Reset pagination when conversation changes
   useEffect(() => {
     setPages([]);
     setFirstItemIndex(0);
@@ -883,12 +719,6 @@ export default function Chat() {
     setScrollTarget(null);
     setHighlightedMessageId(null);
     if (highlightTimer.current) clearTimeout(highlightTimer.current);
-    // Mark chat as read when conversation opens.
-    // Optimistic local zero for instant badge clear; server confirms via unread:update WS push.
-    if (selected) {
-      markReadOptimistic(selected.source, selected.id);
-      api.markChatRead(selected.source, selected.id).catch(() => {/* best-effort */});
-    }
   }, [selected?.id, selected?.source]);
 
   // Load the initial page for a conversation (or the "around" page if scrolling to a message)
@@ -1078,36 +908,11 @@ export default function Chat() {
             {(['slack', 'discord', 'telegram', 'twitter'] as const).map((f) => (
               <ServiceFilterChip key={f} service={f} active={filter === f} onClick={() => setFilter(f)} />
             ))}
-            <button
-              className="ml-auto flex-shrink-0 p-1 rounded text-muted-foreground/50 hover:text-foreground hover:bg-secondary/60 transition-colors"
-              title="Mark all chats read"
-              onClick={() => {
-                markAllReadOptimistic();
-                api.markAllChatsRead().catch(() => {});
-              }}
-            >
-              <CheckCheck className="w-3 h-3" />
-            </button>
           </div>
         </div>
 
         {/* Tree */}
         <div className="flex-1 overflow-y-auto">
-          {/* Unread folder — always at top, greyed when empty */}
-          {!treeLoading && (
-            <UnreadFolder
-              treeData={treeData}
-              selectedId={selected?.id ?? null}
-              filter={filter}
-              onSelect={(entry) => {
-                setSelected(entry);
-                setFilter(entry.source);
-                markReadOptimistic(entry.source, entry.id);
-                api.markChatRead(entry.source, entry.id).catch(() => {/* best-effort */});
-              }}
-            />
-          )}
-
           {treeLoading ? (
             <div className="p-3 space-y-3">
               {Array.from({ length: 3 }).map((_, i) => (
@@ -1139,11 +944,7 @@ export default function Chat() {
                 key={tree.source}
                 tree={tree}
                 selectedId={selected?.id ?? null}
-                onSelect={(entry) => {
-                  setSelected(entry);
-                  markReadOptimistic(entry.source, entry.id);
-                  api.markChatRead(entry.source, entry.id).catch(() => {/* best-effort */});
-                }}
+                onSelect={(entry) => setSelected(entry)}
                 search={search}
                 collapsed={filter !== 'all' && filter !== tree.source}
               />
@@ -1171,20 +972,6 @@ export default function Chat() {
             <span className="text-xs text-muted-foreground/50 hidden sm:block flex-shrink-0">
               {selected.messageCount.toLocaleString()} messages
             </span>
-            {/* Mark as unread — hidden for Discord (no reliable read cursor API) */}
-            {selected?.source !== 'discord' && (
-              <button
-                onClick={() => {
-                  if (!selected) return;
-                  markUnreadOptimistic(selected.source, selected.id);
-                  api.markChatUnread(selected.source, selected.id).catch(() => {});
-                }}
-                title="Mark as unread"
-                className="p-1.5 rounded hover:bg-accent text-muted-foreground/50 hover:text-foreground transition-colors flex-shrink-0"
-              >
-                <MailOpen className="w-3.5 h-3.5" />
-              </button>
-            )}
             {(() => {
               const url = getPlatformUrl(selected);
               if (!url) return null;
@@ -1223,13 +1010,7 @@ export default function Chat() {
                 initialTopMostItemIndex={messages.length - 1}
                 followOutput={atBottom ? 'smooth' : false}
                 alignToBottom={!scrollTarget}
-                atBottomStateChange={(bottom) => {
-                  setAtBottom(bottom);
-                  if (bottom && selected) {
-                    markReadOptimistic(selected.source, selected.id);
-                    api.markChatRead(selected.source, selected.id).catch(() => {/* best-effort */});
-                  }
-                }}
+                atBottomStateChange={(bottom) => setAtBottom(bottom)}
                 atBottomThreshold={120}
                 startReached={loadOlderMessages}
                 itemContent={(index, msg) => {

@@ -5,13 +5,15 @@ import { createServer } from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { runMigrations } from './db/client.js';
-import { initWebSocketServer } from './websocket/hub.js';
+import { initWebSocketServer, subscribeBroadcast } from './websocket/hub.js';
 import { getConnectionManager } from './connections/manager.js';
 import apiRouter from './api/router.js';
 import uiAuthRouter, { uiAuthMiddleware } from './api/ui-auth.js';
 import { csrfMiddleware } from './auth/csrf.js';
 import { startUpdatePoller } from './update/checker.js';
 import { bootstrapContactsIfEmpty } from './sync/contacts.js';
+import { invalidateContextCache } from './api/context.js';
+import { invalidateTopologyCache } from './api/topology.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -97,6 +99,16 @@ async function main() {
   // Initialize WebSocket server
   initWebSocketServer(server);
 
+  // Invalidate discovery caches when connections change or syncs complete
+  subscribeBroadcast((event) => {
+    if (event.type === 'connection:status') {
+      invalidateContextCache();
+      invalidateTopologyCache();
+    } else if (event.type === 'sync:progress') {
+      invalidateTopologyCache();
+    }
+  });
+
   // Start server
   server.listen(PORT, () => {
     console.log(`[conduit] Server running on http://localhost:${PORT}`);
@@ -117,31 +129,6 @@ async function main() {
 
   // Start the background update poller (checks for new commits every hour)
   startUpdatePoller();
-
-  // Periodic unread re-sync — every 5 minutes, re-fetch unread counts from all
-  // connected platforms so that cross-device reads (on phone/desktop apps) are
-  // reflected in conduit even if a real-time event was missed.
-  const UNREAD_RESYNC_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
-  setInterval(async () => {
-    try {
-      const slack = manager.getSlack();
-      if (slack?.connected) slack.fetchUnreadCounts().catch((e) => console.error('[unread] Slack resync error:', e));
-
-      const telegram = manager.getTelegram();
-      if (telegram?.connected) telegram.fetchUnreadCounts().catch((e) => console.error('[unread] Telegram resync error:', e));
-
-      // Discord: only mute state needs re-syncing (no unread counts)
-      const discord = manager.getDiscord();
-      if (discord?.connected) discord.fetchUnreadCounts().catch((e) => console.error('[unread] Discord resync error:', e));
-
-      // Gmail: recompute per-thread counts from local DB (no API call needed)
-      for (const gmail of manager.getAllGmailInstances()) {
-        if (gmail.connected) gmail.fetchUnreadCounts();
-      }
-    } catch (e) {
-      console.error('[unread] Periodic resync error:', e);
-    }
-  }, UNREAD_RESYNC_INTERVAL_MS);
 
   // Graceful shutdown
   const shutdown = async (signal: string) => {

@@ -1,23 +1,28 @@
 /**
- * KnowledgeVault — unified knowledge tree: multiple Obsidian vaults + Notion workspace.
+ * Files — unified knowledge tree: multiple Obsidian vaults + Notion workspace
+ *         + Google Drive folders + SMB network shares.
  *
- * Left sidebar: collapsible sections, one per Obsidian vault + one for Notion.
- *   Each vault section has its own file tree, sync badge, and search input.
- *   Notion section has a lazy-loading page/database tree.
+ * Left sidebar: collapsible sections, one per source.
+ *   Obsidian:     file tree, sync badge, search, edit support.
+ *   Notion:       lazy-loading page/database tree.
+ *   Google Drive: multi-folder tree with drag-and-drop upload.
+ *   SMB:          directory tree with drag-and-drop upload.
  *
- * Right panel: shared markdown viewer with frontmatter metadata strip and
- *   edit/queue-write support for Obsidian files.
+ * Right panel: unified viewer with per-source content rendering,
+ *   download button, and file metadata.
  */
 
 import {
-  useState, useCallback, useRef, useEffect, useMemo,
+  useState, useCallback, useRef, useEffect, useMemo, useId,
 } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ChevronRight, ChevronDown, FileText, Folder, FolderOpen, Search,
   RefreshCw, Loader2, AlertCircle, Edit2, X, Send, BookOpen,
   Clock, GitBranch, Wifi, CheckCircle2, Database,
-  StickyNote, ExternalLink, Plus,
+  StickyNote, ExternalLink, Plus, HardDrive, Network,
+  Download, Upload, Lock, Eye, EyeOff, AlertTriangle,
+  Image, Film, Music, FileCode, Archive, File,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -28,6 +33,11 @@ import {
   type NotionBlock,
   type NotionSearchResult,
   type NotionPage,
+  type DriveFileNode,
+  type DriveFileContent,
+  type GoogleDriveFolderConfig,
+  type SmbShareRow,
+  type SmbEntry,
 } from '@/lib/api';
 import {
   notionBlocksToMarkdown,
@@ -41,13 +51,48 @@ import { useConnectionStore } from '@/store';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type Source = { kind: 'obsidian'; vaultId: number } | { kind: 'notion' };
+type Source =
+  | { kind: 'obsidian'; vaultId: number }
+  | { kind: 'notion' }
+  | { kind: 'gdrive'; folderId: number; folderName: string }
+  | { kind: 'smb'; shareId: number; shareName: string };
 
 interface SelectedItem {
   source: Source;
-  /** Obsidian: relative file path. Notion: page ID. */
+  /** Obsidian: relative file path. Notion: page ID. GDrive: file ID. SMB: relative path. */
   id: string;
   title: string;
+  /** GDrive: mime type. SMB: undefined. */
+  mimeType?: string;
+  /** GDrive: web view link */
+  webViewLink?: string | null;
+  /** Whether the item is a folder (skip content load) */
+  isFolder?: boolean;
+}
+
+// ── File-type icon helper ─────────────────────────────────────────────────────
+
+function fileTypeIcon(name: string, mimeType?: string, className = 'w-3.5 h-3.5') {
+  const ext = name.split('.').pop()?.toLowerCase() ?? '';
+  const mime = mimeType ?? '';
+
+  if (mime.startsWith('image/') || ['png','jpg','jpeg','gif','webp','svg','bmp','ico'].includes(ext))
+    return <Image className={cn(className, 'text-blue-400')} />;
+  if (mime.startsWith('video/') || ['mp4','mov','mkv','avi','webm'].includes(ext))
+    return <Film className={cn(className, 'text-purple-400')} />;
+  if (mime.startsWith('audio/') || ['mp3','wav','ogg','flac','m4a'].includes(ext))
+    return <Music className={cn(className, 'text-pink-400')} />;
+  if (['zip','gz','tar','rar','7z','bz2'].includes(ext) || mime.includes('zip') || mime.includes('compressed'))
+    return <Archive className={cn(className, 'text-amber-400')} />;
+  if (['js','ts','tsx','jsx','py','go','rs','java','c','cpp','h','css','html','json','xml','sh','yml','yaml'].includes(ext) || mime.includes('json') || mime.includes('xml'))
+    return <FileCode className={cn(className, 'text-emerald-400')} />;
+  if (mime === 'application/pdf' || ext === 'pdf')
+    return <FileText className={cn(className, 'text-red-400')} />;
+  if (['md','txt'].includes(ext) || mime.startsWith('text/'))
+    return <FileText className={cn(className, 'text-warm-400')} />;
+  if (mime.startsWith('application/vnd.google-apps.'))
+    return <File className={cn(className, 'text-blue-400')} />;
+  return <File className={cn(className, 'text-muted-foreground')} />;
 }
 
 // ── Wikilink transform ────────────────────────────────────────────────────────
@@ -275,6 +320,177 @@ function NotionTreeNode({ result, selectedId, onSelect, depth, childrenCache, on
   );
 }
 
+// ── Google Drive tree node ────────────────────────────────────────────────────
+
+interface GDriveNodeProps {
+  node: DriveFileNode;
+  depth: number;
+  selectedId: string | null;
+  onSelect: (node: DriveFileNode) => void;
+  filterQuery: string;
+}
+
+function flattenDriveFiles(nodes: DriveFileNode[], query: string): DriveFileNode[] {
+  const result: DriveFileNode[] = [];
+  function walk(items: DriveFileNode[]) {
+    for (const item of items) {
+      if (!item.isFolder) {
+        if (!query || item.name.toLowerCase().includes(query.toLowerCase())) result.push(item);
+      }
+      if (item.children) walk(item.children);
+    }
+  }
+  walk(nodes);
+  return result;
+}
+
+function GDriveFileNode({ node, depth, selectedId, onSelect, filterQuery }: GDriveNodeProps) {
+  const [open, setOpen] = useState(depth === 0);
+
+  useEffect(() => { if (filterQuery) setOpen(true); }, [filterQuery]);
+
+  if (node.isFolder) {
+    if (filterQuery && flattenDriveFiles(node.children ?? [], filterQuery).length === 0) return null;
+    return (
+      <div>
+        <button
+          onClick={() => setOpen(!open)}
+          className="flex items-center gap-1.5 w-full px-2 py-1 rounded-lg text-left text-xs text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+          style={{ paddingLeft: `${8 + depth * 12}px` }}
+        >
+          <span className="flex-shrink-0">
+            {open ? <FolderOpen className="w-3.5 h-3.5 text-amber-400" /> : <Folder className="w-3.5 h-3.5 text-amber-400" />}
+          </span>
+          <span className="flex-shrink-0">
+            {open ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+          </span>
+          <span className="truncate font-medium">{node.name}</span>
+        </button>
+        {open && node.children && (
+          <div>
+            {node.children.map((child) => (
+              <GDriveFileNode key={child.fileId} node={child} depth={depth + 1} selectedId={selectedId} onSelect={onSelect} filterQuery={filterQuery} />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (filterQuery && !node.name.toLowerCase().includes(filterQuery.toLowerCase())) return null;
+
+  const isSelected = selectedId === node.fileId;
+  return (
+    <button
+      onClick={() => onSelect(node)}
+      className={cn('flex items-center gap-1.5 w-full px-2 py-1.5 rounded-lg text-left text-xs transition-colors',
+        isSelected ? 'bg-primary/15 text-primary' : 'text-sidebar-foreground hover:bg-white/5 hover:text-foreground')}
+      style={{ paddingLeft: `${8 + depth * 12}px` }}
+    >
+      <span className="flex-shrink-0">{fileTypeIcon(node.name, node.mimeType, 'w-3.5 h-3.5')}</span>
+      <span className="truncate flex-1">{node.name}</span>
+      {node.warning && <AlertTriangle className="w-2.5 h-2.5 flex-shrink-0 text-amber-500 ml-auto" />}
+    </button>
+  );
+}
+
+// ── SMB tree node (lazy-loading directory tree) ───────────────────────────────
+
+interface SmbDirNodeProps {
+  entry: SmbEntry;
+  shareId: number;
+  depth: number;
+  selectedId: string | null;
+  onSelect: (entry: SmbEntry) => void;
+  filterQuery: string;
+}
+
+function SmbDirNode({ entry, shareId, depth, selectedId, onSelect, filterQuery }: SmbDirNodeProps) {
+  const [open, setOpen] = useState(false);
+  const [children, setChildren] = useState<SmbEntry[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => { if (filterQuery) setOpen(true); }, [filterQuery]);
+
+  async function handleOpen() {
+    if (entry.type !== 'directory') return;
+    if (open) { setOpen(false); return; }
+    setOpen(true);
+    if (children !== null) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await api.listSmbDirectory(shareId, entry.path);
+      setChildren(res.entries);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load');
+      setOpen(false);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (entry.type === 'directory') {
+    return (
+      <div>
+        <button
+          onClick={handleOpen}
+          className="flex items-center gap-1.5 w-full px-2 py-1 rounded-lg text-left text-xs text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+          style={{ paddingLeft: `${8 + depth * 12}px` }}
+        >
+          <span className="flex-shrink-0">
+            {open ? <FolderOpen className="w-3.5 h-3.5 text-amber-400" /> : <Folder className="w-3.5 h-3.5 text-amber-400" />}
+          </span>
+          <span className="flex-shrink-0">
+            {loading ? <Loader2 className="w-3 h-3 animate-spin" />
+              : open ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+          </span>
+          <span className="truncate font-medium">{entry.name}</span>
+        </button>
+        {error && (
+          <div className="pl-8 py-1 text-[10px] text-red-400 flex items-center gap-1">
+            <AlertCircle className="w-3 h-3 flex-shrink-0" /><span>{error}</span>
+          </div>
+        )}
+        {open && children !== null && (
+          <div>
+            {children.length === 0 && (
+              <div className="pl-8 py-1 text-[10px] text-muted-foreground italic">Empty</div>
+            )}
+            {children.map((child) => (
+              <SmbDirNode
+                key={child.path}
+                entry={child}
+                shareId={shareId}
+                depth={depth + 1}
+                selectedId={selectedId}
+                onSelect={onSelect}
+                filterQuery={filterQuery}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (filterQuery && !entry.name.toLowerCase().includes(filterQuery.toLowerCase())) return null;
+
+  const isSelected = selectedId === entry.path;
+  return (
+    <button
+      onClick={() => onSelect(entry)}
+      className={cn('flex items-center gap-1.5 w-full px-2 py-1.5 rounded-lg text-left text-xs transition-colors',
+        isSelected ? 'bg-primary/15 text-primary' : 'text-sidebar-foreground hover:bg-white/5 hover:text-foreground')}
+      style={{ paddingLeft: `${8 + depth * 12}px` }}
+    >
+      <span className="flex-shrink-0">{fileTypeIcon(entry.name, undefined, 'w-3.5 h-3.5')}</span>
+      <span className="truncate flex-1">{entry.name}</span>
+    </button>
+  );
+}
+
 // ── Frontmatter parser ────────────────────────────────────────────────────────
 
 interface Frontmatter {
@@ -367,6 +583,97 @@ function MarkdownView({ content, onWikilinkClick }: MarkdownViewProps) {
   );
 }
 
+// ── Image viewer ──────────────────────────────────────────────────────────────
+
+function ImageViewer({ src, alt }: { src: string; alt: string }) {
+  const [error, setError] = useState(false);
+  if (error) return (
+    <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
+      <Image className="w-8 h-8 text-muted-foreground/40" />
+      <p className="text-sm text-muted-foreground">Failed to load image preview</p>
+    </div>
+  );
+  return (
+    <div className="flex items-center justify-center p-6">
+      <img src={src} alt={alt} onError={() => setError(true)}
+        className="max-w-full max-h-[70vh] rounded-lg object-contain border border-white/10" />
+    </div>
+  );
+}
+
+// ── Cannot-preview state ──────────────────────────────────────────────────────
+
+function CannotPreview({ name, mimeType, onDownload }: { name: string; mimeType?: string; onDownload: () => void }) {
+  const ext = name.split('.').pop()?.toLowerCase() ?? '';
+  return (
+    <div className="flex flex-col items-center justify-center py-16 gap-4 text-center">
+      <div className="w-14 h-14 rounded-2xl bg-white/5 flex items-center justify-center border border-white/10">
+        {fileTypeIcon(name, mimeType, 'w-7 h-7')}
+      </div>
+      <div className="space-y-1">
+        <p className="text-sm font-medium text-foreground">{name}</p>
+        {mimeType && <p className="text-xs text-muted-foreground">{mimeType}</p>}
+        {ext && <p className="text-xs text-muted-foreground uppercase">{ext} file</p>}
+      </div>
+      <p className="text-xs text-muted-foreground max-w-xs">
+        This file type cannot be previewed in the browser. Download it to open with your local application.
+      </p>
+      <button onClick={onDownload}
+        className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors">
+        <Download className="w-3.5 h-3.5" />
+        Download File
+      </button>
+    </div>
+  );
+}
+
+// ── Drag-and-drop upload zone ─────────────────────────────────────────────────
+
+interface DropZoneProps {
+  onFiles: (files: File[]) => void;
+  uploading: boolean;
+  children: React.ReactNode;
+  className?: string;
+}
+
+function DropZone({ onFiles, uploading, children, className }: DropZoneProps) {
+  const [dragging, setDragging] = useState(false);
+  const counter = useRef(0);
+
+  return (
+    <div
+      className={cn('relative', className)}
+      onDragEnter={(e) => { e.preventDefault(); counter.current++; setDragging(true); }}
+      onDragLeave={() => { counter.current--; if (counter.current === 0) setDragging(false); }}
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => {
+        e.preventDefault();
+        counter.current = 0;
+        setDragging(false);
+        const files = Array.from(e.dataTransfer.files);
+        if (files.length > 0) onFiles(files);
+      }}
+    >
+      {children}
+      {(dragging || uploading) && (
+        <div className="absolute inset-0 rounded-lg border-2 border-dashed border-primary/60 bg-primary/5 backdrop-blur-sm flex items-center justify-center z-20 pointer-events-none">
+          {uploading ? (
+            <div className="flex items-center gap-2 text-primary text-sm font-medium">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Uploading...
+            </div>
+          ) : (
+            <div className="flex flex-col items-center gap-2 text-primary text-sm font-medium">
+              <Upload className="w-6 h-6" />
+              Drop to upload
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Sync status badge ─────────────────────────────────────────────────────────
 
 function SyncBadge({ status, lastSync }: { status: string; lastSync: string | null }) {
@@ -425,19 +732,35 @@ function SectionHeader({ open, onToggle, icon, label, meta, actions }: SectionHe
 
 // ── Source badge (shown in viewer header) ─────────────────────────────────────
 
-function SourceBadge({ source, vaultName }: { source: Source; vaultName?: string }) {
+function SourceBadge({ source }: { source: Source }) {
   if (source.kind === 'obsidian') {
     return (
       <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-400 text-[10px] font-medium border border-purple-500/20">
         <BookOpen className="w-2.5 h-2.5" />
-        {vaultName ?? 'Obsidian'}
+        Obsidian
+      </span>
+    );
+  }
+  if (source.kind === 'notion') {
+    return (
+      <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-warm-500/15 text-warm-300 text-[10px] font-medium border border-warm-500/20">
+        <StickyNote className="w-2.5 h-2.5" />
+        Notion
+      </span>
+    );
+  }
+  if (source.kind === 'gdrive') {
+    return (
+      <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400 text-[10px] font-medium border border-blue-500/20">
+        <HardDrive className="w-2.5 h-2.5" />
+        {source.folderName}
       </span>
     );
   }
   return (
-    <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-warm-500/15 text-warm-300 text-[10px] font-medium border border-warm-500/20">
-      <StickyNote className="w-2.5 h-2.5" />
-      Notion
+    <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 text-[10px] font-medium border border-emerald-500/20">
+      <Network className="w-2.5 h-2.5" />
+      {source.shareName}
     </span>
   );
 }
@@ -449,10 +772,11 @@ interface VaultSectionProps {
   selectedItem: SelectedItem | null;
   onSelect: (vaultId: number, entry: VaultFileEntry) => void;
   onWikilinkNavigate: (vaultId: number, target: string, allFiles: VaultFileEntry[]) => void;
+  open: boolean;
+  onToggle: () => void;
 }
 
-function VaultSection({ vault, selectedItem, onSelect }: VaultSectionProps) {
-  const [open, setOpen] = useState(true);
+function VaultSection({ vault, selectedItem, onSelect, open, onToggle }: VaultSectionProps) {
   const [filter, setFilter] = useState('');
 
   const allStatuses = useConnectionStore((s) => s.statuses);
@@ -490,10 +814,10 @@ function VaultSection({ vault, selectedItem, onSelect }: VaultSectionProps) {
     : null;
 
   return (
-    <div className="flex flex-col border-b border-white/8" style={{ maxHeight: '40%', minHeight: open ? '120px' : undefined }}>
+    <div className={cn('flex flex-col border-b border-white/8', open ? 'flex-1 min-h-0' : 'flex-shrink-0')}>
       <SectionHeader
         open={open}
-        onToggle={() => setOpen(!open)}
+        onToggle={onToggle}
         icon={<BookOpen className="w-3.5 h-3.5" />}
         label={vault.name}
         actions={
@@ -515,14 +839,13 @@ function VaultSection({ vault, selectedItem, onSelect }: VaultSectionProps) {
           {!isConnected ? (
             <div className="px-4 py-4 space-y-2">
               <p className="text-xs text-muted-foreground">Vault not connected.</p>
-              <a href="/settings/vault"
+              <a href="/settings/files"
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/10 text-primary text-xs font-medium border border-primary/20 hover:bg-primary/20 transition-colors">
                 Set up Vault
               </a>
             </div>
           ) : (
             <>
-              {/* Sync status */}
               <div className="px-3 py-1.5 border-b border-white/5 flex items-center justify-between gap-2">
                 <SyncBadge
                   status={syncData?.syncStatus || 'idle'}
@@ -535,8 +858,6 @@ function VaultSection({ vault, selectedItem, onSelect }: VaultSectionProps) {
                   </div>
                 )}
               </div>
-
-              {/* Search */}
               <div className="px-3 py-2 border-b border-white/5">
                 <div className="relative">
                   <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
@@ -554,8 +875,6 @@ function VaultSection({ vault, selectedItem, onSelect }: VaultSectionProps) {
                   )}
                 </div>
               </div>
-
-              {/* File tree */}
               <div className="flex-1 overflow-y-auto py-1 px-1 min-h-0">
                 {filesLoading && (
                   <div className="flex items-center justify-center py-6">
@@ -582,18 +901,288 @@ function VaultSection({ vault, selectedItem, onSelect }: VaultSectionProps) {
                   />
                 ))}
               </div>
-
-              {/* Connection indicator */}
               <div className="px-3 py-1.5 flex items-center gap-1.5">
                 <Wifi className="w-3 h-3 text-emerald-500 flex-shrink-0" />
                 <span className="text-[10px] text-muted-foreground">Connected via git</span>
+                </div>
+              </>
+            )}
+            </div>
+          )}
+        </div>
+  );
+}
+
+// ── Google Drive sidebar section ──────────────────────────────────────────────
+
+interface GDriveSectionProps {
+  folder: GoogleDriveFolderConfig;
+  selectedItem: SelectedItem | null;
+  onSelect: (folderId: number, folderName: string, node: DriveFileNode) => void;
+  onUpload: (folderId: number, files: File[], parentFolderId?: string) => void;
+  uploading: boolean;
+  open: boolean;
+  onToggle: () => void;
+}
+
+function GDriveSection({ folder, selectedItem, onSelect, onUpload, uploading, open, onToggle }: GDriveSectionProps) {
+  const [filter, setFilter] = useState('');
+  const fileInputId = useId();
+
+  const { data: treeData, isLoading, error, refetch } = useQuery({
+    queryKey: ['gdrive-tree-files', folder.id],
+    queryFn: () => api.gdriveFileTree(folder.id),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const selectedId = selectedItem?.source.kind === 'gdrive' && selectedItem.source.folderId === folder.id
+    ? selectedItem.id
+    : null;
+
+  const files = treeData?.files ?? [];
+  const statusColor = folder.syncStatus === 'syncing' ? 'bg-amber-500 animate-pulse'
+    : folder.syncStatus === 'error' ? 'bg-red-500' : 'bg-emerald-500';
+
+  return (
+    <div className={cn('flex flex-col border-b border-white/8', open ? 'flex-1 min-h-0' : 'flex-shrink-0')}>
+      <SectionHeader
+        open={open}
+        onToggle={onToggle}
+        icon={<HardDrive className="w-3.5 h-3.5" />}
+        label={folder.folderName}
+        meta={<span className={cn('w-1.5 h-1.5 rounded-full ml-1 flex-shrink-0', statusColor)} />}
+        actions={
+          <div className="flex items-center gap-0.5">
+            {/* Upload button */}
+            <label htmlFor={fileInputId} className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors flex-shrink-0 cursor-pointer" title="Upload file">
+              <Upload className="w-3.5 h-3.5" />
+            </label>
+            <input id={fileInputId} type="file" multiple className="sr-only"
+              onChange={(e) => { const f = Array.from(e.target.files ?? []); if (f.length) onUpload(folder.id, f); e.target.value = ''; }} />
+            <button onClick={() => refetch()} className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors flex-shrink-0" title="Refresh">
+              <RefreshCw className={cn('w-3.5 h-3.5', isLoading && 'animate-spin')} />
+            </button>
+          </div>
+        }
+      />
+
+      {open && (
+        <DropZone onFiles={(f) => onUpload(folder.id, f)} uploading={uploading} className="flex flex-col min-h-0 flex-1">
+          <div className="px-3 py-2 border-b border-white/5">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+              <input
+                type="text"
+                placeholder="Search files..."
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                className="w-full bg-black/20 border border-white/8 rounded-lg pl-8 pr-7 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/40"
+              />
+              {filter && (
+                <button onClick={() => setFilter('')} className="absolute right-2.5 top-1/2 -translate-y-1/2">
+                  <X className="w-3 h-3 text-muted-foreground" />
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="flex-1 overflow-y-auto py-1 px-1 min-h-0">
+            {isLoading && (
+              <div className="flex items-center justify-center py-6">
+                <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
               </div>
-            </>
+            )}
+            {error && (
+              <div className="px-3 py-3 text-xs text-red-400 flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                <span>Failed to load files</span>
+              </div>
+            )}
+            {!isLoading && !error && files.length === 0 && (
+              <div className="px-3 py-3 text-xs text-muted-foreground text-center">
+                {folder.lastSyncedAt ? 'No files found' : 'Not synced yet'}
+              </div>
+            )}
+            {files.map((node) => (
+              <GDriveFileNode
+                key={node.fileId}
+                node={node}
+                depth={0}
+                selectedId={selectedId}
+                onSelect={(n) => onSelect(folder.id, folder.folderName, n)}
+                filterQuery={filter}
+              />
+            ))}
+          </div>
+          {folder.lastSyncedAt && (
+            <div className="px-3 py-1.5 flex items-center gap-1.5 border-t border-white/5">
+              <CheckCircle2 className="w-3 h-3 text-emerald-500 flex-shrink-0" />
+              <span className="text-[10px] text-muted-foreground">Synced {timeAgo(folder.lastSyncedAt)}</span>
+            </div>
+          )}
+        </DropZone>
+      )}
+    </div>
+  );
+}
+
+// ── SMB sidebar section ───────────────────────────────────────────────────────
+
+interface SmbSectionProps {
+  share: SmbShareRow;
+  selectedItem: SelectedItem | null;
+  onSelect: (shareId: number, shareName: string, entry: SmbEntry) => void;
+  onUpload: (shareId: number, files: File[], dirPath?: string) => void;
+  uploading: boolean;
+  open: boolean;
+  onToggle: () => void;
+}
+
+function SmbSection({ share, selectedItem, onSelect, onUpload, uploading, open, onToggle }: SmbSectionProps) {
+  const [filter, setFilter] = useState('');
+  const [rootEntries, setRootEntries] = useState<SmbEntry[] | null>(null);
+  const [rootLoading, setRootLoading] = useState(false);
+  const [rootError, setRootError] = useState<string | null>(null);
+  const fileInputId = useId();
+
+  const status = share.connectionStatus;
+  const isConnected = status?.status === 'connected';
+
+  const loadRoot = useCallback(async () => {
+    if (!isConnected) return;
+    setRootLoading(true);
+    setRootError(null);
+    try {
+      const res = await api.listSmbDirectory(share.id, '');
+      setRootEntries(res.entries);
+    } catch (e) {
+      setRootError(e instanceof Error ? e.message : 'Failed to load');
+    } finally {
+      setRootLoading(false);
+    }
+  }, [share.id, isConnected]);
+
+  useEffect(() => {
+    if (isConnected && rootEntries === null && !rootLoading) {
+      loadRoot();
+    }
+  }, [isConnected, rootEntries, rootLoading, loadRoot]);
+
+  const selectedId = selectedItem?.source.kind === 'smb' && selectedItem.source.shareId === share.id
+    ? selectedItem.id
+    : null;
+
+  const statusDot = isConnected ? 'bg-emerald-500' : status?.status === 'connecting' ? 'bg-amber-500 animate-pulse' : 'bg-red-500';
+
+  return (
+    <div className={cn('flex flex-col border-b border-white/8', open ? 'flex-1 min-h-0' : 'flex-shrink-0')}>
+      <SectionHeader
+        open={open}
+        onToggle={onToggle}
+        icon={<Network className="w-3.5 h-3.5" />}
+        label={share.name}
+        meta={<span className={cn('w-1.5 h-1.5 rounded-full ml-1 flex-shrink-0', statusDot)} />}
+        actions={
+          isConnected && (
+            <div className="flex items-center gap-0.5">
+              <label htmlFor={fileInputId} className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors flex-shrink-0 cursor-pointer" title="Upload file">
+                <Upload className="w-3.5 h-3.5" />
+              </label>
+              <input id={fileInputId} type="file" multiple className="sr-only"
+                onChange={(e) => { const f = Array.from(e.target.files ?? []); if (f.length) onUpload(share.id, f); e.target.value = ''; }} />
+              <button onClick={loadRoot} disabled={rootLoading} className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors flex-shrink-0" title="Refresh">
+                <RefreshCw className={cn('w-3.5 h-3.5', rootLoading && 'animate-spin')} />
+              </button>
+            </div>
+          )
+        }
+      />
+
+      {open && (
+        <div className="flex flex-col min-h-0 flex-1">
+          {!isConnected ? (
+            <div className="px-4 py-4 space-y-2">
+              <p className="text-xs text-muted-foreground">Share not connected.</p>
+              <a href="/settings/connections"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/10 text-primary text-xs font-medium border border-primary/20 hover:bg-primary/20 transition-colors">
+                Connect Share
+              </a>
+            </div>
+          ) : (
+            <DropZone onFiles={(f) => onUpload(share.id, f)} uploading={uploading} className="flex flex-col min-h-0 flex-1">
+              <div className="px-3 py-2 border-b border-white/5">
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                  <input
+                    type="text"
+                    placeholder="Filter files..."
+                    value={filter}
+                    onChange={(e) => setFilter(e.target.value)}
+                    className="w-full bg-black/20 border border-white/8 rounded-lg pl-8 pr-7 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/40"
+                  />
+                  {filter && (
+                    <button onClick={() => setFilter('')} className="absolute right-2.5 top-1/2 -translate-y-1/2">
+                      <X className="w-3 h-3 text-muted-foreground" />
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto py-1 px-1 min-h-0">
+                {rootLoading && (
+                  <div className="flex items-center justify-center py-6">
+                    <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
+                  </div>
+                )}
+                {rootError && (
+                  <div className="px-3 py-3 text-xs text-red-400 flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                    <span>{rootError}</span>
+                  </div>
+                )}
+                {!rootLoading && !rootError && rootEntries !== null && rootEntries.length === 0 && (
+                  <div className="px-3 py-3 text-xs text-muted-foreground text-center">Share is empty</div>
+                )}
+                {rootEntries?.map((entry) => (
+                  <SmbDirNode
+                    key={entry.path}
+                    entry={entry}
+                    shareId={share.id}
+                    depth={0}
+                    selectedId={selectedId}
+                    onSelect={(e) => onSelect(share.id, share.name, e)}
+                    filterQuery={filter}
+                  />
+                ))}
+              </div>
+            </DropZone>
           )}
         </div>
       )}
     </div>
   );
+}
+
+// ── Determine if a file can be previewed ──────────────────────────────────────
+
+function canPreviewFile(name: string, mimeType?: string): 'markdown' | 'text' | 'image' | 'csv' | 'none' {
+  const ext = name.split('.').pop()?.toLowerCase() ?? '';
+  const mime = mimeType ?? '';
+
+  if (ext === 'md' || mime === 'text/markdown') return 'markdown';
+  if (mime.startsWith('image/') || ['png','jpg','jpeg','gif','webp','svg','bmp'].includes(ext)) return 'image';
+  if (ext === 'csv' || mime === 'text/csv') return 'csv';
+  if (
+    mime.startsWith('text/') ||
+    ['txt','json','xml','yaml','yml','toml','sh','bash','zsh','py','js','ts','jsx','tsx',
+      'go','rs','java','c','cpp','h','hpp','cs','php','rb','swift','kt','scala','html',
+      'css','scss','less','ini','cfg','conf','log'].includes(ext) ||
+    mime === 'application/json' || mime === 'application/xml' ||
+    mime.startsWith('application/vnd.google-apps.')
+  ) return 'text';
+  if (['mp4','mov','mkv','avi','webm'].includes(ext) || mime.startsWith('video/')) return 'none';
+  if (['mp3','wav','ogg','flac','m4a'].includes(ext) || mime.startsWith('audio/')) return 'none';
+  if (ext === 'pdf' || mime === 'application/pdf') return 'none';
+  if (['zip','gz','tar','rar','7z','bz2'].includes(ext)) return 'none';
+  return 'none';
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -606,7 +1195,17 @@ export default function ObsidianVault() {
   const [editContent, setEditContent] = useState('');
   const contentRef = useRef<HTMLDivElement>(null);
 
-  const [notionOpen, setNotionOpen] = useState(true);
+  // Upload state per source
+  const [gdriveUploading, setGdriveUploading] = useState<Record<number, boolean>>({});
+  const [smbUploading, setSmbUploading] = useState<Record<number, boolean>>({});
+
+  // Accordion state: only one section open at a time; null = all collapsed
+  // Section IDs: `vault-{id}`, `gdrive-{id}`, `smb-{id}`, `notion`
+  const [openSectionId, setOpenSectionId] = useState<string | null>(null);
+
+  const toggleSection = useCallback((id: string) => {
+    setOpenSectionId((prev) => (prev === id ? null : id));
+  }, []);
   const [notionFilter, setNotionFilter] = useState('');
   const [notionChildrenCache, setNotionChildrenCache] = useState<Map<string, NotionSearchResult[]>>(new Map());
 
@@ -620,6 +1219,22 @@ export default function ObsidianVault() {
     staleTime: 30000,
   });
   const vaults = vaultsData?.vaults ?? [];
+
+  // ── Google Drive folders ─────────────────────────────────────────────────────
+  const { data: gdriveFoldersData } = useQuery({
+    queryKey: ['gdrive-folders'],
+    queryFn: () => api.listGdriveFolders(),
+    staleTime: 30000,
+  });
+  const gdriveFolders = gdriveFoldersData?.folders ?? [];
+
+  // ── SMB shares ───────────────────────────────────────────────────────────────
+  const { data: smbSharesData } = useQuery({
+    queryKey: ['smb-shares'],
+    queryFn: () => api.listSmbShares(),
+    staleTime: 30000,
+  });
+  const smbShares = smbSharesData?.shares ?? [];
 
   // ── Notion data ──────────────────────────────────────────────────────────────
   const {
@@ -655,6 +1270,36 @@ export default function ObsidianVault() {
     staleTime: 60000,
   });
 
+  // ── Google Drive: read selected file ─────────────────────────────────────────
+  const selectedGdriveFolderId = selected?.source.kind === 'gdrive' ? selected.source.folderId : null;
+  const selectedGdriveFileId = selected?.source.kind === 'gdrive' && !selected.isFolder ? selected.id : null;
+
+  const { data: gdriveFileData, isLoading: gdriveFileLoading, error: gdriveFileError } = useQuery({
+    queryKey: ['gdrive-file-content', selectedGdriveFolderId, selectedGdriveFileId],
+    queryFn: () => api.gdriveReadFile(selectedGdriveFolderId!, selectedGdriveFileId!),
+    enabled: !!selectedGdriveFolderId && !!selectedGdriveFileId,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // ── SMB: read selected file ───────────────────────────────────────────────────
+  const selectedSmbShareId = selected?.source.kind === 'smb' ? selected.source.shareId : null;
+  const selectedSmbPath = selected?.source.kind === 'smb' && !selected.isFolder ? selected.id : null;
+
+  const { data: smbFileData, isLoading: smbFileLoading, error: smbFileError } = useQuery({
+    queryKey: ['smb-file-content', selectedSmbShareId, selectedSmbPath],
+    queryFn: async () => {
+      // Use raw fetch since SMB read file returns text/plain or binary
+      const res = await fetch(`/api/smb/shares/${selectedSmbShareId}/files/${selectedSmbPath!.split('/').map(encodeURIComponent).join('/')}`, { credentials: 'include' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error((err as { error: string }).error || `HTTP ${res.status}`);
+      }
+      return res.text();
+    },
+    enabled: !!selectedSmbShareId && !!selectedSmbPath,
+    staleTime: 5 * 60 * 1000,
+  });
+
   // ── Mutations ────────────────────────────────────────────────────────────────
   const writeMutation = useMutation({
     mutationFn: () => api.createOutboxItem({
@@ -675,6 +1320,78 @@ export default function ObsidianVault() {
     onError: (e) => toast({ title: e instanceof Error ? e.message : 'Failed to queue write' }),
   });
 
+  // ── Download handler ─────────────────────────────────────────────────────────
+
+  const handleDownload = useCallback(() => {
+    if (!selected) return;
+    let url: string;
+    let fileName: string;
+
+    if (selected.source.kind === 'gdrive') {
+      url = api.gdriveDownloadUrl(selected.source.folderId, selected.id);
+      fileName = selected.title;
+    } else if (selected.source.kind === 'smb') {
+      url = api.smbDownloadUrl(selected.source.shareId, selected.id);
+      fileName = selected.title;
+    } else {
+      return;
+    }
+
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }, [selected]);
+
+  // ── Upload handlers ──────────────────────────────────────────────────────────
+
+  const handleGdriveUpload = useCallback(async (folderId: number, files: File[], parentFolderId?: string) => {
+    setGdriveUploading((prev) => ({ ...prev, [folderId]: true }));
+    let successCount = 0;
+    let failCount = 0;
+    for (const file of files) {
+      try {
+        await api.gdriveUploadFile(folderId, file, parentFolderId);
+        successCount++;
+      } catch (e) {
+        failCount++;
+        toast({ title: `Failed to upload ${file.name}`, description: e instanceof Error ? e.message : String(e), variant: 'destructive' });
+      }
+    }
+    setGdriveUploading((prev) => ({ ...prev, [folderId]: false }));
+    if (successCount > 0) {
+      toast({ title: `Uploaded ${successCount} file${successCount > 1 ? 's' : ''} to Google Drive`, variant: 'success' });
+      queryClient.invalidateQueries({ queryKey: ['gdrive-tree-files', folderId] });
+    }
+    if (failCount > 0 && successCount === 0) {
+      toast({ title: `${failCount} upload${failCount > 1 ? 's' : ''} failed`, variant: 'destructive' });
+    }
+  }, [queryClient]);
+
+  const handleSmbUpload = useCallback(async (shareId: number, files: File[], dirPath = '') => {
+    setSmbUploading((prev) => ({ ...prev, [shareId]: true }));
+    let successCount = 0;
+    let failCount = 0;
+    for (const file of files) {
+      try {
+        await api.uploadSmbFile(shareId, file, dirPath);
+        successCount++;
+      } catch (e) {
+        failCount++;
+        toast({ title: `Failed to upload ${file.name}`, description: e instanceof Error ? e.message : String(e), variant: 'destructive' });
+      }
+    }
+    setSmbUploading((prev) => ({ ...prev, [shareId]: false }));
+    if (successCount > 0) {
+      toast({ title: `Uploaded ${successCount} file${successCount > 1 ? 's' : ''} to SMB share`, variant: 'success' });
+    }
+    if (failCount > 0 && successCount === 0) {
+      toast({ title: `${failCount} upload${failCount > 1 ? 's' : ''} failed`, variant: 'destructive' });
+    }
+  }, []);
+
   // ── Handlers ─────────────────────────────────────────────────────────────────
 
   const handleObsidianSelect = useCallback((vaultId: number, entry: VaultFileEntry) => {
@@ -689,6 +1406,30 @@ export default function ObsidianVault() {
     if (contentRef.current) contentRef.current.scrollTop = 0;
   }, []);
 
+  const handleGdriveSelect = useCallback((folderId: number, folderName: string, node: DriveFileNode) => {
+    setSelected({
+      source: { kind: 'gdrive', folderId, folderName },
+      id: node.fileId,
+      title: node.name,
+      mimeType: node.mimeType,
+      webViewLink: node.webViewLink,
+      isFolder: node.isFolder,
+    });
+    setEditMode(false);
+    if (contentRef.current) contentRef.current.scrollTop = 0;
+  }, []);
+
+  const handleSmbSelect = useCallback((shareId: number, shareName: string, entry: SmbEntry) => {
+    setSelected({
+      source: { kind: 'smb', shareId, shareName },
+      id: entry.path,
+      title: entry.name,
+      isFolder: entry.type === 'directory',
+    });
+    setEditMode(false);
+    if (contentRef.current) contentRef.current.scrollTop = 0;
+  }, []);
+
   const handleNotionChildrenLoaded = useCallback((parentId: string, children: NotionSearchResult[]) => {
     setNotionChildrenCache((prev) => {
       const next = new Map(prev);
@@ -698,7 +1439,6 @@ export default function ObsidianVault() {
   }, []);
 
   const handleWikilinkClick = useCallback((vaultId: number, target: string) => {
-    // Fetch from query cache
     const cached = queryClient.getQueryData<{ files: VaultFileEntry[] }>(['obsidian-files', vaultId]);
     const allFiles = cached ? flattenFiles(cached.files, '') : [];
     const match = allFiles.find((f) => f.name.replace(/\.md$/, '').toLowerCase() === target.toLowerCase())
@@ -738,19 +1478,6 @@ export default function ObsidianVault() {
     return notionBlocksToMarkdown(notionBlocksData.results);
   }, [notionBlocksData]);
 
-  const viewerTitle = selected
-    ? (selected.source.kind === 'obsidian' ? (meta.title || selected.title) : selected.title)
-    : '';
-
-  const isFileLoading = selected?.source.kind === 'obsidian' ? obsidianFileLoading : notionPageLoading;
-  const fileError = selected?.source.kind === 'obsidian' ? obsidianFileError : notionPageError;
-  const hasContent = selected?.source.kind === 'obsidian' ? !!obsidianFileData : !!notionBlocksData;
-
-  const selectedVaultName = selected?.source.kind === 'obsidian'
-    ? vaults.find((v) => v.id === (selected.source as { kind: 'obsidian'; vaultId: number }).vaultId)?.name
-    : undefined;
-
-  // Notion top-level items
   const notionTopLevel = useMemo(() => {
     if (!notionSearchData?.results) return [];
     if (notionFilter) return notionSearchData.results;
@@ -761,7 +1488,41 @@ export default function ObsidianVault() {
     return workspaceRoot.length > 0 ? workspaceRoot : notionSearchData.results;
   }, [notionSearchData, notionFilter]);
 
+  // Determine viewer title
+  const viewerTitle = selected?.title ?? '';
+
+  // Determine loading/error/content state
+  type ContentKind = 'obsidian' | 'notion' | 'gdrive' | 'smb';
+  const contentKind: ContentKind | null = selected
+    ? (selected.source.kind === 'obsidian' ? 'obsidian'
+      : selected.source.kind === 'notion' ? 'notion'
+      : selected.source.kind === 'gdrive' ? 'gdrive'
+      : 'smb')
+    : null;
+
+  const isFileLoading = contentKind === 'obsidian' ? obsidianFileLoading
+    : contentKind === 'notion' ? notionPageLoading
+    : contentKind === 'gdrive' ? gdriveFileLoading
+    : contentKind === 'smb' ? smbFileLoading
+    : false;
+
+  const fileError = contentKind === 'obsidian' ? obsidianFileError
+    : contentKind === 'notion' ? notionPageError
+    : contentKind === 'gdrive' ? gdriveFileError
+    : contentKind === 'smb' ? smbFileError
+    : null;
+
+  // Determine file preview mode for GDrive and SMB
+  const gdrivePreviewMode = gdriveFileData
+    ? canPreviewFile(gdriveFileData.fileName, gdriveFileData.mimeType)
+    : 'none';
+  const smbPreviewMode = selected?.source.kind === 'smb'
+    ? canPreviewFile(selected.title, selected.mimeType)
+    : 'none';
+
   // ── Render ───────────────────────────────────────────────────────────────────
+
+  const hasAnySources = vaults.length > 0 || gdriveFolders.length > 0 || smbShares.length > 0;
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -769,7 +1530,7 @@ export default function ObsidianVault() {
       {/* ── Left sidebar ──────────────────────────────────────────────────────── */}
       <aside className="w-64 flex-shrink-0 flex flex-col border-r border-white/8 overflow-hidden bg-sidebar">
 
-        {/* One collapsible section per vault */}
+        {/* Obsidian vaults */}
         {vaults.map((vault) => (
           <VaultSection
             key={vault.id}
@@ -777,18 +1538,20 @@ export default function ObsidianVault() {
             selectedItem={selected}
             onSelect={handleObsidianSelect}
             onWikilinkNavigate={(vaultId, target) => handleWikilinkClick(vaultId, target)}
+            open={openSectionId === `vault-${vault.id}`}
+            onToggle={() => toggleSection(`vault-${vault.id}`)}
           />
         ))}
 
-        {/* Empty vault state */}
+        {/* Empty Obsidian state */}
         {vaults.length === 0 && (
-          <div className="px-4 py-4 border-b border-white/8 space-y-2">
+          <div className="px-4 py-4 border-b border-white/8 space-y-2 flex-shrink-0">
             <div className="flex items-center gap-1.5">
               <BookOpen className="w-3.5 h-3.5 text-primary" />
               <span className="text-xs font-semibold text-foreground">Obsidian Vaults</span>
             </div>
             <p className="text-xs text-muted-foreground">No vaults connected.</p>
-            <a href="/settings/vault"
+            <a href="/settings/files"
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/10 text-primary text-xs font-medium border border-primary/20 hover:bg-primary/20 transition-colors">
               <Plus className="w-3 h-3" />
               Add a vault
@@ -796,31 +1559,60 @@ export default function ObsidianVault() {
           </div>
         )}
 
-        {/* ── Notion section ───────────────────────────────────────────────────── */}
-        <SectionHeader
-          open={notionOpen}
-          onToggle={() => setNotionOpen(!notionOpen)}
-          icon={<StickyNote className="w-3.5 h-3.5" />}
-          label="Notion"
-          meta={
-            notionConnected && (
-              <span className="flex items-center gap-0.5 ml-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 flex-shrink-0" />
-              </span>
-            )
-          }
-          actions={
-            notionConnected && (
-              <button onClick={() => refetchNotion()}
-                className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors flex-shrink-0" title="Refresh Notion">
-                <RefreshCw className="w-3.5 h-3.5" />
-              </button>
-            )
-          }
-        />
+        {/* Google Drive folders */}
+        {gdriveFolders.map((folder) => (
+          <GDriveSection
+            key={folder.id}
+            folder={folder}
+            selectedItem={selected}
+            onSelect={handleGdriveSelect}
+            onUpload={handleGdriveUpload}
+            uploading={gdriveUploading[folder.id] ?? false}
+            open={openSectionId === `gdrive-${folder.id}`}
+            onToggle={() => toggleSection(`gdrive-${folder.id}`)}
+          />
+        ))}
 
-        {notionOpen && (
-          <div className="flex flex-col flex-1 min-h-0">
+        {/* SMB shares */}
+        {smbShares.map((share) => (
+          <SmbSection
+            key={share.id}
+            share={share}
+            selectedItem={selected}
+            onSelect={handleSmbSelect}
+            onUpload={handleSmbUpload}
+            uploading={smbUploading[share.id] ?? false}
+            open={openSectionId === `smb-${share.id}`}
+            onToggle={() => toggleSection(`smb-${share.id}`)}
+          />
+        ))}
+
+        {/* ── Notion section ───────────────────────────────────────────────────── */}
+        <div className={cn('flex flex-col border-b border-white/8', openSectionId === 'notion' ? 'flex-1 min-h-0' : 'flex-shrink-0')}>
+          <SectionHeader
+            open={openSectionId === 'notion'}
+            onToggle={() => toggleSection('notion')}
+            icon={<StickyNote className="w-3.5 h-3.5" />}
+            label="Notion"
+            meta={
+              notionConnected && (
+                <span className="flex items-center gap-0.5 ml-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 flex-shrink-0" />
+                </span>
+              )
+            }
+            actions={
+              notionConnected && (
+                <button onClick={() => refetchNotion()}
+                  className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors flex-shrink-0" title="Refresh Notion">
+                  <RefreshCw className="w-3.5 h-3.5" />
+                </button>
+              )
+            }
+          />
+
+          {openSectionId === 'notion' && (
+            <div className="flex flex-col min-h-0 flex-1">
             {!notionConnected ? (
               <div className="px-4 py-4 space-y-2">
                 <p className="text-xs text-muted-foreground">Notion not connected.</p>
@@ -879,6 +1671,20 @@ export default function ObsidianVault() {
             )}
           </div>
         )}
+        </div>
+
+        {/* All-empty state */}
+        {!hasAnySources && !notionConnected && (
+          <div className="flex-1 flex items-center justify-center p-6">
+            <div className="text-center space-y-2">
+              <p className="text-xs text-muted-foreground">No file sources configured.</p>
+              <a href="/settings/files" className="inline-flex items-center gap-1 text-xs text-primary hover:underline">
+                <Plus className="w-3 h-3" />
+                Add sources
+              </a>
+            </div>
+          </div>
+        )}
       </aside>
 
       {/* ── Content panel ───────────────────────────────────────────────────────── */}
@@ -887,11 +1693,15 @@ export default function ObsidianVault() {
           <div className="flex-1 flex items-center justify-center">
             <div className="text-center space-y-3">
               <div className="flex items-center justify-center gap-3 opacity-40">
-                <BookOpen className="w-8 h-8 text-purple-400" />
-                <span className="text-warm-600 text-xl">+</span>
-                <StickyNote className="w-8 h-8 text-warm-400" />
+                <BookOpen className="w-7 h-7 text-purple-400" />
+                <span className="text-warm-600 text-lg">+</span>
+                <StickyNote className="w-7 h-7 text-warm-400" />
+                <span className="text-warm-600 text-lg">+</span>
+                <HardDrive className="w-7 h-7 text-blue-400" />
+                <span className="text-warm-600 text-lg">+</span>
+                <Network className="w-7 h-7 text-emerald-400" />
               </div>
-              <p className="text-sm text-muted-foreground">Select a note or page to read it</p>
+              <p className="text-sm text-muted-foreground">Select a file to view it</p>
             </div>
           </div>
         ) : (
@@ -902,26 +1712,71 @@ export default function ObsidianVault() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <h1 className="text-base font-semibold text-foreground truncate">{viewerTitle}</h1>
-                    <SourceBadge source={selected.source} vaultName={selectedVaultName} />
+                    <SourceBadge source={selected.source} />
                   </div>
                   {selected.source.kind === 'obsidian' && (
                     <p className="text-xs text-muted-foreground truncate mt-0.5">{selected.id}</p>
+                  )}
+                  {selected.source.kind === 'smb' && (
+                    <p className="text-xs text-muted-foreground truncate mt-0.5">{selected.id}</p>
+                  )}
+                  {/* GDrive permission badge */}
+                  {selected.source.kind === 'gdrive' && gdriveFileData && (
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      {gdriveFileData.editability === 'read-only'
+                        ? <span className="flex items-center gap-1 text-[10px] text-amber-400"><Lock className="w-2.5 h-2.5" />Read-only</span>
+                        : gdriveFileData.editability === 'find-replace'
+                        ? <span className="flex items-center gap-1 text-[10px] text-blue-400"><Eye className="w-2.5 h-2.5" />Find/replace editing</span>
+                        : <span className="flex items-center gap-1 text-[10px] text-emerald-400"><EyeOff className="w-2.5 h-2.5" />Direct edit</span>}
+                      {gdriveFileData.warning && (
+                        <span className="flex items-center gap-1 text-[10px] text-amber-400">
+                          <AlertTriangle className="w-2.5 h-2.5" />
+                          {gdriveFileData.warning}
+                        </span>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>
 
               <div className="flex items-center gap-2 flex-shrink-0">
+                {/* Notion: open in Notion */}
                 {selected.source.kind === 'notion' && (
                   <a
                     href={`https://notion.so/${selected.id.replace(/-/g, '')}`}
                     target="_blank" rel="noopener noreferrer"
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
-                    title="Open in Notion"
                   >
                     <ExternalLink className="w-3.5 h-3.5" />
                     Open
                   </a>
                 )}
+                {/* GDrive: open in Drive + download */}
+                {selected.source.kind === 'gdrive' && !selected.isFolder && (
+                  <>
+                    {selected.webViewLink && (
+                      <a href={selected.webViewLink} target="_blank" rel="noopener noreferrer"
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors">
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        Open
+                      </a>
+                    )}
+                    <button onClick={handleDownload}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors">
+                      <Download className="w-3.5 h-3.5" />
+                      Download
+                    </button>
+                  </>
+                )}
+                {/* SMB: download */}
+                {selected.source.kind === 'smb' && !selected.isFolder && (
+                  <button onClick={handleDownload}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors">
+                    <Download className="w-3.5 h-3.5" />
+                    Download
+                  </button>
+                )}
+                {/* Obsidian: edit */}
                 {selected.source.kind === 'obsidian' && !editMode && obsidianFileData && (
                   <button onClick={handleEdit}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors">
@@ -967,20 +1822,28 @@ export default function ObsidianVault() {
 
             {/* Content area */}
             <div ref={contentRef} className="flex-1 overflow-y-auto">
-              {isFileLoading && (
+              {isFileLoading && !selected.isFolder && (
                 <div className="flex items-center justify-center h-32">
                   <Loader2 className="w-5 h-5 text-muted-foreground animate-spin" />
                 </div>
               )}
-              {fileError && (
+              {fileError && !selected.isFolder && (
                 <div className="px-6 py-8 flex items-center gap-3 text-red-400">
                   <AlertCircle className="w-5 h-5 flex-shrink-0" />
                   <span className="text-sm">{fileError instanceof Error ? fileError.message : 'Failed to load content'}</span>
                 </div>
               )}
 
+              {/* Folder selected — show info */}
+              {selected.isFolder && (
+                <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
+                  <FolderOpen className="w-10 h-10 text-amber-400/60" />
+                  <p className="text-sm text-muted-foreground">Select a file to view its contents</p>
+                </div>
+              )}
+
               {/* Obsidian: edit mode */}
-              {selected.source.kind === 'obsidian' && hasContent && !isFileLoading && !fileError && editMode && (
+              {selected.source.kind === 'obsidian' && obsidianFileData && !isFileLoading && !fileError && editMode && (
                 <div className="p-6 h-full flex flex-col gap-3">
                   <div className="flex items-center gap-2 text-xs text-primary bg-primary/10 border border-primary/20 rounded-lg px-3 py-2">
                     <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
@@ -996,7 +1859,7 @@ export default function ObsidianVault() {
               )}
 
               {/* Obsidian: read mode */}
-              {selected.source.kind === 'obsidian' && hasContent && !isFileLoading && !fileError && !editMode && (
+              {selected.source.kind === 'obsidian' && obsidianFileData && !isFileLoading && !fileError && !editMode && (
                 <div className="px-8 py-6 max-w-3xl">
                   <MarkdownView content={obsidianBody}
                     onWikilinkClick={(target) => handleWikilinkClick((selected.source as { kind: 'obsidian'; vaultId: number }).vaultId, target)} />
@@ -1004,7 +1867,7 @@ export default function ObsidianVault() {
               )}
 
               {/* Notion: read mode */}
-              {selected.source.kind === 'notion' && hasContent && !isFileLoading && !fileError && (
+              {selected.source.kind === 'notion' && notionBlocksData && !isFileLoading && !fileError && (
                 <div className="px-8 py-6 max-w-3xl">
                   {notionMarkdown ? (
                     <MarkdownView content={notionMarkdown} />
@@ -1022,8 +1885,69 @@ export default function ObsidianVault() {
                 </div>
               )}
 
+              {/* Google Drive: content viewer */}
+              {selected.source.kind === 'gdrive' && !selected.isFolder && gdriveFileData && !isFileLoading && !fileError && (
+                <>
+                  {gdrivePreviewMode === 'markdown' && (
+                    <div className="px-8 py-6 max-w-3xl">
+                      <MarkdownView content={gdriveFileData.content} />
+                    </div>
+                  )}
+                  {gdrivePreviewMode === 'text' && (
+                    <div className="px-8 py-6 max-w-4xl">
+                      <pre className="text-sm text-foreground/90 font-mono leading-relaxed whitespace-pre-wrap break-words">{gdriveFileData.content}</pre>
+                    </div>
+                  )}
+                  {gdrivePreviewMode === 'csv' && (
+                    <div className="px-8 py-6 overflow-x-auto">
+                      <CsvViewer content={gdriveFileData.content} />
+                    </div>
+                  )}
+                  {gdrivePreviewMode === 'image' && (
+                    <ImageViewer
+                      src={api.gdriveDownloadUrl((selected.source as { kind: 'gdrive'; folderId: number }).folderId, selected.id)}
+                      alt={selected.title}
+                    />
+                  )}
+                  {gdrivePreviewMode === 'none' && (
+                    <CannotPreview name={selected.title} mimeType={selected.mimeType} onDownload={handleDownload} />
+                  )}
+                </>
+              )}
+
+              {/* SMB: content viewer */}
+              {selected.source.kind === 'smb' && !selected.isFolder && smbFileData !== undefined && !isFileLoading && !fileError && (
+                <>
+                  {smbPreviewMode === 'markdown' && (
+                    <div className="px-8 py-6 max-w-3xl">
+                      <MarkdownView content={smbFileData} />
+                    </div>
+                  )}
+                  {smbPreviewMode === 'text' && (
+                    <div className="px-8 py-6 max-w-4xl">
+                      <pre className="text-sm text-foreground/90 font-mono leading-relaxed whitespace-pre-wrap break-words">{smbFileData}</pre>
+                    </div>
+                  )}
+                  {smbPreviewMode === 'csv' && (
+                    <div className="px-8 py-6 overflow-x-auto">
+                      <CsvViewer content={smbFileData} />
+                    </div>
+                  )}
+                  {smbPreviewMode === 'image' && (
+                    <ImageViewer
+                      src={api.smbDownloadUrl((selected.source as { kind: 'smb'; shareId: number }).shareId, selected.id)}
+                      alt={selected.title}
+                    />
+                  )}
+                  {smbPreviewMode === 'none' && (
+                    <CannotPreview name={selected.title} mimeType={selected.mimeType} onDownload={handleDownload} />
+                  )}
+                </>
+              )}
+
               {/* Empty state */}
-              {!hasContent && !isFileLoading && !fileError && (
+              {!isFileLoading && !fileError && !selected.isFolder &&
+                contentKind === 'obsidian' && !obsidianFileData && (
                 <div className="flex items-center justify-center h-32">
                   <FileText className="w-6 h-6 text-warm-600" />
                 </div>
@@ -1032,6 +1956,63 @@ export default function ObsidianVault() {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// ── CSV viewer ────────────────────────────────────────────────────────────────
+
+function CsvViewer({ content }: { content: string }) {
+  const rows = useMemo(() => {
+    const lines = content.trim().split('\n');
+    return lines.map((line) => {
+      // Simple CSV parse (doesn't handle quoted commas, but good enough for preview)
+      const cells: string[] = [];
+      let current = '';
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '"') {
+          inQuotes = !inQuotes;
+        } else if (ch === ',' && !inQuotes) {
+          cells.push(current);
+          current = '';
+        } else {
+          current += ch;
+        }
+      }
+      cells.push(current);
+      return cells;
+    });
+  }, [content]);
+
+  if (rows.length === 0) return <p className="text-xs text-muted-foreground">Empty CSV</p>;
+  const headers = rows[0] ?? [];
+  const dataRows = rows.slice(1);
+
+  return (
+    <div className="rounded-xl border border-white/10 overflow-x-auto">
+      <table className="w-full text-xs border-collapse">
+        <thead>
+          <tr className="bg-white/5">
+            {headers.map((h, i) => (
+              <th key={i} className="text-left px-3 py-2 border border-white/10 font-semibold text-foreground/80 whitespace-nowrap">{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {dataRows.map((row, ri) => (
+            <tr key={ri} className="odd:bg-white/2 hover:bg-white/5 transition-colors">
+              {row.map((cell, ci) => (
+                <td key={ci} className="px-3 py-1.5 border border-white/5 text-foreground/80 whitespace-nowrap">{cell}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="px-3 py-1.5 text-[10px] text-muted-foreground border-t border-white/5">
+        {dataRows.length} row{dataRows.length !== 1 ? 's' : ''} · {headers.length} column{headers.length !== 1 ? 's' : ''}
+      </p>
     </div>
   );
 }

@@ -129,6 +129,7 @@ export const outbox = sqliteTable('outbox', {
   requester: text('requester').notNull().default('ui'),
   apiKeyId: integer('api_key_id'),
   errorMessage: text('error_message'),
+  aiToolCallId: text('ai_tool_call_id'),
   createdAt: text('created_at').default(sql`(datetime('now'))`),
   approvedAt: text('approved_at'),
   sentAt: text('sent_at'),
@@ -143,9 +144,6 @@ export const permissions = sqliteTable('permissions', {
   sendEnabled: integer('send_enabled', { mode: 'boolean' }).notNull().default(false),
   requireApproval: integer('require_approval', { mode: 'boolean' }).notNull().default(true),
   directSendFromUi: integer('direct_send_from_ui', { mode: 'boolean' }).notNull().default(false),
-  // When true, opening a conversation marks it as read on the platform API.
-  // When false (default), read state is only tracked in the client store.
-  markReadEnabled: integer('mark_read_enabled', { mode: 'boolean' }).notNull().default(false),
   // JSON blob with per-service fine-grained read/write allowlists.
   // Shape: { readChannelIds?: string[], writeChannelIds?: string[], ... } (service-specific)
   // NULL = unrestricted (all resources allowed).
@@ -351,46 +349,6 @@ export const meetNotes = sqliteTable('meet_notes', {
   updatedAt:       text('updated_at'),
 });
 
-// ─── Chat read state ──────────────────────────────────────────────────────────
-// Server-side "last read" cursor per conversation. Written when the user opens
-// a chat (via POST /api/unread/:source/:chatId/read). Used to compute unread
-// counts as COUNT(messages WHERE timestamp > last_read_at).
-
-export const chatReadState = sqliteTable('chat_read_state', {
-  source:     text('source').notNull(),
-  chatId:     text('chat_id').notNull(),
-  lastReadAt: text('last_read_at').notNull(),
-  updatedAt:  text('updated_at').default(sql`(datetime('now'))`),
-}, (t) => ({
-  pk: unique().on(t.source, t.chatId),
-}));
-
-// ─── Chat mute state ──────────────────────────────────────────────────────────
-// Persisted authoritative mute state for all service chats.
-// Discord: written by fetchUnreadCounts() / userGuildSettingsUpdate.
-// Slack:   written by fetchUnreadCounts() from conversations.info.
-// Telegram: written by fetchUnreadCounts() from dialog notifySettings.
-
-export const chatMuteState = sqliteTable('chat_mute_state', {
-  source:    text('source').notNull(),
-  chatId:    text('chat_id').notNull(),
-  isMuted:   integer('is_muted', { mode: 'boolean' }).notNull().default(false),
-  updatedAt: text('updated_at').default(sql`(datetime('now'))`),
-}, (t) => ({
-  pk: unique().on(t.source, t.chatId),
-}));
-
-// ─── Discord channel mute state (legacy — kept for migration compat) ──────────
-// New code writes to chat_mute_state. This table is no longer written to but
-// may exist in deployed databases from earlier versions.
-
-export const discordChannelMuteState = sqliteTable('discord_channel_mute_state', {
-  channelId: text('channel_id').primaryKey(),
-  guildId:   text('guild_id'),
-  isMuted:   integer('is_muted', { mode: 'boolean' }).notNull().default(false),
-  updatedAt: text('updated_at').default(sql`(datetime('now'))`),
-});
-
 // ─── AI Chat Sessions ─────────────────────────────────────────────────────────
 
 export const aiSessions = sqliteTable('ai_sessions', {
@@ -440,6 +398,44 @@ export const obsidianVaultConfig = sqliteTable('obsidian_vault_config', {
   createdAt:       text('created_at').default(sql`(datetime('now'))`),
   updatedAt:       text('updated_at').default(sql`(datetime('now'))`),
 });
+
+// ─── Google Drive Folder ──────────────────────────────────────────────────────
+
+export const googleDriveFolderConfig = sqliteTable('google_drive_folder_config', {
+  id:           integer('id').primaryKey({ autoIncrement: true }),
+  email:        text('email').notNull(),                            // owner Gmail account
+  driveType:    text('drive_type').notNull().default('personal'),   // 'personal' | 'shared'
+  folderId:     text('folder_id').notNull(),                        // Google Drive folder ID ('root' for root)
+  folderName:   text('folder_name').notNull(),                      // user-visible display name
+  driveId:      text('drive_id'),                                   // shared drive ID (null for personal)
+  syncStatus:   text('sync_status').notNull().default('idle'),      // 'idle' | 'syncing' | 'error'
+  syncError:    text('sync_error'),
+  lastChangeId: text('last_change_id'),                             // Drive API changes.list() page token
+  lastSyncedAt: text('last_synced_at'),
+  createdAt:    text('created_at').default(sql`(datetime('now'))`),
+  updatedAt:    text('updated_at').default(sql`(datetime('now'))`),
+});
+
+// ─── Google Drive File Metadata Cache ─────────────────────────────────────────
+
+export const googleDriveFileCache = sqliteTable('google_drive_file_cache', {
+  id:              integer('id').primaryKey({ autoIncrement: true }),
+  folderConfigId:  integer('folder_config_id').notNull(),            // FK → googleDriveFolderConfig.id
+  fileId:          text('file_id').notNull(),                        // Google Drive file ID
+  fileName:        text('file_name').notNull(),
+  mimeType:        text('mime_type').notNull(),
+  size:            integer('size').default(0),
+  modifiedTime:    text('modified_time'),
+  createdTime:     text('created_time'),
+  isFolder:        integer('is_folder', { mode: 'boolean' }).default(false),
+  parentId:        text('parent_id'),                                // parent folder's Drive fileId
+  webViewLink:     text('web_view_link'),
+  driveId:         text('drive_id'),                                 // shared drive ID if applicable
+  depth:           integer('depth').default(0),                      // recursion depth from root
+  indexedAt:       text('indexed_at').default(sql`(datetime('now'))`),
+}, (t) => ({
+  uniqFolderFile: unique().on(t.folderConfigId, t.fileId),
+}));
 
 // ─── SMB File Share ───────────────────────────────────────────────────────────
 
@@ -515,6 +511,18 @@ export interface SmbFineGrained {
   writePaths?: string[];   // path prefixes the key may write to (null = all paths)
 }
 
+export interface GdriveFolderPermission {
+  read: boolean;
+  write: boolean;
+  requireApproval?: boolean; // overrides global requireApproval for this specific folder
+}
+
+export interface GdriveFineGrained {
+  // Per-folder access control. Key = googleDriveFolder.id (number as string).
+  // Absent folder entry = inherit global readEnabled/writeEnabled.
+  folderPermissions?: Record<string, GdriveFolderPermission>;
+}
+
 export type ServiceFineGrained =
   | SlackFineGrained
   | DiscordFineGrained
@@ -524,7 +532,8 @@ export type ServiceFineGrained =
   | TwitterFineGrained
   | NotionFineGrained
   | ObsidianFineGrained
-  | SmbFineGrained;
+  | SmbFineGrained
+  | GdriveFineGrained;
 
 // ─── Type exports ─────────────────────────────────────────────────────────────
 
@@ -551,9 +560,6 @@ export type InsertOutbox = typeof outbox.$inferInsert;
 export type InsertAuditLog = typeof auditLog.$inferInsert;
 export type MeetNote = typeof meetNotes.$inferSelect;
 export type InsertMeetNote = typeof meetNotes.$inferInsert;
-export type DiscordChannelMuteState = typeof discordChannelMuteState.$inferSelect;
-export type ChatReadState = typeof chatReadState.$inferSelect;
-export type ChatMuteState = typeof chatMuteState.$inferSelect;
 
 export type AiSession = typeof aiSessions.$inferSelect;
 export type InsertAiSession = typeof aiSessions.$inferInsert;
@@ -564,3 +570,6 @@ export type ObsidianVaultConfig = typeof obsidianVaultConfig.$inferSelect;
 export type SmbShareConfig = typeof smbShareConfig.$inferSelect;
 export type InsertSmbShareConfig = typeof smbShareConfig.$inferInsert;
 export type InsertObsidianVaultConfig = typeof obsidianVaultConfig.$inferInsert;
+export type GoogleDriveFolderConfig = typeof googleDriveFolderConfig.$inferSelect;
+export type InsertGoogleDriveFolderConfig = typeof googleDriveFolderConfig.$inferInsert;
+export type GoogleDriveFileCache = typeof googleDriveFileCache.$inferSelect;

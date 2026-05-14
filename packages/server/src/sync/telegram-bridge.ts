@@ -1,11 +1,11 @@
 import { TelegramClient } from 'telegram';
+import { LogLevel } from 'telegram/extensions/Logger.js';
 import { StringSession } from 'telegram/sessions/index.js';
 import { NewMessage, NewMessageEvent } from 'telegram/events/index.js';
 import { getDb } from '../db/client.js';
 import { telegramMessages, syncState, syncRuns, accounts } from '../db/schema.js';
-import { eq, and, sql } from 'drizzle-orm';
-import { broadcast, broadcastUnread } from '../websocket/hub.js';
-import { persistMuteState, seedReadState, broadcastUnreadForChat, markChatRead, computeAllUnreads } from './unread.js';
+import { eq, and } from 'drizzle-orm';
+import { broadcast } from '../websocket/hub.js';
 import { getCreds, setCreds, type TelegramCreds } from '../api/credentials.js';
 import {
   syncTelegramContacts, upsertContact, upsertContactFromMessage, getContactCriteria,
@@ -125,6 +125,12 @@ export class TelegramBridge {
       retryDelay: 2000,
     });
 
+    // Silence GramJS's own console.error calls. The update loop in updates.js
+    // calls console.error(e) whenever _log.canSend(LogLevel.ERROR) is true,
+    // even after _errorHandler has already handled the error. Setting the log
+    // level to NONE prevents that duplicate output.
+    this.client.setLogLevel(LogLevel.NONE);
+
     // Catch unhandled errors from GramJS's update loop — these are normally
     // TIMEOUT errors from Telegram's servers that GramJS retries internally.
     // Without this handler they crash to stderr as unhandled rejections.
@@ -239,9 +245,6 @@ export class TelegramBridge {
             },
           });
 
-          // Push updated unread count (server-computed) to all clients
-          broadcastUnreadForChat('telegram', chatId);
-
           if (result.changes > 0) {
             // Update contact for sender — private chats (User entity) are DMs
             if (senderId && senderId !== this.accountInfo?.userId) {
@@ -263,53 +266,8 @@ export class TelegramBridge {
         }
       }, new NewMessage({}));
 
-      // Listen for read history events (fires when user reads a chat in another Telegram client).
-      // Use the maxId from the event to find the precise timestamp of the last-read message.
-      try {
-        const { Raw } = await import('telegram/events/index.js');
-        this.client.addEventHandler(async (update: unknown) => {
-          try {
-            const u = update as Record<string, unknown>;
-            // UpdateReadHistoryInbox fires for private chats/small groups
-            // UpdateChannelReadMessagesContents fires for channels/supergroups
-            if (u?.className === 'UpdateReadHistoryInbox' || u?.className === 'UpdateChannelReadMessagesContents') {
-              const peer = u.peer as Record<string, unknown> | undefined;
-              const chatIdRaw = peer?.channelId ?? peer?.chatId ?? peer?.userId;
-              if (chatIdRaw == null) return;
-              const chatId = String(chatIdRaw);
-
-              // maxId is the message ID of the last message the user read.
-              // Use it to find the precise timestamp in our local DB.
-              const maxId = u.maxId as number | undefined;
-              if (maxId != null && maxId > 0) {
-                const db = getDb();
-                const msgRow = db.all<{ timestamp: string }>(sql`
-                  SELECT timestamp FROM telegram_messages
-                  WHERE CAST(chat_id AS TEXT) = ${chatId} AND message_id <= ${maxId}
-                  ORDER BY message_id DESC
-                  LIMIT 1
-                `)[0];
-                if (msgRow?.timestamp) {
-                  seedReadState([{ source: 'telegram', chatId, lastReadAt: msgRow.timestamp }]);
-                  // Recompute and broadcast just this chat
-                  const { broadcastUnreadForChat: bcastChat } = await import('./unread.js');
-                  bcastChat('telegram', chatId);
-                  return;
-                }
-              }
-
-              // Fallback: mark as read at current time if no message found for maxId
-              markChatRead('telegram', chatId);
-            }
-          } catch { /* ignore */ }
-        }, new Raw({}));
-      } catch { /* Raw event may not be available in all GramJS versions */ }
-
       broadcast({ type: 'connection:status', data: { service: 'telegram', status: 'connected', mode: 'gramjs' } });
       console.log(`[telegram] Connected as ${displayName}`);
-
-      // Broadcast platform unread counts shortly after connect (non-blocking)
-      setTimeout(() => this.fetchUnreadCounts().catch(console.error), 2000);
 
       return true;
     } catch (e) {
@@ -473,8 +431,6 @@ export class TelegramBridge {
         } catch (ce) {
           console.error('[telegram] Contact sync error:', ce);
         }
-        // Refresh unread counts after sync
-        this.fetchUnreadCounts().catch(console.error);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -620,141 +576,6 @@ export class TelegramBridge {
       console.error('[telegram] GetDialogFilters error:', e);
       return [];
     }
-  }
-
-  /**
-   * Fetch mute state and read positions for all Telegram dialogs from the
-   * platform, persist to chat_mute_state / chat_read_state, then broadcast
-   * authoritative unread counts (DB-computed) to all clients.
-   *
-   * Uses dialog.dialog.readInboxMaxId — the message ID of the last message
-   * the user has read in each dialog. We look up that message ID in the local
-   * DB to get its timestamp and use that as the read cursor. This is more
-   * accurate than counting backwards with ROW_NUMBER() and avoids the
-   * ordering ambiguity of the previous approach.
-   *
-   * muteUntil: 0 = not muted, 2147483647 = muted forever, future Unix ts = timed mute.
-   */
-  async fetchUnreadCounts(): Promise<void> {
-    if (!this.client) return;
-    try {
-      const db = getDb();
-      const dialogs = await this.client.getDialogs({ limit: 500 });
-      const now = Math.floor(Date.now() / 1000);
-      const muteUpdates: Array<{ source: string; chatId: string; isMuted: boolean }> = [];
-
-      // Build dialog map: chatId → { isMuted, readInboxMaxId, unreadCount }
-      // readInboxMaxId is the message ID of the last message the user read.
-      const dialogMap = new Map<string, { isMuted: boolean; readInboxMaxId: number; unreadCount: number }>();
-      for (const dialog of dialogs) {
-        const entity = dialog.entity as { id?: { value?: unknown } } | null;
-        if (!entity?.id) continue;
-        const chatId = String(entity.id.value ?? entity.id);
-
-        const muteUntil: number =
-          (dialog as unknown as { dialog?: { notifySettings?: { muteUntil?: number } } })
-            .dialog?.notifySettings?.muteUntil ?? 0;
-        const isMuted = muteUntil === 2147483647 || muteUntil > now;
-
-        // readInboxMaxId: the message ID up to which the user has read this dialog.
-        // 0 means nothing has been read (or the field is unavailable).
-        const readInboxMaxId: number =
-          (dialog as unknown as { dialog?: { readInboxMaxId?: number } })
-            .dialog?.readInboxMaxId ?? 0;
-
-        const unreadCount: number = (dialog as unknown as { unreadCount?: number }).unreadCount ?? 0;
-
-        muteUpdates.push({ source: 'telegram', chatId, isMuted });
-        dialogMap.set(chatId, { isMuted, readInboxMaxId, unreadCount });
-      }
-
-      // Build read cursor updates by looking up readInboxMaxId in local DB.
-      //
-      // Strategy:
-      //   - unreadCount === 0 → fully read, seed cursor to now.
-      //   - readInboxMaxId > 0 → find the timestamp of that message in local DB.
-      //     This gives the precise last-read position without any counting tricks.
-      //   - readInboxMaxId === 0 and unreadCount > 0 → can't determine cursor,
-      //     skip (all messages will count as unread).
-
-      const nowIso = new Date().toISOString();
-      const readUpdates: Array<{ source: string; chatId: string; lastReadAt: string }> = [];
-
-      // Collect chatIds that need a DB lookup (have a readInboxMaxId > 0)
-      const needsLookup: Array<{ chatId: string; readInboxMaxId: number }> = [];
-      for (const [chatId, { unreadCount, readInboxMaxId }] of dialogMap) {
-        if (unreadCount === 0) {
-          // Fully read: seed to now
-          readUpdates.push({ source: 'telegram', chatId, lastReadAt: nowIso });
-        } else if (readInboxMaxId > 0) {
-          needsLookup.push({ chatId, readInboxMaxId });
-        }
-        // else: unreadCount > 0 and readInboxMaxId === 0 → skip, leave cursor unset
-      }
-
-      // Bulk lookup: find the timestamp for each (chatId, messageId) pair.
-      // Use a single query with CASE expressions or do a batch IN query grouped by chat.
-      if (needsLookup.length > 0) {
-        // For each chat with a readInboxMaxId, find the timestamp of the message
-        // with that ID (or the closest message with id <= readInboxMaxId).
-        // We do one query per chat to avoid complex cross-chat SQL; the list is
-        // typically small (only chats with unread messages).
-        for (const { chatId, readInboxMaxId } of needsLookup) {
-          const row = db.all<{ timestamp: string }>(sql`
-            SELECT timestamp FROM telegram_messages
-            WHERE CAST(chat_id AS TEXT) = ${chatId}
-              AND message_id <= ${readInboxMaxId}
-            ORDER BY message_id DESC
-            LIMIT 1
-          `)[0];
-          if (row?.timestamp) {
-            readUpdates.push({ source: 'telegram', chatId, lastReadAt: row.timestamp });
-          }
-          // If no local message found (chat not synced yet), don't seed the cursor.
-        }
-      }
-
-      persistMuteState(muteUpdates);
-      seedReadState(readUpdates);
-      const allUpdates = computeAllUnreads();
-      if (allUpdates.length > 0) broadcastUnread(allUpdates);
-    } catch (e) {
-      if (!isTransient(e)) console.error('[telegram] fetchUnreadCounts error:', e);
-    }
-  }
-
-  /**
-   * Mark a Telegram chat as read on the platform.
-   * maxId: 0 means "mark all messages as read".
-   */
-  async markChatRead(chatId: string): Promise<void> {
-    if (!this.client) return;
-    try {
-      const { Api } = await import('telegram');
-      const entity = await this.client.getEntity(Number(chatId));
-      await this.client.invoke(new Api.messages.ReadHistory({ peer: entity as never, maxId: 0 }));
-    } catch { /* mark-read is best-effort */ }
-  }
-
-  /**
-   * Mark a Telegram chat as unread on the platform using the MarkDialogUnread
-   * MTProto API (messages.markDialogUnread). This mirrors exactly what the
-   * Telegram client does when the user long-presses a chat and chooses "Mark as unread".
-   */
-  async markChatUnread(chatId: string): Promise<void> {
-    if (!this.client) return;
-    try {
-      const { Api } = await import('telegram');
-      const entity = await this.client.getEntity(Number(chatId));
-      // Convert the resolved entity to an InputPeer for the MarkDialogUnread call.
-      // getInputPeer is an internal GramJS helper that handles all entity types.
-      const inputPeer = (this.client as unknown as {
-        getInputEntity: (entity: unknown) => Promise<unknown>;
-      }).getInputEntity(entity);
-      const resolvedPeer = await inputPeer;
-      const peer = new Api.InputDialogPeer({ peer: resolvedPeer as never });
-      await this.client.invoke(new Api.messages.MarkDialogUnread({ unread: true, peer }));
-    } catch { /* best-effort */ }
   }
 
   disconnect(): void {

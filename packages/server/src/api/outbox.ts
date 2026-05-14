@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { randomUUID } from 'crypto';
+import { nanoid } from 'nanoid';
 import { getDb } from '../db/client.js';
-import { outbox, permissions, apiKeyPermissions } from '../db/schema.js';
+import { outbox, permissions, apiKeyPermissions, aiToolCalls } from '../db/schema.js';
 import type {
   SlackFineGrained, DiscordFineGrained, TelegramFineGrained,
-  GmailFineGrained, CalendarFineGrained, NotionFineGrained, ObsidianFineGrained, SmbFineGrained,
+  GmailFineGrained, CalendarFineGrained, NotionFineGrained, ObsidianFineGrained, SmbFineGrained, GdriveFineGrained,
   ServiceFineGrained,
 } from '../db/schema.js';
 import { eq, and, desc, sql } from 'drizzle-orm';
@@ -13,6 +14,39 @@ import { getConnectionManager } from '../connections/manager.js';
 import { broadcast } from '../websocket/hub.js';
 
 const router = Router();
+
+// ── AI tool call logging ──────────────────────────────────────────────────────
+
+/**
+ * If the request was made by the AI agent (API key + X-Session-Id), record an
+ * aiToolCalls row capturing the raw request body and return its ID so it can be
+ * linked to the resulting outbox item.  Returns null for non-AI or UI requests.
+ */
+function recordAiOutboxToolCall(
+  authedReq: AuthedRequest,
+  source: string,
+  recipientId: string,
+  content: string,
+): string | null {
+  if (authedReq.actor !== 'api' || !authedReq.aiSessionId) return null;
+  const db = getDb();
+  const id = nanoid();
+  try {
+    let parsedBody: unknown;
+    try { parsedBody = JSON.parse(content); } catch { parsedBody = content; }
+    db.insert(aiToolCalls).values({
+      id,
+      sessionId: authedReq.aiSessionId,
+      name: 'createOutboxItem',
+      input: JSON.stringify({ method: 'POST', path: '/outbox', body: parsedBody }),
+      output: `outbox item for ${source} → ${recipientId}`,
+      createdAt: new Date().toISOString(),
+    }).run();
+    return id;
+  } catch {
+    return null;
+  }
+}
 
 // ── Fine-grained write enforcement ───────────────────────────────────────────
 
@@ -109,6 +143,17 @@ function checkWriteAllowlist(
       }
       return null;
     }
+    case 'gdrive': {
+      // For Drive, check per-folder write permission
+      const gdriveFg = fg as GdriveFineGrained;
+      if (!gdriveFg.folderPermissions) return null; // no fine-grained config = unrestricted
+      const folderPerm = gdriveFg.folderPermissions[recipientId];
+      if (!folderPerm) return null; // folder not specifically listed = use global
+      if (!folderPerm.write) {
+        return `Write access to Google Drive folder "${recipientId}" is not permitted for this API key`;
+      }
+      return null;
+    }
     default:
       return null;
   }
@@ -118,6 +163,160 @@ function checkWriteAllowlist(
     return `Sending to "${recipientId}" is not permitted for this API key on ${service}`;
   }
   return null;
+}
+
+// ── Obsidian patch_file pre-flight validation ─────────────────────────────────
+
+/**
+ * For `patch_file` outbox items targeting an Obsidian vault, validate every
+ * search string against the current on-disk file content before we commit the
+ * item to the database.  This surfaces stale-search-string problems immediately
+ * at creation time rather than after the item has been sitting in pending state
+ * and the user clicks Approve.
+ *
+ * Throws a descriptive Error (suitable for a 400 response) if:
+ *  - the content JSON cannot be parsed
+ *  - the targeted vault is not connected
+ *  - the target file does not exist
+ *  - any search string is not found, or matches more than once
+ */
+async function validateObsidianPatchFile(content: string): Promise<void> {
+  let action: { action?: string; path?: string; edits?: Array<{ search?: string }>; vaultId?: number };
+  try {
+    action = JSON.parse(content);
+  } catch {
+    return; // not JSON — nothing to validate here
+  }
+
+  if (action.action !== 'patch_file') return; // only validate patch_file
+
+  const manager = getConnectionManager();
+
+  // Resolve the vault (same logic as executeObsidianAction)
+  let vault: import('../sync/obsidian.js').ObsidianVaultSync | null = null;
+  if (action.vaultId !== undefined) {
+    vault = manager.getObsidian(action.vaultId);
+    if (!vault) {
+      throw new Error(`Obsidian vault ${action.vaultId} is not connected.`);
+    }
+  } else {
+    const all = manager.getAllObsidianVaults();
+    vault = all.size > 0 ? [...all.values()][0] : null;
+    if (!vault) {
+      throw new Error('No Obsidian vault is connected.');
+    }
+  }
+
+  if (!action.path) {
+    throw new Error('patch_file action is missing required field: path');
+  }
+  if (!action.edits || action.edits.length === 0) {
+    throw new Error('patch_file action requires at least one edit.');
+  }
+
+  // Read the current file content (triggers a sync if stale, same as execution path)
+  let fileContent: string;
+  try {
+    fileContent = await vault.readFile(action.path);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`patch_file pre-flight: ${msg}`);
+  }
+
+  // Validate each search string by simulating the sequential edit application,
+  // exactly mirroring the logic in ObsidianVaultSync.executeAction so that what
+  // passes here will also pass at execution time (and vice-versa).
+  let current = fileContent;
+  for (let i = 0; i < action.edits.length; i++) {
+    const { search, position = 'replace', replace = '', content: insertContent = '' } = action.edits[i] as {
+      search?: string; position?: string; replace?: string; content?: string;
+    };
+
+    if (!search) {
+      throw new Error(
+        `patch_file validation failed for "${action.path}":\n\n` +
+        `Edit ${i + 1}: search string must not be empty.`
+      );
+    }
+
+    let count = 0;
+    let pos = current.indexOf(search);
+    const firstPos = pos;
+    while (pos !== -1) {
+      count++;
+      if (count > 1) break;
+      pos = current.indexOf(search, pos + 1);
+    }
+
+    if (count === 0) {
+      const preview = search.length > 120
+        ? search.slice(0, 120).replace(/\n/g, '↵') + '…'
+        : search.replace(/\n/g, '↵');
+      throw new Error(
+        `patch_file validation failed for "${action.path}":\n\n` +
+        `Edit ${i + 1}: search string not found in current file content.\n` +
+        `Search string (${search.length} chars): "${preview}"\n` +
+        `Make sure it matches the file content exactly (including whitespace and line endings).`
+      );
+    }
+
+    if (count > 1) {
+      const preview = search.length > 120
+        ? search.slice(0, 120).replace(/\n/g, '↵') + '…'
+        : search.replace(/\n/g, '↵');
+      throw new Error(
+        `patch_file validation failed for "${action.path}":\n\n` +
+        `Edit ${i + 1}: search string matches more than one location in the file.\n` +
+        `Search string (${search.length} chars): "${preview}"\n` +
+        `Make it more specific by including more surrounding context.`
+      );
+    }
+
+    // Apply the edit to keep `current` in sync with what executeAction would produce,
+    // so subsequent search strings are validated against the correct intermediate state.
+    if (position === 'before') {
+      current = current.slice(0, firstPos) + insertContent + current.slice(firstPos);
+    } else if (position === 'after') {
+      const afterPos = firstPos + search.length;
+      current = current.slice(0, afterPos) + insertContent + current.slice(afterPos);
+    } else {
+      // 'replace' (default)
+      current = current.slice(0, firstPos) + replace + current.slice(firstPos + search.length);
+    }
+  }
+}
+
+// ── Google Drive patch_file pre-flight validation ─────────────────────────────
+
+/**
+ * For `patch_file` outbox items targeting a Google Drive file, validate each
+ * search string against the current file content before committing.
+ * Only applies to plain-text files — Google Workspace docs are skipped
+ * (the Docs/Sheets API handles reporting at execution time).
+ */
+async function validateGdrivePatchFile(content: string): Promise<void> {
+  let action: { action?: string; fileId?: string; folderId?: number; edits?: Array<{ search?: string; replace?: string }> };
+  try {
+    action = JSON.parse(content);
+  } catch {
+    return;
+  }
+  if (action.action !== 'patch_file') return;
+  if (!action.fileId || !action.folderId) return;
+  if (!action.edits?.length) return;
+
+  const manager = getConnectionManager();
+  const { getDb } = await import('../db/client.js');
+  const { googleDriveFolderConfig } = await import('../db/schema.js');
+  const { eq: eqFn } = await import('drizzle-orm');
+  const db = getDb();
+  const row = db.select().from(googleDriveFolderConfig).where(eqFn(googleDriveFolderConfig.id, action.folderId)).get();
+  if (!row) throw new Error(`Drive folder config ${action.folderId} not found`);
+
+  const gdrive = manager.getGdrive(row.email);
+  if (!gdrive) throw new Error(`No Google Drive connection for ${row.email}`);
+
+  await gdrive.validatePatchFile({ action: 'patch_file', folderId: action.folderId, fileId: action.fileId, edits: action.edits as Array<{ search: string; replace: string }> });
 }
 
 // ── Shared dispatch helper ────────────────────────────────────────────────────
@@ -144,6 +343,8 @@ async function dispatchOutboxItem(
     await manager.executeObsidianAction(JSON.parse(content) as Parameters<typeof manager.executeObsidianAction>[0]);
   } else if (source === 'smb') {
     await manager.executeSmbAction(JSON.parse(content) as Parameters<typeof manager.executeSmbAction>[0]);
+  } else if (source === 'gdrive') {
+    await manager.executeGdriveAction(JSON.parse(content) as Parameters<typeof manager.executeGdriveAction>[0]);
   } else {
     await manager.sendMessage(source as 'slack' | 'discord' | 'telegram', recipientId, content);
   }
@@ -205,6 +406,28 @@ router.post('/', optionalAuth, async (req, res) => {
     return;
   }
 
+  // Pre-flight validation: ensure patch_file search strings match current file
+  if (source === 'obsidian') {
+    try {
+      await validateObsidianPatchFile(content);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      res.status(400).json({ error: msg });
+      return;
+    }
+  }
+  if (source === 'gdrive') {
+    try {
+      await validateGdrivePatchFile(content);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      res.status(400).json({ error: msg });
+      return;
+    }
+  }
+
+  const aiToolCallId = recordAiOutboxToolCall(authedReq, source, recipient_id, content);
+
   const item = db.insert(outbox).values({
     source,
     recipientId: recipient_id,
@@ -213,6 +436,7 @@ router.post('/', optionalAuth, async (req, res) => {
     status: 'pending',
     requester: authedReq.actor,
     apiKeyId: authedReq.apiKey?.id || null,
+    aiToolCallId,
   }).returning().get();
 
   writeAuditLog('send_request', authedReq.actor, {
@@ -277,10 +501,31 @@ router.post('/batch', optionalAuth, async (req, res) => {
     }
   }
 
+  // Pre-flight validation: ensure patch_file search strings match current file
+  if (source === 'obsidian') {
+    try {
+      await validateObsidianPatchFile(content);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      res.status(400).json({ error: msg });
+      return;
+    }
+  }
+  if (source === 'gdrive') {
+    try {
+      await validateGdrivePatchFile(content);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      res.status(400).json({ error: msg });
+      return;
+    }
+  }
+
   const batchId = randomUUID();
   const items = [];
 
   for (const recipient of recipient_ids) {
+    const aiToolCallId = recordAiOutboxToolCall(authedReq, source, recipient.id, content);
     const item = db.insert(outbox).values({
       batchId,
       source,
@@ -290,6 +535,7 @@ router.post('/batch', optionalAuth, async (req, res) => {
       status: 'pending',
       requester: authedReq.actor,
       apiKeyId: authedReq.apiKey?.id || null,
+      aiToolCallId,
     }).returning().get();
     items.push(item);
   }
@@ -354,6 +600,25 @@ router.post('/batch/multi', optionalAuth, async (req, res) => {
       res.status(403).json({ error: `${writeErr} (operations[${i}])` });
       return;
     }
+    // Pre-flight validation for Obsidian patch_file operations
+    if (op.source === 'obsidian') {
+      try {
+        await validateObsidianPatchFile(op.content);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        res.status(400).json({ error: `${msg} (operations[${i}])` });
+        return;
+      }
+    }
+    if (op.source === 'gdrive') {
+      try {
+        await validateGdrivePatchFile(op.content);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        res.status(400).json({ error: `${msg} (operations[${i}])` });
+        return;
+      }
+    }
   }
 
   const batchId = randomUUID();
@@ -362,6 +627,7 @@ router.post('/batch/multi', optionalAuth, async (req, res) => {
   for (const op of operations) {
     const perm = db.select().from(permissions).where(eq(permissions.service, op.source)).get()!;
 
+    const aiToolCallId = recordAiOutboxToolCall(authedReq, op.source, op.recipient_id, op.content);
     const item = db.insert(outbox).values({
       batchId,
       source: op.source,
@@ -371,6 +637,7 @@ router.post('/batch/multi', optionalAuth, async (req, res) => {
       status: 'pending',
       requester: authedReq.actor,
       apiKeyId: authedReq.apiKey?.id || null,
+      aiToolCallId,
     }).returning().get();
 
     writeAuditLog('send_request', authedReq.actor, {

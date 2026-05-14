@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { getConnectionManager, type ServiceName } from '../connections/manager.js';
 import { optionalAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
-import { computeAllUnreads, markChatRead, markChatUnread, markAllChatsRead } from '../sync/unread.js';
 import messagesRouter from './messages.js';
 import outboxRouter from './outbox.js';
 import permissionsRouter from './permissions.js';
@@ -22,9 +21,12 @@ import meetNotesRouter from './meet-notes.js';
 import notionRouter from './notion.js';
 import obsidianRouter from './obsidian.js';
 import smbRouter from './smb.js';
+import gdriveRouter from './gdrive.js';
 import openapiRouter from './openapi.js';
 import aiRouter from './ai.js';
 import updateRouter from './update.js';
+import contextRouter from './context.js';
+import topologyRouter from './topology.js';
 
 const router = Router();
 
@@ -139,88 +141,6 @@ router.post('/sync/:service/cancel', optionalAuth, (req, res) => {
   res.json(result);
 });
 
-// ── Unread state ─────────────────────────────────────────────────────────────
-
-// GET /api/unread — returns server-authoritative unread counts + mute state for all chats.
-// Called by the client on page load and WS reconnect to seed the unread store.
-router.get('/unread', optionalAuth, (_req, res) => {
-  try {
-    const updates = computeAllUnreads();
-    res.json(updates);
-  } catch (e) {
-    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
-  }
-});
-
-// POST /api/unread/:source/:chatId/read — mark a chat as read.
-// Always writes chat_read_state (server-side persistence).
-// Also mirrors the read state to the platform so other clients see it too.
-router.post('/unread/:source/:chatId/read', optionalAuth, async (req, res) => {
-  const source = req.params['source'] as string;
-  const chatId = req.params['chatId'] as string;
-
-  // Persist read state server-side (no-op for discord)
-  markChatRead(source, chatId);
-
-  // Mirror read state to the platform (best-effort, non-blocking)
-  const manager = getConnectionManager();
-  try {
-    if (source === 'slack') await manager.getSlack()?.markChannelRead(chatId);
-    else if (source === 'telegram') await manager.getTelegram()?.markChatRead(chatId);
-    // Discord: no reliable read ACK API for selfbots; skip
-  } catch { /* best-effort platform call */ }
-
-  res.json({ success: true });
-});
-
-// POST /api/unread/all/read — mark ALL chats across all services as read.
-// Persists read state in DB, broadcasts count=0, and mirrors to platform APIs.
-router.post('/unread/all/read', optionalAuth, async (req, res) => {
-  const entries = markAllChatsRead();
-
-  // Mirror read state to platforms (best-effort, non-blocking)
-  const manager = getConnectionManager();
-  const bySource = new Map<string, string[]>();
-  for (const { source, chatId } of entries) {
-    const list = bySource.get(source) ?? [];
-    list.push(chatId);
-    bySource.set(source, list);
-  }
-
-  for (const [source, chatIds] of bySource) {
-    for (const chatId of chatIds) {
-      try {
-        if (source === 'slack') await manager.getSlack()?.markChannelRead(chatId);
-        else if (source === 'telegram') await manager.getTelegram()?.markChatRead(chatId);
-        // Discord: no reliable read ACK API for selfbots; skip
-      } catch { /* best-effort platform call */ }
-    }
-  }
-
-  res.json({ success: true });
-});
-
-// POST /api/unread/:source/:chatId/unread — mark a chat as unread.
-// Resets the read cursor locally and mirrors the unread state to the platform.
-router.post('/unread/:source/:chatId/unread', optionalAuth, async (req, res) => {
-  const source = req.params['source'] as string;
-  const chatId = req.params['chatId'] as string;
-
-  // Reset local read cursor and broadcast new count (no-op for discord)
-  markChatUnread(source, chatId);
-
-  // Mirror unread state to platform (best-effort, non-blocking)
-  const manager = getConnectionManager();
-  try {
-    if (source === 'slack') await manager.getSlack()?.markChannelUnread(chatId);
-    else if (source === 'telegram') await manager.getTelegram()?.markChatUnread(chatId);
-    // Discord: no reliable unread API for selfbots; skip
-  } catch { /* best-effort platform call */ }
-
-  res.json({ success: true });
-});
-
-
 router.use('/', messagesRouter);
 router.use('/outbox', outboxRouter);
 router.use('/permissions', permissionsRouter);
@@ -240,8 +160,11 @@ router.use('/meet-notes', meetNotesRouter);
 router.use('/notion', notionRouter);
 router.use('/obsidian', obsidianRouter);
 router.use('/smb', smbRouter);
+router.use('/gdrive', gdriveRouter);
 router.use('/ai', aiRouter);
 router.use('/update', updateRouter);
+router.use('/', contextRouter);
+router.use('/', topologyRouter);
 router.use('/', openapiRouter);
 router.use('/', serviceDataRouter);
 

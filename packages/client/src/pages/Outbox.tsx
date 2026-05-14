@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Check, X, Pencil, Trash2, SendHorizonal, Clock, CheckCircle2, XCircle,
-  Inbox, ChevronDown, ChevronUp, Save, RotateCcw,
+  Inbox, ChevronDown, ChevronUp, Save, RotateCcw, Terminal, Copy,
 } from 'lucide-react';
 import { api, type OutboxItem } from '@/lib/api';
 import { ServiceBadge } from '@/components/shared/ServiceBadge';
@@ -236,7 +236,7 @@ function StructuredContentView({ item, editing, editDraft, setEditDraft }: Conte
           </p>
           <FileDiffView
             filePath={diffFilePath}
-            vaultId={typeof parsed['vaultId'] === 'number' ? parsed['vaultId'] : 0}
+            vaultId={typeof parsed['vaultId'] === 'number' ? parsed['vaultId'] : undefined}
             newContent={diffNewContent}
             isNewFile={isObsidianCreate}
             patchEdits={patchEdits}
@@ -307,6 +307,77 @@ function StructuredContentView({ item, editing, editDraft, setEditDraft }: Conte
 
       {/* Body / multi-line fields */}
       {Array.from(bodyKeys).map((k) => renderField(k, true))}
+    </div>
+  );
+}
+
+// ── Raw request panel ─────────────────────────────────────────────────────────
+
+function RawRequestPanel({ toolCallId }: { toolCallId: string }) {
+  const [open, setOpen] = useState(false);
+
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ['ai-tool-call', toolCallId],
+    queryFn: () => api.aiToolCall(toolCallId),
+    enabled: open,
+    retry: false,
+  });
+
+  const rawText = data ? JSON.stringify(data.input, null, 2) : '';
+
+  function copyToClipboard() {
+    if (!rawText) return;
+    navigator.clipboard.writeText(rawText).then(() =>
+      toast({ title: 'Copied to clipboard', variant: 'success' })
+    );
+  }
+
+  return (
+    <div className="border border-border/40 rounded-lg overflow-hidden text-[11px]">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-2 px-3 py-2 bg-secondary/40 hover:bg-secondary/70 transition-colors text-left"
+      >
+        <Terminal className="w-3 h-3 text-muted-foreground shrink-0" />
+        <span className="flex-1 font-medium text-muted-foreground">Raw AI request</span>
+        {open ? <ChevronUp className="w-3 h-3 text-muted-foreground" /> : <ChevronDown className="w-3 h-3 text-muted-foreground" />}
+      </button>
+
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            key="raw"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+            className="overflow-hidden"
+          >
+            <div className="relative">
+              {isLoading && (
+                <p className="px-3 py-2 text-muted-foreground/60">Loading…</p>
+              )}
+              {isError && (
+                <p className="px-3 py-2 text-red-400">Failed to load request data.</p>
+              )}
+              {data && (
+                <>
+                  <button
+                    onClick={copyToClipboard}
+                    title="Copy to clipboard"
+                    className="absolute top-2 right-2 p-1 rounded hover:bg-secondary/80 text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <Copy className="w-3 h-3" />
+                  </button>
+                  <pre className="px-3 py-2 font-mono text-[10px] leading-relaxed text-foreground/75 bg-secondary/20 overflow-x-auto whitespace-pre-wrap break-words max-h-64 overflow-y-auto pr-8">
+                    {rawText}
+                  </pre>
+                </>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -465,9 +536,14 @@ function OutboxCard({ item }: { item: OutboxItem }) {
 
               {/* ── Error message ─────────────────────────────────────────── */}
               {item.errorMessage && (
-                <p className="text-xs text-red-400 bg-red-500/5 border border-red-500/15 rounded-lg px-3 py-2">
+                <pre className="text-[11px] text-red-400 bg-red-500/5 border border-red-500/15 rounded-lg px-3 py-2 whitespace-pre-wrap break-words font-mono leading-relaxed">
                   {item.errorMessage}
-                </p>
+                </pre>
+              )}
+
+              {/* ── Raw AI request (only when linked to an AI tool call) ──── */}
+              {item.aiToolCallId && (
+                <RawRequestPanel toolCallId={item.aiToolCallId} />
               )}
 
               {/* ── Timestamps row ────────────────────────────────────────── */}

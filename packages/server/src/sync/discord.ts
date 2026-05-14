@@ -9,8 +9,6 @@ import { broadcast } from '../websocket/hub.js';
 import {
   syncDiscordContacts, upsertContact, upsertContactFromMessage, getContactCriteria,
 } from './contacts.js';
-import { buildMutedChannelsMap, type GuildMuteSettings } from './discord-mute.js';
-import { persistMuteState } from './unread.js';
 
 // Minimal Discord client interface we need
 interface DiscordMessage {
@@ -131,14 +129,6 @@ export class DiscordSync {
           this.handleNewMessage(msg);
         });
 
-        // Re-compute and persist mute state whenever the user changes their
-        // guild notification/mute settings in the Discord client.
-        this.client.on('userGuildSettingsUpdate', () => {
-          this.fetchUnreadCounts().catch((e) =>
-            console.error('[discord] fetchUnreadCounts after settings update failed:', e),
-          );
-        });
-
         resolve(true);
       });
 
@@ -212,10 +202,6 @@ export class DiscordSync {
       type: 'message:new',
       data: { source: 'discord', messageId, channelId, channelName, guildId, guildName, authorId, authorName, content, timestamp, attachments: attachmentsJson },
     });
-
-    // Discord unread tracking is intentionally disabled — Discord's selfbot API
-    // does not expose a reliable per-channel read cursor, so we cannot mirror
-    // the platform's unread state accurately. No unread badge is shown for Discord.
 
     if (result.changes > 0) {
       if (authorId && authorId !== this.accountInfo?.userId) {
@@ -348,8 +334,6 @@ export class DiscordSync {
         } catch (ce) {
           console.error('[discord] Contact sync error:', ce);
         }
-        // Broadcast unread counts with mute state
-        await this.fetchUnreadCounts();
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -357,66 +341,6 @@ export class DiscordSync {
         .where(eq(syncRuns.id, runId)).run();
       broadcast({ type: 'sync:progress', data: { service: 'discord', status: 'error', error: msg } });
     }
-  }
-
-  /**
-   * Sync mute state from live guild.settings and persist to chat_mute_state.
-   *
-   * NOTE: Discord unread counts are intentionally NOT tracked. Discord's selfbot
-   * API does not expose a reliable per-channel read cursor, so we cannot mirror
-   * the platform's unread state accurately. Only mute state is synced.
-   *
-   * Called after: initial sync, userGuildSettingsUpdate event.
-   */
-  async fetchUnreadCounts(): Promise<void> {
-    try {
-      // Build channelId → isMuted map from live guild settings
-      const guildsIterable = this.client.guilds.cache as unknown as Map<
-        string,
-        { channels: { cache: Map<string, { id: string; type: number }> }; settings?: GuildMuteSettings }
-      >;
-      const mutedChannels = buildMutedChannelsMap(guildsIterable);
-
-      // Persist mute state to chat_mute_state for all guild text channels
-      persistMuteState(
-        [...mutedChannels.entries()].map(([chatId, isMuted]) => ({ source: 'discord', chatId, isMuted })),
-      );
-
-      // No unread count broadcasting for Discord — see note above.
-    } catch (e) {
-      console.error('[discord] fetchUnreadCounts error:', e);
-    }
-  }
-
-  /**
-   * Mark a Discord channel as read by acknowledging the latest message.
-   * Uses the raw Discord API to send a MessageAck.
-   * Only called when markReadEnabled permission is true.
-   */
-  async markChannelRead(channelId: string): Promise<void> {
-    try {
-      const raw = this.client as unknown as {
-        api: {
-          channels: {
-            [id: string]: {
-              messages: {
-                [mid: string]: {
-                  ack: { post: (opts: { data: Record<string, unknown> }) => Promise<void> };
-                };
-              };
-            };
-          };
-        };
-      };
-      // Fetch the latest message ID
-      const channel = this.client.channels.cache.get(channelId);
-      if (!channel) return;
-      const msgs = await channel.messages.fetch({ limit: 1 });
-      const latest = [...msgs.values()][0];
-      if (!latest?.id) return;
-      // POST channels/{id}/messages/{msgId}/ack
-      await raw.api.channels[channelId].messages[latest.id].ack.post({ data: {} });
-    } catch { /* best-effort — Discord may not allow ACK via selfbot API */ }
   }
 
   private async fetchChannelHistory(

@@ -198,15 +198,6 @@ export const api = {
   updatePermission: (service: string, updates: Partial<Permission>) =>
     request<Permission>(`/permissions/${service}`, { method: 'PUT', body: JSON.stringify(updates) }),
 
-  // Unread state — server-authoritative
-  getUnread: () => request<Array<{ source: string; chatId: string; count: number; isMuted: boolean }>>('/unread'),
-  markChatRead: (source: string, chatId: string) =>
-    request<{ success: boolean }>(`/unread/${source}/${encodeURIComponent(chatId)}/read`, { method: 'POST' }),
-  markChatUnread: (source: string, chatId: string) =>
-    request<{ success: boolean }>(`/unread/${source}/${encodeURIComponent(chatId)}/unread`, { method: 'POST' }),
-  markAllChatsRead: () =>
-    request<{ success: boolean }>('/unread/all/read', { method: 'POST' }),
-
   // Audit Log
   auditLog: (params?: AuditParams) => {
     const q = new URLSearchParams();
@@ -487,6 +478,8 @@ export const api = {
   },
   aiToolCalls: (sessionId: string) =>
     request<{ toolCalls: AiToolCall[] }>(`/ai/sessions/${sessionId}/tool-calls`),
+  aiToolCall: (id: string) =>
+    request<AiToolCall>(`/ai/tool-calls/${id}`),
   sendAiMessage: (sessionId: string, content: string) =>
     request<AiMessage>(`/ai/sessions/${sessionId}/messages`, { method: 'POST', body: JSON.stringify({ content }) }),
 
@@ -537,6 +530,31 @@ export const api = {
     request<{ success: boolean; status: unknown }>(`/smb/shares/${id}/connect`, { method: 'POST' }),
   disconnectSmbShare: (id: number) =>
     request<{ success: boolean }>(`/smb/shares/${id}/disconnect`, { method: 'POST' }),
+  listSmbDirectory: (id: number, path = '') => {
+    const q = path ? `?path=${encodeURIComponent(path)}` : '';
+    return request<{ path: string; entries: SmbEntry[] }>(`/smb/shares/${id}/files${q}`);
+  },
+  readSmbFile: (id: number, filePath: string) =>
+    request<string>(`/smb/shares/${id}/files/${filePath.split('/').map(encodeURIComponent).join('/')}`),
+  smbDownloadUrl: (id: number, filePath: string) =>
+    `${BASE}/smb/shares/${id}/download/${filePath.split('/').map(encodeURIComponent).join('/')}`,
+  uploadSmbFile: async (id: number, file: File, dirPath = '') => {
+    const csrfToken = getCsrfToken();
+    const form = new FormData();
+    form.append('file', file);
+    const q = dirPath ? `?path=${encodeURIComponent(dirPath)}` : '';
+    const res = await fetch(`${BASE}/smb/shares/${id}/upload${q}`, {
+      method: 'POST',
+      headers: { ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}) },
+      credentials: 'include',
+      body: form,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error((err as { error: string }).error || `HTTP ${res.status}`);
+    }
+    return res.json() as Promise<{ success: boolean; path: string }>;
+  },
 
   // ── Notion ───────────────────────────────────────────────────────────────────
   /** Search the Notion workspace. Pass no query to get top-level pages. */
@@ -550,6 +568,53 @@ export const api = {
     if (params?.start_cursor) q.set('start_cursor', params.start_cursor);
     const qs = q.toString() ? `?${q}` : '';
     return request<NotionBlockChildrenResponse>(`/notion/blocks/${blockId}/children${qs}`);
+  },
+
+  // ── Google Drive ─────────────────────────────────────────────────────────────
+  gdriveAccounts: () =>
+    request<{ accounts: Array<{ email: string; status: { status: string } }> }>('/gdrive/accounts'),
+  gdriveAvailableFolders: (email: string, driveType: 'personal' | 'shared' = 'personal') => {
+    const q = new URLSearchParams({ email, driveType });
+    return request<{ folders: DriveAvailableFolder[] }>(`/gdrive/available-folders?${q}`);
+  },
+  listGdriveFolders: () =>
+    request<{ folders: GoogleDriveFolderConfig[] }>('/gdrive/folders'),
+  addGdriveFolder: (body: { email: string; folderId: string; folderName: string; driveType?: string; driveId?: string }) =>
+    request<GoogleDriveFolderConfig>('/gdrive/folders', { method: 'POST', body: JSON.stringify(body) }),
+  getGdriveFolder: (id: number) =>
+    request<GoogleDriveFolderConfig>(`/gdrive/folders/${id}`),
+  updateGdriveFolder: (id: number, body: { folderName?: string }) =>
+    request<GoogleDriveFolderConfig>(`/gdrive/folders/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteGdriveFolder: (id: number) =>
+    request<{ success: boolean }>(`/gdrive/folders/${id}`, { method: 'DELETE' }),
+  testGdriveFolder: (id: number) =>
+    request<{ accessible: boolean; folderFound?: boolean; message?: string; error?: string }>(`/gdrive/folders/${id}/test`, { method: 'POST' }),
+  syncGdriveFolder: (id: number) =>
+    request<{ success: boolean; folder: GoogleDriveFolderConfig }>(`/gdrive/folders/${id}/sync`, { method: 'POST' }),
+  gdriveFileTree: (id: number, forceRefresh = false) => {
+    const q = forceRefresh ? '?refresh=true' : '';
+    return request<{ folderId: number; folderName: string; files: DriveFileNode[] }>(`/gdrive/folders/${id}/files${q}`);
+  },
+  gdriveReadFile: (folderId: number, fileId: string) =>
+    request<DriveFileContent>(`/gdrive/folders/${folderId}/files/${fileId}`),
+  gdriveDownloadUrl: (folderId: number, fileId: string) =>
+    `${BASE}/gdrive/folders/${folderId}/download/${fileId}`,
+  gdriveUploadFile: async (folderId: number, file: File, parentFolderId?: string) => {
+    const csrfToken = getCsrfToken();
+    const form = new FormData();
+    form.append('file', file);
+    if (parentFolderId) form.append('parentFolderId', parentFolderId);
+    const res = await fetch(`${BASE}/gdrive/folders/${folderId}/upload`, {
+      method: 'POST',
+      headers: { ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}) },
+      credentials: 'include',
+      body: form,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error((err as { error: string }).error || `HTTP ${res.status}`);
+    }
+    return res.json() as Promise<{ success: boolean; fileId: string; fileName: string }>;
   },
 
   // Update
@@ -758,6 +823,7 @@ export interface OutboxItem {
   requester: 'ui' | 'api';
   apiKeyId?: number;
   errorMessage?: string;
+  aiToolCallId?: string;
   createdAt: string;
   approvedAt?: string;
   sentAt?: string;
@@ -864,7 +930,6 @@ export interface Permission {
   sendEnabled: boolean;
   requireApproval: boolean;
   directSendFromUi: boolean;
-  markReadEnabled: boolean;
   fineGrainedConfig: ServiceFineGrained | null;
   updatedAt?: string;
 }
@@ -1316,8 +1381,100 @@ export interface AiPermissions {
   readContacts: boolean;
   readVault: boolean;
   writeVault: boolean;
+  readDrive: boolean;
+  writeDrive: boolean;
   sendOutbox: boolean;
   requireApproval: boolean;
+}
+
+// ─── Google Drive types ───────────────────────────────────────────────────────
+
+export type DriveEditability = 'direct' | 'find-replace' | 'read-only';
+
+export interface DriveFileNode {
+  fileId: string;
+  name: string;
+  mimeType: string;
+  isFolder: boolean;
+  size: number;
+  modifiedTime: string | null;
+  createdTime: string | null;
+  webViewLink: string | null;
+  parentId: string | null;
+  driveId: string | null;
+  depth: number;
+  path: string;
+  children?: DriveFileNode[];
+  editability: DriveEditability;
+  warning: string | null;
+}
+
+export interface DriveFileContent {
+  fileId: string;
+  fileName: string;
+  mimeType: string;
+  originalMimeType: string;
+  content: string;
+  editability: DriveEditability;
+  warning: string | null;
+  size: number;
+}
+
+export interface GoogleDriveFolderConfig {
+  id: number;
+  email: string;
+  driveType: 'personal' | 'shared';
+  folderId: string;
+  folderName: string;
+  driveId: string | null;
+  syncStatus: 'idle' | 'syncing' | 'error';
+  syncError: string | null;
+  lastChangeId: string | null;
+  lastSyncedAt: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  connectionStatus?: {
+    status: 'connected' | 'disconnected' | 'connecting' | 'error';
+    mode?: string;
+    error?: string;
+    displayName?: string;
+  };
+}
+
+export interface GdriveFolderPermission {
+  read: boolean;
+  write: boolean;
+  requireApproval?: boolean;
+}
+
+export interface GdriveFineGrained {
+  folderPermissions?: Record<string, GdriveFolderPermission>;
+}
+
+export interface DriveAvailableFolder {
+  folderId: string;
+  folderName: string;
+  driveId?: string;
+  path: string;
+}
+
+export interface DriveEditDelta {
+  search: string;
+  replace: string;
+}
+
+export type DriveActionType = 'create_file' | 'write_file' | 'patch_file' | 'delete_file' | 'rename_file';
+
+export interface DriveOutboxAction {
+  action: DriveActionType;
+  folderId: number;
+  fileId?: string;
+  fileName?: string;
+  parentFolderId?: string;
+  content?: string;
+  mimeType?: string;
+  edits?: DriveEditDelta[];
+  newName?: string;
 }
 
 export interface AiSession {
@@ -1415,6 +1572,12 @@ export interface UpdateStatus {
 }
 
 // ─── SMB types ────────────────────────────────────────────────────────────────
+
+export interface SmbEntry {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+}
 
 export interface SmbShareRow {
   id: number;
