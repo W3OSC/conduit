@@ -130,6 +130,13 @@ export const outbox = sqliteTable('outbox', {
   apiKeyId: integer('api_key_id'),
   errorMessage: text('error_message'),
   aiToolCallId: text('ai_tool_call_id'),
+  /**
+   * JSON array of fuzzy match info for patch_file edits that were resolved via
+   * fuzzy matching rather than exact matching. Each element describes one edit
+   * that was fuzzily resolved, so the user can review what was substituted.
+   * Shape: Array<{ editIndex: number; searchedFor: string; matchedTo: string; similarity: number }>
+   */
+  fuzzyMatchInfo: text('fuzzy_match_info'),
   createdAt: text('created_at').default(sql`(datetime('now'))`),
   approvedAt: text('approved_at'),
   sentAt: text('sent_at'),

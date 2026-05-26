@@ -240,6 +240,24 @@ For all Obsidian file writes, set `source: "obsidian"` and encode the action as 
 
 `patch_file` works by finding an exact anchor string in the file and applying an operation around it. The `search` string must match exactly once in the file.
 
+#### Critical: How to choose a `search` string
+
+The `search` string is matched byte-for-byte against the file. The most common failure is using too much text — especially copying an entire long line — so that the string gets truncated or misrepresents the actual content.
+
+**Rules for reliable `search` strings:**
+
+1. **Use the shortest unique substring, not the whole line.** For a Markdown table row, use just enough to identify the row uniquely — typically the date or key identifier, not the full row.
+   - ✅ `| May 18, 2026 | Rob Jones Review |`
+   - ❌ `| 7 | May 18, 2026 | Rob Jones Review | Joe, Rob Jones | Google Workspace, GoDaddy, Slack security review; 2FA enforcement; YubiKeys; DKIM | [[2026-05-18 Rob Jones - Google GoDaddy Slack Review]] |`
+
+2. **Always read the file first.** Call `GET /api/obsidian/files/{path}` before composing a `patch_file` edit. Copy the `search` value character-for-character from the actual file content returned by the API — do not reconstruct it from memory.
+
+3. **Avoid anchoring on content that changes.** Don't use dynamic values (status indicators, counts, lists that grow) as the anchor. Prefer stable identifiers: headings, dates, names, IDs.
+
+4. **If the search string would be longer than ~80 characters, shorten it.** Long search strings across table rows are the leading cause of "search string not found" errors. Find a shorter unique fragment instead.
+
+5. **Verify uniqueness before submitting.** After reading the file, mentally confirm that your chosen `search` string appears exactly once. If it could appear multiple times, add one or two surrounding words to make it unique.
+
 Three `position` modes:
 
 - `replace` (default) — replaces the matched text with `replace`:
@@ -630,11 +648,25 @@ Always call `GET /api/activity` first before taking any action. It gives you the
 ```
 1. GET /api/obsidian/files                    — find the file path
 2. GET /api/obsidian/files/{path}             — read current content
-3. POST /api/outbox  (action: patch_file)     — queue the edit
-4. Tell the user it's pending approval
+3. Identify a short, unique search string     — copy it exactly from the API response;
+                                                for table rows use only a key fragment
+                                                (e.g. the date + first column value),
+                                                not the entire row
+4. POST /api/outbox  (action: patch_file)     — queue the edit
+5. Tell the user it's pending approval
 ```
 
 **You can do this. Conduit supports editing vault files. Use `patch_file` for targeted edits.**
+
+**Common mistake — do not do this:**
+```json
+{ "search": "| 7 | May 18, 2026 | Rob Jones Review | Joe, Rob Jones | Google Workspace, GoDaddy, Slack ... |" }
+```
+**Do this instead:**
+```json
+{ "search": "| May 18, 2026 | Rob Jones Review |" }
+```
+The shorter string is unique, stable, and will not be truncated.
 
 ### Send a message to someone
 
@@ -699,7 +731,7 @@ Always call `GET /api/activity` first before taking any action. It gives you the
 
 1. **File editing IS possible.** Whether it's an Obsidian vault, Google Drive doc, or SMB share — use `POST /api/outbox` with the appropriate JSON-encoded action. Don't tell the user it can't be done.
 
-2. **Use `patch_file` for targeted edits, not `write_file`.** `write_file` replaces the entire file. `patch_file` finds an anchor string and inserts/replaces/adds around it. The `search` value must match exactly once in the file.
+2. **Use `patch_file` for targeted edits, not `write_file`.** `write_file` replaces the entire file. `patch_file` finds an anchor string and inserts/replaces/adds around it. The `search` value must match exactly once in the file. **Keep `search` strings short and unique — never copy an entire long table row.** The #1 cause of `patch_file` failures is a `search` string that is too long and gets truncated or mismatches. Use just enough text to uniquely identify the location (a date, a heading, a short phrase).
 
 3. **Always read before writing.** Call the relevant GET endpoint first to get the file path, current content, IDs, and confirm the service is connected.
 

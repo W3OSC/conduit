@@ -20,6 +20,7 @@ import { getDb } from '../db/client.js';
 import { obsidianVaultConfig, settings } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { broadcast } from '../websocket/hub.js';
+import { fuzzyFind } from '../util/fuzzy-search.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -340,31 +341,21 @@ export class ObsidianVaultSync {
         let current = fs.readFileSync(fullPath, 'utf-8');
 
         for (let i = 0; i < action.edits.length; i++) {
-          const { search, position = 'replace', replace = '', content = '' } = action.edits[i];
+          const { position = 'replace', replace = '', content = '' } = action.edits[i];
+          let { search } = action.edits[i];
           if (!search) {
             throw new Error(`Edit ${i + 1}: search string must not be empty. Use write_file to replace entire file content.`);
           }
 
-          // Count occurrences (literal string match, no regex)
+          // ── Exact match check ────────────────────────────────────────────
           let count = 0;
           let pos = current.indexOf(search);
-          const firstPos = pos;
           while (pos !== -1) {
             count++;
-            if (count > 1) break; // no need to keep counting
+            if (count > 1) break;
             pos = current.indexOf(search, pos + 1);
           }
 
-          if (count === 0) {
-            const searchPreview = search.length > 120
-              ? search.slice(0, 120).replace(/\n/g, '↵') + '…'
-              : search.replace(/\n/g, '↵');
-            throw new Error(
-              `Edit ${i + 1}: search string not found in file.\n` +
-              `Search string (${search.length} chars): "${searchPreview}"\n` +
-              `Make sure it matches the file content exactly (including whitespace and line endings).`
-            );
-          }
           if (count > 1) {
             const searchPreview = search.length > 120
               ? search.slice(0, 120).replace(/\n/g, '↵') + '…'
@@ -376,16 +367,34 @@ export class ObsidianVaultSync {
             );
           }
 
+          if (count === 0) {
+            // ── Fuzzy fallback ─────────────────────────────────────────────
+            const fuzzyResult = fuzzyFind(search, current);
+            if (!fuzzyResult) {
+              const searchPreview = search.length > 120
+                ? search.slice(0, 120).replace(/\n/g, '↵') + '…'
+                : search.replace(/\n/g, '↵');
+              throw new Error(
+                `Edit ${i + 1}: search string not found in file (exact or fuzzy).\n` +
+                `Search string (${search.length} chars): "${searchPreview}"\n` +
+                `Make sure it matches the file content exactly (including whitespace and line endings).`
+              );
+            }
+            // Use the actual matched text for the edit
+            search = fuzzyResult.matchedText;
+          }
+
+          const matchPos = current.indexOf(search);
           if (position === 'before') {
             // Insert content before the match; leave the matched text in place
-            current = current.slice(0, firstPos) + content + current.slice(firstPos);
+            current = current.slice(0, matchPos) + content + current.slice(matchPos);
           } else if (position === 'after') {
             // Insert content after the match; leave the matched text in place
-            const afterPos = firstPos + search.length;
+            const afterPos = matchPos + search.length;
             current = current.slice(0, afterPos) + content + current.slice(afterPos);
           } else {
             // 'replace' (default) — substitute matched text with replace
-            current = current.slice(0, firstPos) + replace + current.slice(firstPos + search.length);
+            current = current.slice(0, matchPos) + replace + current.slice(matchPos + search.length);
           }
         }
 

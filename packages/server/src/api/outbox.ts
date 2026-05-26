@@ -12,6 +12,7 @@ import { eq, and, desc, sql } from 'drizzle-orm';
 import { optionalAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
 import { getConnectionManager } from '../connections/manager.js';
 import { broadcast } from '../websocket/hub.js';
+import { fuzzyFind, type FuzzyMatchInfo } from '../util/fuzzy-search.js';
 
 const router = Router();
 
@@ -168,27 +169,46 @@ function checkWriteAllowlist(
 // ── Obsidian patch_file pre-flight validation ─────────────────────────────────
 
 /**
+ * Result from validateObsidianPatchFile. When fuzzy matching resolved one or
+ * more search strings, `rewrittenContent` contains the corrected JSON (with
+ * exact matched text substituted in) and `fuzzyMatches` describes each
+ * substitution so it can be stored on the outbox item for user review.
+ */
+interface ObsidianValidationResult {
+  /** The content string to store — may be rewritten if fuzzy matching occurred. */
+  content: string;
+  /** Non-empty only when at least one search string was resolved via fuzzy matching. */
+  fuzzyMatches: FuzzyMatchInfo[];
+}
+
+/**
  * For `patch_file` outbox items targeting an Obsidian vault, validate every
  * search string against the current on-disk file content before we commit the
  * item to the database.  This surfaces stale-search-string problems immediately
  * at creation time rather than after the item has been sitting in pending state
  * and the user clicks Approve.
  *
+ * When an exact match is not found, falls back to fuzzy matching (≥90%
+ * similarity, must be unique). If a fuzzy match is accepted the search string
+ * in the returned content is rewritten to the actual matched text so that
+ * execution at approval time performs a guaranteed exact match.
+ *
  * Throws a descriptive Error (suitable for a 400 response) if:
  *  - the content JSON cannot be parsed
  *  - the targeted vault is not connected
  *  - the target file does not exist
- *  - any search string is not found, or matches more than once
+ *  - any search string is not found exactly or via fuzzy matching
+ *  - any search string (exact or fuzzy) matches more than one location
  */
-async function validateObsidianPatchFile(content: string): Promise<void> {
-  let action: { action?: string; path?: string; edits?: Array<{ search?: string }>; vaultId?: number };
+async function validateObsidianPatchFile(content: string): Promise<ObsidianValidationResult> {
+  let action: { action?: string; path?: string; edits?: Array<{ search?: string; position?: string; replace?: string; content?: string }>; vaultId?: number };
   try {
     action = JSON.parse(content);
   } catch {
-    return; // not JSON — nothing to validate here
+    return { content, fuzzyMatches: [] }; // not JSON — nothing to validate
   }
 
-  if (action.action !== 'patch_file') return; // only validate patch_file
+  if (action.action !== 'patch_file') return { content, fuzzyMatches: [] };
 
   const manager = getConnectionManager();
 
@@ -223,14 +243,19 @@ async function validateObsidianPatchFile(content: string): Promise<void> {
     throw new Error(`patch_file pre-flight: ${msg}`);
   }
 
+  const fuzzyMatches: FuzzyMatchInfo[] = [];
+  // Track whether any edits were rewritten so we know if we need to re-serialise
+  let anyRewritten = false;
+  const rewrittenEdits = action.edits.map(e => ({ ...e }));
+
   // Validate each search string by simulating the sequential edit application,
   // exactly mirroring the logic in ObsidianVaultSync.executeAction so that what
   // passes here will also pass at execution time (and vice-versa).
   let current = fileContent;
   for (let i = 0; i < action.edits.length; i++) {
-    const { search, position = 'replace', replace = '', content: insertContent = '' } = action.edits[i] as {
-      search?: string; position?: string; replace?: string; content?: string;
-    };
+    const edit = action.edits[i] as { search?: string; position?: string; replace?: string; content?: string };
+    const { position = 'replace', replace = '', content: insertContent = '' } = edit;
+    let { search } = edit;
 
     if (!search) {
       throw new Error(
@@ -239,6 +264,7 @@ async function validateObsidianPatchFile(content: string): Promise<void> {
       );
     }
 
+    // ── Exact match check ────────────────────────────────────────────────────
     let count = 0;
     let pos = current.indexOf(search);
     const firstPos = pos;
@@ -246,18 +272,6 @@ async function validateObsidianPatchFile(content: string): Promise<void> {
       count++;
       if (count > 1) break;
       pos = current.indexOf(search, pos + 1);
-    }
-
-    if (count === 0) {
-      const preview = search.length > 120
-        ? search.slice(0, 120).replace(/\n/g, '↵') + '…'
-        : search.replace(/\n/g, '↵');
-      throw new Error(
-        `patch_file validation failed for "${action.path}":\n\n` +
-        `Edit ${i + 1}: search string not found in current file content.\n` +
-        `Search string (${search.length} chars): "${preview}"\n` +
-        `Make sure it matches the file content exactly (including whitespace and line endings).`
-      );
     }
 
     if (count > 1) {
@@ -272,18 +286,57 @@ async function validateObsidianPatchFile(content: string): Promise<void> {
       );
     }
 
-    // Apply the edit to keep `current` in sync with what executeAction would produce,
-    // so subsequent search strings are validated against the correct intermediate state.
+    if (count === 0) {
+      // ── Fuzzy fallback ───────────────────────────────────────────────────
+      const fuzzyResult = fuzzyFind(search, current);
+
+      if (!fuzzyResult) {
+        const preview = search.length > 120
+          ? search.slice(0, 120).replace(/\n/g, '↵') + '…'
+          : search.replace(/\n/g, '↵');
+        throw new Error(
+          `patch_file validation failed for "${action.path}":\n\n` +
+          `Edit ${i + 1}: search string not found in current file content (exact or fuzzy).\n` +
+          `Search string (${search.length} chars): "${preview}"\n` +
+          `Make sure it matches the file content exactly (including whitespace and line endings).`
+        );
+      }
+
+      // Record the fuzzy substitution for user display
+      fuzzyMatches.push({
+        editIndex: i,
+        searchedFor: search,
+        matchedTo: fuzzyResult.matchedText,
+        similarity: fuzzyResult.similarity,
+      });
+
+      // Rewrite this edit's search string to the exact matched text so that
+      // execution at approval time does a guaranteed exact match.
+      rewrittenEdits[i] = { ...rewrittenEdits[i], search: fuzzyResult.matchedText };
+      search = fuzzyResult.matchedText;
+      anyRewritten = true;
+    }
+
+    // Apply the edit (using the possibly-rewritten search string) to keep
+    // `current` in sync for subsequent edit validation.
+    const matchPos = current.indexOf(search);
     if (position === 'before') {
-      current = current.slice(0, firstPos) + insertContent + current.slice(firstPos);
+      current = current.slice(0, matchPos) + insertContent + current.slice(matchPos);
     } else if (position === 'after') {
-      const afterPos = firstPos + search.length;
+      const afterPos = matchPos + search.length;
       current = current.slice(0, afterPos) + insertContent + current.slice(afterPos);
     } else {
       // 'replace' (default)
-      current = current.slice(0, firstPos) + replace + current.slice(firstPos + search.length);
+      current = current.slice(0, matchPos) + replace + current.slice(matchPos + search.length);
     }
   }
+
+  // Re-serialise content if any search strings were rewritten
+  const finalContent = anyRewritten
+    ? JSON.stringify({ ...action, edits: rewrittenEdits })
+    : content;
+
+  return { content: finalContent, fuzzyMatches };
 }
 
 // ── Google Drive patch_file pre-flight validation ─────────────────────────────
@@ -407,9 +460,16 @@ router.post('/', optionalAuth, async (req, res) => {
   }
 
   // Pre-flight validation: ensure patch_file search strings match current file
+  let finalContent = content;
+  let fuzzyMatchInfo: string | null = null;
+
   if (source === 'obsidian') {
     try {
-      await validateObsidianPatchFile(content);
+      const result = await validateObsidianPatchFile(content);
+      finalContent = result.content;
+      if (result.fuzzyMatches.length > 0) {
+        fuzzyMatchInfo = JSON.stringify(result.fuzzyMatches);
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       res.status(400).json({ error: msg });
@@ -426,17 +486,18 @@ router.post('/', optionalAuth, async (req, res) => {
     }
   }
 
-  const aiToolCallId = recordAiOutboxToolCall(authedReq, source, recipient_id, content);
+  const aiToolCallId = recordAiOutboxToolCall(authedReq, source, recipient_id, finalContent);
 
   const item = db.insert(outbox).values({
     source,
     recipientId: recipient_id,
     recipientName: recipient_name || recipient_id,
-    content,
+    content: finalContent,
     status: 'pending',
     requester: authedReq.actor,
     apiKeyId: authedReq.apiKey?.id || null,
     aiToolCallId,
+    fuzzyMatchInfo,
   }).returning().get();
 
   writeAuditLog('send_request', authedReq.actor, {
@@ -502,9 +563,16 @@ router.post('/batch', optionalAuth, async (req, res) => {
   }
 
   // Pre-flight validation: ensure patch_file search strings match current file
+  let batchFinalContent = content;
+  let batchFuzzyMatchInfo: string | null = null;
+
   if (source === 'obsidian') {
     try {
-      await validateObsidianPatchFile(content);
+      const result = await validateObsidianPatchFile(content);
+      batchFinalContent = result.content;
+      if (result.fuzzyMatches.length > 0) {
+        batchFuzzyMatchInfo = JSON.stringify(result.fuzzyMatches);
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       res.status(400).json({ error: msg });
@@ -525,17 +593,18 @@ router.post('/batch', optionalAuth, async (req, res) => {
   const items = [];
 
   for (const recipient of recipient_ids) {
-    const aiToolCallId = recordAiOutboxToolCall(authedReq, source, recipient.id, content);
+    const aiToolCallId = recordAiOutboxToolCall(authedReq, source, recipient.id, batchFinalContent);
     const item = db.insert(outbox).values({
       batchId,
       source,
       recipientId: recipient.id,
       recipientName: recipient.name || recipient.id,
-      content,
+      content: batchFinalContent,
       status: 'pending',
       requester: authedReq.actor,
       apiKeyId: authedReq.apiKey?.id || null,
       aiToolCallId,
+      fuzzyMatchInfo: batchFuzzyMatchInfo,
     }).returning().get();
     items.push(item);
   }
@@ -603,7 +672,10 @@ router.post('/batch/multi', optionalAuth, async (req, res) => {
     // Pre-flight validation for Obsidian patch_file operations
     if (op.source === 'obsidian') {
       try {
-        await validateObsidianPatchFile(op.content);
+        const result = await validateObsidianPatchFile(op.content);
+        op.content = result.content;
+        (op as typeof op & { _fuzzyMatchInfo?: string | null })._fuzzyMatchInfo =
+          result.fuzzyMatches.length > 0 ? JSON.stringify(result.fuzzyMatches) : null;
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         res.status(400).json({ error: `${msg} (operations[${i}])` });
@@ -626,6 +698,8 @@ router.post('/batch/multi', optionalAuth, async (req, res) => {
 
   for (const op of operations) {
     const perm = db.select().from(permissions).where(eq(permissions.service, op.source)).get()!;
+    const opFuzzyMatchInfo =
+      (op as typeof op & { _fuzzyMatchInfo?: string | null })._fuzzyMatchInfo ?? null;
 
     const aiToolCallId = recordAiOutboxToolCall(authedReq, op.source, op.recipient_id, op.content);
     const item = db.insert(outbox).values({
@@ -638,6 +712,7 @@ router.post('/batch/multi', optionalAuth, async (req, res) => {
       requester: authedReq.actor,
       apiKeyId: authedReq.apiKey?.id || null,
       aiToolCallId,
+      fuzzyMatchInfo: opFuzzyMatchInfo,
     }).returning().get();
 
     writeAuditLog('send_request', authedReq.actor, {
