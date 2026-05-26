@@ -198,43 +198,103 @@ function DiffStats({ changes }: { changes: Change[] }) {
   );
 }
 
+// ── Fuzzy matching (mirrors server util/fuzzy-search.ts) ──────────────────────
+
+const FUZZY_THRESHOLD = 0.9;
+
+function levenshteinDistance(a: string, b: string, maxDist: number): number {
+  if (a.length > b.length) { const t = a; a = b; b = t; }
+  const aLen = a.length;
+  const bLen = b.length;
+  if (bLen - aLen > maxDist) return maxDist + 1;
+  let prev = new Uint32Array(aLen + 1);
+  let curr = new Uint32Array(aLen + 1);
+  for (let i = 0; i <= aLen; i++) prev[i] = i;
+  for (let j = 1; j <= bLen; j++) {
+    curr[0] = j;
+    let rowMin = j;
+    for (let i = 1; i <= aLen; i++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[i] = Math.min(prev[i] + 1, curr[i - 1] + 1, prev[i - 1] + cost);
+      if (curr[i] < rowMin) rowMin = curr[i];
+    }
+    if (rowMin > maxDist) return maxDist + 1;
+    const tmp = prev; prev = curr; curr = tmp;
+  }
+  return prev[aLen];
+}
+
+function stringSimilarity(a: string, b: string): number {
+  if (a === b) return 1;
+  const maxLen = Math.max(a.length, b.length);
+  if (maxLen === 0) return 1;
+  const maxDist = Math.ceil(maxLen * (1 - FUZZY_THRESHOLD));
+  const dist = levenshteinDistance(a, b, maxDist);
+  return 1 - dist / maxLen;
+}
+
+function fuzzyFind(search: string, fileContent: string): string | null {
+  const searchLen = search.length;
+  const contentLen = fileContent.length;
+  if (!searchLen || !contentLen || searchLen > contentLen) return null;
+  let bestScore = -1;
+  let bestText = '';
+  let secondBestScore = -1;
+  for (let i = 0; i <= contentLen - searchLen; i++) {
+    const window = fileContent.slice(i, i + searchLen);
+    const score = stringSimilarity(search, window);
+    if (score > bestScore) { secondBestScore = bestScore; bestScore = score; bestText = window; }
+    else if (score > secondBestScore) { secondBestScore = score; }
+  }
+  if (bestScore < FUZZY_THRESHOLD) return null;
+  if (secondBestScore >= FUZZY_THRESHOLD) return null; // ambiguous
+  return bestText;
+}
+
 // ── Patch application (mirrors server logic) ──────────────────────────────────
 
 /**
  * Apply an ordered list of search-and-replace edits to a string.
+ * Falls back to fuzzy matching (≥90% similarity, unique) when exact match fails.
  * Returns the patched string on success, or an error message if any edit fails.
  */
 function applyPatchEdits(original: string, edits: PatchEdit[]): { result: string } | { error: string } {
   let current = original;
   for (let i = 0; i < edits.length; i++) {
-    const { search, position = 'replace', replace = '', content = '' } = edits[i];
+    const { position = 'replace', replace = '', content = '' } = edits[i];
+    let { search } = edits[i];
     if (!search) return { error: `Edit ${i + 1}: search string is empty.` };
 
     let count = 0;
     let pos = current.indexOf(search);
-    const firstPos = pos;
     while (pos !== -1) {
       count++;
       if (count > 1) break;
       pos = current.indexOf(search, pos + 1);
     }
 
-    if (count === 0) {
-      const preview = search.length > 120 ? search.slice(0, 120).replace(/\n/g, '↵') + '…' : search.replace(/\n/g, '↵');
-      return { error: `Edit ${i + 1}: search string not found in file.\nSearch string (${search.length} chars): "${preview}"\nMake sure it matches the file content exactly (including whitespace and line endings).` };
-    }
     if (count > 1) {
       const preview = search.length > 120 ? search.slice(0, 120).replace(/\n/g, '↵') + '…' : search.replace(/\n/g, '↵');
       return { error: `Edit ${i + 1}: search string matches more than one location.\nSearch string (${search.length} chars): "${preview}"\nMake it more specific by including more surrounding context.` };
     }
 
+    if (count === 0) {
+      const fuzzyMatch = fuzzyFind(search, current);
+      if (!fuzzyMatch) {
+        const preview = search.length > 120 ? search.slice(0, 120).replace(/\n/g, '↵') + '…' : search.replace(/\n/g, '↵');
+        return { error: `Edit ${i + 1}: search string not found in file.\nSearch string (${search.length} chars): "${preview}"\nMake sure it matches the file content exactly (including whitespace and line endings).` };
+      }
+      search = fuzzyMatch;
+    }
+
+    const matchPos = current.indexOf(search);
     if (position === 'before') {
-      current = current.slice(0, firstPos) + content + current.slice(firstPos);
+      current = current.slice(0, matchPos) + content + current.slice(matchPos);
     } else if (position === 'after') {
-      const afterPos = firstPos + search.length;
+      const afterPos = matchPos + search.length;
       current = current.slice(0, afterPos) + content + current.slice(afterPos);
     } else {
-      current = current.slice(0, firstPos) + replace + current.slice(firstPos + search.length);
+      current = current.slice(0, matchPos) + replace + current.slice(matchPos + search.length);
     }
   }
   return { result: current };
