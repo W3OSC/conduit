@@ -16,6 +16,47 @@ import { fuzzyFind, type FuzzyMatchInfo } from '../util/fuzzy-search.js';
 
 const router = Router();
 
+// ── Auto-batching: group single POST /outbox requests by service ──────────────
+
+interface PendingBatchSlot {
+  batchId: string;
+  source: string;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+/**
+ * In-memory map of `source → PendingBatchSlot`.
+ *
+ * When a single-item POST /outbox request arrives we look up whether there is
+ * already an open slot for the same service.  If so we join that batch.  If
+ * not we open a new slot and schedule a timer to close it after the window
+ * expires.  This means any number of individual outbox requests for the same
+ * service that arrive within BATCH_WINDOW_MS of each other end up sharing a
+ * batchId and are presented to the user as a single grouped card.
+ */
+const pendingBatchSlots = new Map<string, PendingBatchSlot>();
+
+/** How long (ms) to keep a batch slot open waiting for additional items. */
+const BATCH_WINDOW_MS = 3_000;
+
+/**
+ * Return an existing open batchId for `source` (and refresh the close timer),
+ * or create a new one.
+ */
+function getOrCreateBatchSlot(source: string): string {
+  const existing = pendingBatchSlots.get(source);
+  if (existing) {
+    // Refresh the timer so the window extends from the latest item
+    clearTimeout(existing.timer);
+    existing.timer = setTimeout(() => pendingBatchSlots.delete(source), BATCH_WINDOW_MS);
+    return existing.batchId;
+  }
+  const batchId = randomUUID();
+  const timer = setTimeout(() => pendingBatchSlots.delete(source), BATCH_WINDOW_MS);
+  pendingBatchSlots.set(source, { batchId, source, timer });
+  return batchId;
+}
+
 // ── AI tool call logging ──────────────────────────────────────────────────────
 
 /**
@@ -208,12 +249,25 @@ async function validateObsidianPatchFile(content: string): Promise<ObsidianValid
     return { content, fuzzyMatches: [] }; // not JSON — nothing to validate
   }
 
-  if (action.action !== 'patch_file') return { content, fuzzyMatches: [] };
-
   const manager = getConnectionManager();
 
-  // Resolve the vault (same logic as executeObsidianAction)
+  // For non-patch actions, still inject vaultId if missing so the client diff preview works
+  if (action.action !== 'patch_file') {
+    if (action.vaultId === undefined) {
+      const all = manager.getAllObsidianVaults();
+      if (all.size > 0) {
+        const [firstId] = [...all.entries()][0];
+        return { content: JSON.stringify({ ...action, vaultId: firstId }), fuzzyMatches: [] };
+      }
+    }
+    return { content, fuzzyMatches: [] };
+  }
+
+  // Resolve the vault (same logic as executeObsidianAction).
+  // Also capture the resolved vaultId so we can inject it into the stored content
+  // when the AI omitted it — the client needs it to fetch the correct file for diff preview.
   let vault: import('../sync/obsidian.js').ObsidianVaultSync | null = null;
+  let resolvedVaultId: number | undefined = action.vaultId;
   if (action.vaultId !== undefined) {
     vault = manager.getObsidian(action.vaultId);
     if (!vault) {
@@ -221,10 +275,12 @@ async function validateObsidianPatchFile(content: string): Promise<ObsidianValid
     }
   } else {
     const all = manager.getAllObsidianVaults();
-    vault = all.size > 0 ? [...all.values()][0] : null;
-    if (!vault) {
+    if (all.size === 0) {
       throw new Error('No Obsidian vault is connected.');
     }
+    const [firstId, firstVault] = [...all.entries()][0];
+    vault = firstVault;
+    resolvedVaultId = firstId;
   }
 
   if (!action.path) {
@@ -331,9 +387,12 @@ async function validateObsidianPatchFile(content: string): Promise<ObsidianValid
     }
   }
 
-  // Re-serialise content if any search strings were rewritten
-  const finalContent = anyRewritten
-    ? JSON.stringify({ ...action, edits: rewrittenEdits })
+  // Re-serialise content if:
+  // - any search strings were rewritten by fuzzy matching, OR
+  // - vaultId was missing and we resolved it (so the client can fetch the right vault for diff preview)
+  const needsRewrite = anyRewritten || action.vaultId === undefined;
+  const finalContent = needsRewrite
+    ? JSON.stringify({ ...action, vaultId: resolvedVaultId, edits: rewrittenEdits })
     : content;
 
   return { content: finalContent, fuzzyMatches };
@@ -424,6 +483,95 @@ router.get('/', optionalAuth, (req, res) => {
   res.json({ items, pendingCount });
 });
 
+// ── Batch-level read ──────────────────────────────────────────────────────────
+// IMPORTANT: must be registered BEFORE /:id so Express doesn't treat "batch" as an id.
+
+router.get('/batch/:batchId', optionalAuth, (req, res) => {
+  const db = getDb();
+  const { batchId } = req.params as { batchId: string };
+  const items = db.select().from(outbox)
+    .where(eq(outbox.batchId, batchId))
+    .orderBy(outbox.id)
+    .all();
+  if (items.length === 0) { res.status(404).json({ error: 'Batch not found' }); return; }
+  res.json({ batchId, items });
+});
+
+// ── Batch-level approve / reject ──────────────────────────────────────────────
+
+router.patch('/batch/:batchId', optionalAuth, async (req, res) => {
+  const authedReq = req as AuthedRequest;
+  const db = getDb();
+  const { batchId } = req.params as { batchId: string };
+  const { action } = req.body as { action: 'approve' | 'reject' };
+
+  if (action !== 'approve' && action !== 'reject') {
+    res.status(400).json({ error: 'action must be "approve" or "reject"' });
+    return;
+  }
+
+  const items = db.select().from(outbox)
+    .where(and(eq(outbox.batchId, batchId), eq(outbox.status, 'pending')))
+    .orderBy(outbox.id)
+    .all();
+
+  if (items.length === 0) {
+    res.status(404).json({ error: 'No pending items found for this batch' });
+    return;
+  }
+
+  // For approve: block if any item in the batch has a validation error
+  if (action === 'approve') {
+    const failedItem = items.find((i) => i.errorMessage);
+    if (failedItem) {
+      res.status(400).json({
+        error: `Batch contains a failed item (id=${failedItem.id}). Reject or fix it before approving the batch.`,
+        failedItemId: failedItem.id,
+      });
+      return;
+    }
+  }
+
+  if (action === 'reject') {
+    for (const item of items) {
+      db.update(outbox).set({ status: 'rejected' }).where(eq(outbox.id, item.id)).run();
+      writeAuditLog('reject', authedReq.actor, { service: item.source, targetId: String(item.id), detail: { batch_id: batchId } });
+      broadcast({ type: 'outbox:updated', data: { id: item.id, status: 'rejected' } });
+    }
+    res.json({ success: true, status: 'rejected', count: items.length });
+    return;
+  }
+
+  // approve — dispatch each item sequentially; collect results
+  const results: Array<{ id: number; status: string; error?: string }> = [];
+
+  for (const item of items) {
+    db.update(outbox).set({ status: 'approved', approvedAt: new Date().toISOString() }).where(eq(outbox.id, item.id)).run();
+    writeAuditLog('approve', authedReq.actor, { service: item.source, targetId: String(item.id), detail: { batch_id: batchId } });
+
+    try {
+      const textToSend = item.editedContent || item.content;
+      await dispatchOutboxItem(item.source, item.recipientId, textToSend);
+      db.update(outbox).set({ status: 'sent', sentAt: new Date().toISOString() }).where(eq(outbox.id, item.id)).run();
+      writeAuditLog('send', authedReq.actor, {
+        service: item.source,
+        targetId: String(item.id),
+        detail: { batch_id: batchId, recipient_id: item.recipientId },
+      });
+      broadcast({ type: 'outbox:updated', data: { id: item.id, status: 'sent' } });
+      results.push({ id: item.id, status: 'sent' });
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      db.update(outbox).set({ status: 'failed', errorMessage: errMsg }).where(eq(outbox.id, item.id)).run();
+      broadcast({ type: 'outbox:updated', data: { id: item.id, status: 'failed', error: errMsg } });
+      results.push({ id: item.id, status: 'failed', error: errMsg });
+    }
+  }
+
+  const allSent = results.every((r) => r.status === 'sent');
+  res.json({ success: allSent, results });
+});
+
 router.get('/:id', optionalAuth, (req, res) => {
   const db = getDb();
   const item = db.select().from(outbox).where(eq(outbox.id, parseInt(req.params['id'] as string))).get();
@@ -488,7 +636,12 @@ router.post('/', optionalAuth, async (req, res) => {
 
   const aiToolCallId = recordAiOutboxToolCall(authedReq, source, recipient_id, finalContent);
 
+  // Assign to an auto-batch slot so rapid sequential requests for the same
+  // service are grouped into one batch card in the UI.
+  const autoBatchId = getOrCreateBatchSlot(source);
+
   const item = db.insert(outbox).values({
+    batchId: autoBatchId,
     source,
     recipientId: recipient_id,
     recipientName: recipient_name || recipient_id,
