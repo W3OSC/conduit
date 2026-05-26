@@ -165,6 +165,53 @@ router.get('/openapi.json', (req, res) => {
             children: { type: 'array', description: 'Child entries (only present for type=directory)', items: { $ref: '#/components/schemas/ObsidianFileEntry' } },
           },
         },
+        GoogleDriveFolderConfig: {
+          type: 'object',
+          description: 'A whitelisted Google Drive folder that Conduit syncs and exposes for reading/writing',
+          properties: {
+            id:           { type: 'integer', description: 'Folder config ID — use this as {folderId} in all /gdrive/folders/{folderId}/... endpoints' },
+            email:        { type: 'string', description: 'Google account email this folder belongs to' },
+            folderId:     { type: 'string', description: 'Google Drive folder ID (internal Drive identifier, not the config ID)' },
+            folderName:   { type: 'string', description: 'Display name of the folder' },
+            driveType:    { type: 'string', enum: ['personal', 'shared'], description: 'personal = My Drive; shared = Shared Drive' },
+            syncStatus:   { type: 'string', enum: ['idle', 'syncing', 'error'], description: 'Current background sync state' },
+            lastSyncedAt: { type: 'string', format: 'date-time', nullable: true },
+            syncError:    { type: 'string', nullable: true, description: 'Error from the last failed sync, if any' },
+          },
+        },
+        DriveFileNode: {
+          type: 'object',
+          description: 'A file or folder in Google Drive, as returned by the file tree endpoints',
+          properties: {
+            fileId:       { type: 'string', description: 'Google Drive file/folder ID — use this as {fileId} in GET /gdrive/folders/{folderId}/files/{fileId} to read content' },
+            name:         { type: 'string', description: 'File or folder name' },
+            mimeType:     { type: 'string', description: 'MIME type. Google Workspace types: application/vnd.google-apps.document (Doc), application/vnd.google-apps.spreadsheet (Sheet), application/vnd.google-apps.presentation (Slides)' },
+            isFolder:     { type: 'boolean' },
+            size:         { type: 'integer', description: 'File size in bytes (0 for folders and Google Workspace files)' },
+            modifiedTime: { type: 'string', format: 'date-time', nullable: true },
+            createdTime:  { type: 'string', format: 'date-time', nullable: true },
+            webViewLink:  { type: 'string', nullable: true, description: 'URL to open this file in Google Drive in a browser' },
+            path:         { type: 'string', description: 'Full path from the whitelisted folder root, e.g. "/Reports/Q1/summary.gdoc"' },
+            depth:        { type: 'integer', description: 'Nesting depth (0 = direct child of the whitelisted folder)' },
+            editability:  { type: 'string', enum: ['direct', 'find-replace', 'read-only'], description: 'direct = overwrite content directly; find-replace = edit via search/replace (Google Docs/Sheets); read-only = cannot be edited' },
+            warning:      { type: 'string', nullable: true, description: 'Advisory note about editing limitations, if any' },
+            children:     { type: 'array', description: 'Child nodes (only present for folders when returned by the file tree endpoint)', items: { $ref: '#/components/schemas/DriveFileNode' } },
+          },
+        },
+        DriveFileContent: {
+          type: 'object',
+          description: 'The content of a Google Drive file, as returned by GET /gdrive/folders/{folderId}/files/{fileId}',
+          properties: {
+            fileId:           { type: 'string', description: 'Google Drive file ID' },
+            fileName:         { type: 'string', description: 'File name' },
+            mimeType:         { type: 'string', description: 'MIME type of the returned content (may differ from originalMimeType for Google Workspace files that are exported)' },
+            originalMimeType: { type: 'string', description: 'The file\'s native MIME type in Google Drive' },
+            content:          { type: 'string', description: 'File content as a string. Google Docs are exported as Markdown, Google Sheets as CSV, plain text/code files as-is.' },
+            editability:      { type: 'string', enum: ['direct', 'find-replace', 'read-only'], description: 'direct = can be overwritten; find-replace = can be edited via patch_file edits; read-only = cannot be modified' },
+            warning:          { type: 'string', nullable: true, description: 'Advisory note about editing limitations' },
+            size:             { type: 'integer', description: 'Size of the returned content in bytes' },
+          },
+        },
       },
     },
     paths: {
@@ -788,7 +835,26 @@ The recipient_id field should be set to the vault file path for obsidian actions
 - \`create_directory\` — Create a new directory:
   \`{"action":"create_directory","path":"Reports/2025","shareId":1}\`
 
-The recipient_id field should be set to the file/directory path for smb actions. All writes require sendEnabled permission for the smb service.`,
+The recipient_id field should be set to the file/directory path for smb actions. All writes require sendEnabled permission for the smb service.
+
+**Google Drive writes** — set source to "gdrive" and JSON-encode one of these action objects as the content field. The \`folderId\` must match one of the integer folder config IDs from GET /gdrive/folders:
+
+- \`create_file\` — Create a new file in the Drive folder:
+  \`{"action":"create_file","folderId":1,"fileName":"notes.md","content":"# Notes\\nContent here.","mimeType":"text/markdown"}\`
+
+- \`write_file\` — Overwrite an existing file's entire content (use \`fileId\` from GET /gdrive/folders/{id}/files):
+  \`{"action":"write_file","folderId":1,"fileId":"1BxiMVs0XRA5...","content":"# Updated\\nNew content."}\`
+
+- \`patch_file\` — Edit a Google Doc or Sheet with targeted find/replace operations. Each edit specifies a \`search\` string (must match exactly once) and a \`replace\` string:
+  \`{"action":"patch_file","folderId":1,"fileId":"1BxiMVs0XRA5...","edits":[{"search":"old heading","replace":"new heading"},{"search":"old value","replace":"new value"}]}\`
+
+- \`rename_file\` — Rename a file:
+  \`{"action":"rename_file","folderId":1,"fileId":"1BxiMVs0XRA5...","newName":"Better Name.md"}\`
+
+- \`delete_file\` — Delete a file:
+  \`{"action":"delete_file","folderId":1,"fileId":"1BxiMVs0XRA5..."}\`
+
+The recipient_id field should be set to the fileId for existing-file actions, or the fileName for create_file. All writes require sendEnabled permission for the gdrive service.`,
           requestBody: {
             required: true,
             content: {
@@ -2434,6 +2500,218 @@ The recipient_id field should be set to the file/directory path for smb actions.
         },
       },
 
+      // ── Topology ──────────────────────────────────────────────────────────────
+
+      '/topology': {
+        get: {
+          operationId: 'getTopology',
+          summary: 'Get the full resource hierarchy across all connected services',
+          description: `Returns a structured inventory of every resource Conduit can see, grouped by service. Use this as a discovery endpoint — it tells you what folders, files, channels, and accounts exist before you start reading content.
+
+**Google Drive**: Returns folder configs with a shallow (2-level) file tree. Each file node includes its \`fileId\`. To read the actual content of a file, call GET /gdrive/folders/{folderId}/files/{fileId} using the \`id\` (folder config ID) from the folder entry and the \`fileId\` from the file node.
+
+**Workflow for reading a Google Doc**:
+1. GET /topology (or GET /topology/gdrive) → find the folder config \`id\` and the file's \`fileId\`
+2. GET /gdrive/folders/{folderId}/files/{fileId} → returns the document text as Markdown
+
+**Other services**: Slack/Discord/Telegram return channel lists; Gmail returns label and thread counts; Calendar returns calendar summaries; Obsidian returns vault file trees; SMB returns top-level directory entries.
+
+Responses are cached for 5 minutes with ETag support. The cache is invalidated automatically when a sync completes.`,
+          parameters: [],
+          responses: {
+            '200': {
+              description: 'Full cross-service resource hierarchy',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      services: {
+                        type: 'array',
+                        description: 'One entry per connected service',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            id:        { type: 'string', enum: ['slack', 'discord', 'telegram', 'twitter', 'gmail', 'calendar', 'gdrive', 'obsidian', 'smb'] },
+                            connected: { type: 'boolean' },
+                          },
+                          description: 'Shape varies by service — see GET /topology/{service} for per-service details',
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      '/topology/{service}': {
+        get: {
+          operationId: 'getServiceTopology',
+          summary: 'Get the resource hierarchy for a single service',
+          description: `Returns the topology for one service. Faster than GET /topology when you only need one service.
+
+**gdrive** response shape:
+\`\`\`json
+{
+  "id": "gdrive",
+  "connected": true,
+  "accounts": [{
+    "email": "user@example.com",
+    "rootFolders": [{
+      "id": 1,
+      "name": "My Docs",
+      "driveType": "personal",
+      "syncStatus": "idle",
+      "lastSyncedAt": "2026-05-14T10:00:00Z",
+      "itemCount": 12,
+      "children": [
+        {
+          "id": "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms",
+          "name": "Q1 Report",
+          "type": "file",
+          "mimeType": "application/vnd.google-apps.document",
+          "webViewLink": "https://docs.google.com/document/d/...",
+          "modifiedAt": "2026-05-10T08:30:00Z"
+        }
+      ]
+    }]
+  }]
+}
+\`\`\`
+
+To read the document content, call:
+GET /gdrive/folders/1/files/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms`,
+          parameters: [
+            {
+              name: 'service',
+              in: 'path',
+              required: true,
+              schema: { type: 'string', enum: ['slack', 'discord', 'telegram', 'twitter', 'gmail', 'calendar', 'gdrive', 'obsidian', 'smb'] },
+              description: 'Service to get topology for',
+            },
+          ],
+          responses: {
+            '200': { description: 'Service topology — shape depends on the service', content: { 'application/json': { schema: { type: 'object' } } } },
+            '404': { description: 'Unknown service ID' },
+          },
+        },
+      },
+
+      // ── Google Drive ──────────────────────────────────────────────────────────
+
+      '/gdrive/folders': {
+        get: {
+          operationId: 'listGdriveFolders',
+          summary: 'List all whitelisted Google Drive folders',
+          description: 'Returns all Drive folder configs that have been whitelisted in Conduit. Each config has an `id` (integer) that you use to address per-folder operations. Use GET /gdrive/folders/{id}/files to browse the file tree, and GET /gdrive/folders/{id}/files/{fileId} to read a specific file.',
+          responses: {
+            '200': {
+              description: 'List of configured Drive folders',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      folders: { type: 'array', items: { $ref: '#/components/schemas/GoogleDriveFolderConfig' } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      '/gdrive/folders/{folderId}': {
+        get: {
+          operationId: 'getGdriveFolder',
+          summary: 'Get a single Google Drive folder config',
+          parameters: [
+            { name: 'folderId', in: 'path', required: true, schema: { type: 'integer' }, description: 'Folder config ID (from GET /gdrive/folders)' },
+          ],
+          responses: {
+            '200': { description: 'Folder config', content: { 'application/json': { schema: { $ref: '#/components/schemas/GoogleDriveFolderConfig' } } } },
+            '404': { description: 'Folder config not found' },
+          },
+        },
+      },
+
+      '/gdrive/folders/{folderId}/files': {
+        get: {
+          operationId: 'getGdriveFileTree',
+          summary: 'Get the full file tree for a Drive folder',
+          description: 'Returns a recursive tree of all files and subfolders within the whitelisted folder. Each file node includes a `fileId` (Google Drive file ID) and metadata. **To read the text content of any file, pass its `fileId` to GET /gdrive/folders/{folderId}/files/{fileId}.**\n\nThe tree is served from a local cache (refreshed every 5 minutes). Add `?refresh=true` to force an immediate re-sync from Google Drive.',
+          parameters: [
+            { name: 'folderId', in: 'path', required: true, schema: { type: 'integer' }, description: 'Folder config ID (integer, from GET /gdrive/folders)' },
+            {
+              name: 'refresh', in: 'query', required: false,
+              schema: { type: 'boolean', default: false },
+              description: 'Set to true to force a live sync from Google Drive before returning the tree',
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'File tree for the folder',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      folderId:   { type: 'integer', description: 'The folder config ID' },
+                      folderName: { type: 'string', description: 'Display name of the folder' },
+                      files:      { type: 'array', items: { $ref: '#/components/schemas/DriveFileNode' }, description: 'Top-level files and folders. Folders include a children array recursively.' },
+                    },
+                  },
+                },
+              },
+            },
+            '404': { description: 'Folder config not found' },
+            '503': { description: 'No active Google Drive connection for this folder\'s account' },
+          },
+        },
+      },
+
+      '/gdrive/folders/{folderId}/files/{fileId}': {
+        get: {
+          operationId: 'readGdriveFile',
+          summary: 'Read the content of a Google Drive file',
+          description: `**This is the primary endpoint for reading Google Docs, Sheets, and other Drive files.**
+
+Returns the full text content of the file. The conversion rules are:
+- **Google Docs** (application/vnd.google-apps.document) → exported as **Markdown**
+- **Google Sheets** (application/vnd.google-apps.spreadsheet) → exported as **CSV**
+- **Google Slides** (application/vnd.google-apps.presentation) → plain text (read-only)
+- **Plain text / Markdown / JSON / HTML** → returned as-is
+- **PDFs and binary files** → read-only; use GET /gdrive/folders/{folderId}/download/{fileId} for the raw bytes
+
+The response includes an \`editability\` field:
+- \`direct\` — the file content can be replaced wholesale via a \`write_file\` Drive outbox action
+- \`find-replace\` — the file can be edited via \`patch_file\` outbox actions (Google Docs/Sheets)
+- \`read-only\` — the file cannot be modified through Conduit
+
+**How to find the fileId**: Call GET /gdrive/folders/{folderId}/files (or GET /topology/gdrive) and use the \`fileId\` field from any file node in the tree.`,
+          parameters: [
+            { name: 'folderId', in: 'path', required: true, schema: { type: 'integer' }, description: 'Folder config ID (integer, from GET /gdrive/folders or GET /topology/gdrive)' },
+            { name: 'fileId', in: 'path', required: true, schema: { type: 'string' }, description: 'Google Drive file ID (string, from the fileId field in the file tree)' },
+          ],
+          responses: {
+            '200': {
+              description: 'File content with metadata',
+              content: {
+                'application/json': {
+                  schema: { $ref: '#/components/schemas/DriveFileContent' },
+                },
+              },
+            },
+            '403': { description: 'The file does not belong to the specified folder config' },
+            '404': { description: 'File not found in Google Drive or not yet synced' },
+            '503': { description: 'No active Google Drive connection for this folder\'s account' },
+          },
+        },
+      },
 
     },
   });

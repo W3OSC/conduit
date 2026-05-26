@@ -5,7 +5,7 @@
  * Folder management:
  *   GET    /api/gdrive/accounts                       — list connected Gmail accounts that have Drive access
  *   GET    /api/gdrive/available-folders?email=&driveType=  — folders available to add (from Google API)
- *   GET    /api/gdrive/folders                        — list all whitelisted folder configs
+ *   GET    /api/gdrive/folders                        — list all whitelisted folder configs (includes integer `id` for each)
  *   POST   /api/gdrive/folders                        — add a new whitelisted folder
  *   GET    /api/gdrive/folders/:id                    — get a single folder config
  *   PUT    /api/gdrive/folders/:id                    — update folder config (rename)
@@ -14,10 +14,33 @@
  *   POST   /api/gdrive/folders/:id/test               — verify Drive access
  *
  * File operations:
- *   GET    /api/gdrive/folders/:id/files              — get file tree for folder
- *   GET    /api/gdrive/folders/:id/files/*            — read file contents (with format conversion)
- *   GET    /api/gdrive/folders/:id/download/*         — download raw file as browser download
+ *   GET    /api/gdrive/folders/:id/files              — get recursive file tree for folder (each node has a `fileId`)
+ *   GET    /api/gdrive/folders/:id/files/:fileId      — READ FILE CONTENT — returns text/markdown/csv for Google Docs/Sheets/text files
+ *   GET    /api/gdrive/folders/:id/download/:fileId   — download raw file as browser blob (binary)
  *   POST   /api/gdrive/folders/:id/upload             — upload a file (multipart/form-data)
+ *
+ * ── How to read a Google Doc ──────────────────────────────────────────────────
+ *
+ * Step 1: Get the folder config ID (integer) from GET /api/gdrive/folders
+ *         e.g. { "id": 1, "folderName": "My Docs", ... }
+ *
+ * Step 2: Get the file tree to find the Drive fileId (string):
+ *         GET /api/gdrive/folders/1/files
+ *         e.g. { files: [{ fileId: "1BxiMVs0XRA5...", name: "Q1 Report", mimeType: "application/vnd.google-apps.document" }] }
+ *
+ * Step 3: Read the document content:
+ *         GET /api/gdrive/folders/1/files/1BxiMVs0XRA5...
+ *         Returns: { content: "# Q1 Report\n...", mimeType: "text/markdown", editability: "find-replace" }
+ *
+ * Alternatively, GET /api/topology/gdrive returns the shallow folder tree (2 levels) in one call,
+ * which can be used to discover fileIds without a separate /files request.
+ *
+ * ── Conversion rules ─────────────────────────────────────────────────────────
+ *   Google Docs  (application/vnd.google-apps.document)      → Markdown text
+ *   Google Sheets (application/vnd.google-apps.spreadsheet)  → CSV text
+ *   Google Slides (application/vnd.google-apps.presentation) → plain text (read-only)
+ *   Plain text / Markdown / JSON / HTML                       → returned as-is
+ *   PDF / images / binary                                     → read-only (use /download for raw bytes)
  *
  * Writes go through POST /api/outbox with source: 'gdrive'.
  */

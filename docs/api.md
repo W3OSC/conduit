@@ -1400,11 +1400,67 @@ Retrieves all child blocks of a given block. For pages, pass the page ID as `blo
 
 ### Obsidian Vault
 
-The Obsidian vault integration syncs a git-hosted vault to the server and exposes file read operations. Write operations (`create_file`, `write_file`, `rename_file`, `delete_file`) go through the outbox.
+The Obsidian vault integration syncs a git-hosted vault to the server and exposes full file read and write operations. **File writes are fully supported** — `create_file`, `patch_file`, `write_file`, `rename_file`, and `delete_file` all go through `POST /outbox` for human approval.
 
 File reads bypass the outbox and execute immediately. The vault auto-syncs every 5 minutes via `git pull`.
 
 **Setup sequence**: save config → test connection → generate SSH key (if using SSH) → clone → read files.
+
+#### Writing and editing vault files
+
+All Obsidian file write operations use `POST /outbox` with `source: "obsidian"`. The `content` field must be a **JSON string** encoding the action payload. Set `recipient_id` to the vault file path.
+
+**`patch_file` — Targeted edit of an existing file (preferred for editing)**
+
+Finds an exact anchor string and applies an operation around it. The `search` value must match exactly once in the file. Three modes via `position`:
+- `replace` (default) — replaces the matched text with `replace`
+- `after` — inserts `content` immediately after the anchor (anchor unchanged)
+- `before` — inserts `content` immediately before the anchor (anchor unchanged)
+
+Multiple edits are applied in sequence:
+
+```json
+POST /api/outbox
+{
+  "source":         "obsidian",
+  "recipient_id":   "Daily Notes/2026-04-13.md",
+  "recipient_name": "Update daily note",
+  "content": "{\"action\":\"patch_file\",\"path\":\"Daily Notes/2026-04-13.md\",\"edits\":[{\"search\":\"## Tasks\",\"position\":\"after\",\"content\":\"\\n- [ ] Review PR #42\"},{\"search\":\"status: draft\",\"replace\":\"status: published\"}]}"
+}
+```
+
+**`create_file` — Create a new file (fails if already exists)**
+
+```json
+{
+  "source":         "obsidian",
+  "recipient_id":   "Notes/new-note.md",
+  "recipient_name": "Create new-note.md",
+  "content": "{\"action\":\"create_file\",\"path\":\"Notes/new-note.md\",\"content\":\"# New Note\\n\\nContent here.\"}"
+}
+```
+
+**`write_file` — Overwrite an entire file (or create if absent)**
+
+Only use when replacing all content is intentional. For targeted edits to existing files, use `patch_file` instead.
+
+```json
+{ "action": "write_file", "path": "Notes/existing.md", "content": "# Fully replaced\n\nAll new content." }
+```
+
+**`rename_file` — Move or rename a file**
+
+```json
+{ "action": "rename_file", "oldPath": "Notes/old.md", "newPath": "Notes/new.md" }
+```
+
+**`delete_file` — Delete a file**
+
+```json
+{ "action": "delete_file", "path": "Notes/to-delete.md" }
+```
+
+All Obsidian write operations require `sendEnabled` permission for the `obsidian` service.
 
 ---
 
@@ -1841,11 +1897,67 @@ Retrieves all child blocks of a given block. For pages, pass the page ID as `blo
 
 ### Obsidian Vault
 
-The Obsidian vault integration syncs a git-hosted vault to the server and exposes file read operations. Write operations (`create_file`, `write_file`, `rename_file`, `delete_file`) go through the outbox.
+The Obsidian vault integration syncs a git-hosted vault to the server and exposes full file read and write operations. **File writes are fully supported** — `create_file`, `patch_file`, `write_file`, `rename_file`, and `delete_file` all go through `POST /outbox` for human approval.
 
 File reads bypass the outbox and execute immediately. The vault auto-syncs every 5 minutes via `git pull`.
 
 **Setup sequence**: save config → test connection → generate SSH key (if using SSH) → clone → read files.
+
+#### Writing and editing vault files
+
+All Obsidian file write operations use `POST /outbox` with `source: "obsidian"`. The `content` field must be a **JSON string** encoding the action payload. Set `recipient_id` to the vault file path.
+
+**`patch_file` — Targeted edit of an existing file (preferred for editing)**
+
+Finds an exact anchor string and applies an operation around it. The `search` value must match exactly once in the file. Three modes via `position`:
+- `replace` (default) — replaces the matched text with `replace`
+- `after` — inserts `content` immediately after the anchor (anchor unchanged)
+- `before` — inserts `content` immediately before the anchor (anchor unchanged)
+
+Multiple edits are applied in sequence:
+
+```json
+POST /api/outbox
+{
+  "source":         "obsidian",
+  "recipient_id":   "Daily Notes/2026-04-13.md",
+  "recipient_name": "Update daily note",
+  "content": "{\"action\":\"patch_file\",\"path\":\"Daily Notes/2026-04-13.md\",\"edits\":[{\"search\":\"## Tasks\",\"position\":\"after\",\"content\":\"\\n- [ ] Review PR #42\"},{\"search\":\"status: draft\",\"replace\":\"status: published\"}]}"
+}
+```
+
+**`create_file` — Create a new file (fails if already exists)**
+
+```json
+{
+  "source":         "obsidian",
+  "recipient_id":   "Notes/new-note.md",
+  "recipient_name": "Create new-note.md",
+  "content": "{\"action\":\"create_file\",\"path\":\"Notes/new-note.md\",\"content\":\"# New Note\\n\\nContent here.\"}"
+}
+```
+
+**`write_file` — Overwrite an entire file (or create if absent)**
+
+Only use when replacing all content is intentional. For targeted edits to existing files, use `patch_file` instead.
+
+```json
+{ "action": "write_file", "path": "Notes/existing.md", "content": "# Fully replaced\n\nAll new content." }
+```
+
+**`rename_file` — Move or rename a file**
+
+```json
+{ "action": "rename_file", "oldPath": "Notes/old.md", "newPath": "Notes/new.md" }
+```
+
+**`delete_file` — Delete a file**
+
+```json
+{ "action": "delete_file", "path": "Notes/to-delete.md" }
+```
+
+All Obsidian write operations require `sendEnabled` permission for the `obsidian` service.
 
 ---
 
@@ -2109,6 +2221,23 @@ Returns `404` if the file does not exist.
 1. GET  /obsidian/sync/status                           — confirm vault is connected
 2. GET  /obsidian/files                                 — find the file path in the tree
 3. GET  /obsidian/files/Daily%20Notes%2F2026-04-13.md  — read the note
+```
+
+### Edit an Obsidian file (append to a section)
+
+```
+1. GET  /obsidian/files                                 — find the file path
+2. GET  /obsidian/files/Notes%2Fmy-note.md             — read current content
+3. POST /outbox  {                                      — queue a targeted edit
+     source: "obsidian",
+     recipient_id: "Notes/my-note.md",
+     content: JSON.stringify({
+       action: "patch_file",
+       path: "Notes/my-note.md",
+       edits: [{ search: "## Section Heading", position: "after", content: "\n- New item" }]
+     })
+   }
+4. Tell user the edit is pending approval in the outbox
 ```
 
 ### Look up a Twitter user's recent activity
