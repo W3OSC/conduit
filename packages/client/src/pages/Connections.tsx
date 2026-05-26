@@ -2594,18 +2594,11 @@ function ApiKeyRow({ apiKey }: { apiKey: ApiKeyItem }) {
 function InstallTab() {
   const baseUrl = typeof window !== 'undefined' ? window.location.origin : 'http://your-server:3101';
 
-  const snippet = `{
-  "name": "Conduit",
-  "description": "Personal messaging hub — read messages, manage email, calendar, and send requests across Slack, Discord, Telegram, Gmail, Twitter/X.",
-  "api": {
-    "type": "openapi",
-    "url": "${baseUrl}/api/openapi.json"
-  },
-  "auth": {
-    "type": "header",
-    "header": "X-API-Key"
-  }
-}`;
+  const { data: skillMd, isLoading: skillLoading } = useQuery({
+    queryKey: ['skill-md'],
+    queryFn: api.skill,
+    staleTime: 60_000,
+  });
 
   return (
     <div className="space-y-6">
@@ -2613,7 +2606,8 @@ function InstallTab() {
         <h3 className="text-sm font-semibold">Conduit as a Skill</h3>
         <p className="text-xs text-muted-foreground mt-0.5 max-w-prose">
           Conduit exposes a full REST API that AI agents can use to read messages, manage email and calendar,
-          send outbox requests, look up contacts, and explore Twitter. Generate an API key in the Permissions tab, then use the config below.
+          edit files, send outbox requests, look up contacts, and more. Generate an API key in the Permissions tab,
+          then install the skill definition into your AI agent.
         </p>
       </div>
 
@@ -2634,8 +2628,29 @@ function InstallTab() {
       </div>
 
       <div className="space-y-2">
-        <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground/60">Skill Config</p>
-        <CodeBlock className="text-xs bg-secondary/40 px-4 py-3 text-foreground/75 leading-relaxed">{snippet}</CodeBlock>
+        <div className="flex items-center justify-between">
+          <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground/60">Skill Definition (SKILL.md)</p>
+          {skillMd && (
+            <CopyButton
+              text={skillMd}
+              title="Copy SKILL.md"
+              className="h-6 px-2 text-[10px]"
+            />
+          )}
+        </div>
+        {skillLoading ? (
+          <div className="rounded-xl border border-border bg-secondary/40 px-4 py-8 text-center text-xs text-muted-foreground animate-pulse">
+            Loading skill definition…
+          </div>
+        ) : skillMd ? (
+          <pre className="text-xs bg-secondary/40 border border-border rounded-xl px-4 py-3 text-foreground/75 leading-relaxed overflow-auto max-h-96 whitespace-pre-wrap">
+            {skillMd}
+          </pre>
+        ) : (
+          <div className="rounded-xl border border-border bg-secondary/40 px-4 py-4 text-xs text-muted-foreground">
+            Could not load skill definition.
+          </div>
+        )}
       </div>
 
       <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 flex items-start gap-3">

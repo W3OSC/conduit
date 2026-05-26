@@ -127,6 +127,9 @@ export const api = {
   // Health
   health: () => request<{ status: string }>('/health'),
 
+  // Skill definition (raw SKILL.md markdown)
+  skill: () => fetch('/api/skill').then((r) => r.text()),
+
   // Status
   status: () => request<StatusResponse>('/status'),
 

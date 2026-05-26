@@ -27,6 +27,7 @@ import aiRouter from './ai.js';
 import updateRouter from './update.js';
 import contextRouter from './context.js';
 import topologyRouter from './topology.js';
+import skillRouter from './skill.js';
 
 const router = Router();
 
@@ -165,6 +166,7 @@ router.use('/ai', aiRouter);
 router.use('/update', updateRouter);
 router.use('/', contextRouter);
 router.use('/', topologyRouter);
+router.use('/', skillRouter);
 router.use('/', openapiRouter);
 router.use('/', serviceDataRouter);
 
