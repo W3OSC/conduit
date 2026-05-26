@@ -3,6 +3,7 @@ import {
   useConnectionStore, useOutboxStore, useSyncStore, useMessageStreamStore,
   useNotificationStore, useAiChatStore, useUpdateStore,
 } from '../store';
+import { api } from '../lib/api';
 import type { ConnectionStatus, Message } from '../lib/api';
 
 const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
