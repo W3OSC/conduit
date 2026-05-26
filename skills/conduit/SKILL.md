@@ -630,6 +630,8 @@ Always call `GET /api/activity` first before taking any action. It gives you the
 | DELETE | `/api/outbox/{id}` | Delete an item |
 | POST | `/api/outbox/batch` | Queue the same message to multiple recipients on one platform |
 | POST | `/api/outbox/batch/multi` | Queue multiple different actions across platforms in one request |
+| GET | `/api/outbox/batch/{batchId}` | Get all items in a batch |
+| PATCH | `/api/outbox/batch/{batchId}` | Approve or reject all pending items in a batch — `{ "action": "approve" \| "reject" }` |
 
 ---
 
@@ -733,18 +735,32 @@ The shorter string is unique, stable, and will not be truncated.
 
 2. **Use `patch_file` for targeted edits, not `write_file`.** `write_file` replaces the entire file. `patch_file` finds an anchor string and inserts/replaces/adds around it. The `search` value must match exactly once in the file. **Keep `search` strings short and unique — never copy an entire long table row.** The #1 cause of `patch_file` failures is a `search` string that is too long and gets truncated or mismatches. Use just enough text to uniquely identify the location (a date, a heading, a short phrase).
 
-3. **Always read before writing.** Call the relevant GET endpoint first to get the file path, current content, IDs, and confirm the service is connected.
+3. **Batch related outbox requests together using `POST /api/outbox/batch/multi`.** When a task requires multiple write actions on the same service (e.g. editing several Obsidian files, archiving multiple emails, creating several calendar events), send them all in a single `POST /api/outbox/batch/multi` call instead of individual `POST /api/outbox` calls. This groups them into a single card in the outbox UI so the user can review and approve/reject them all at once. Use individual `POST /api/outbox` calls only for truly unrelated one-off actions.
 
-4. **Check permissions with `GET /api/connections` if an action returns 403.** The `sendEnabled` permission must be configured for the relevant service in Conduit Settings → Permissions.
+   ```json
+   POST /api/outbox/batch/multi
+   {
+     "operations": [
+       { "source": "obsidian", "recipient_id": "Notes/a.md", "recipient_name": "Edit a.md", "content": "{...}" },
+       { "source": "obsidian", "recipient_id": "Notes/b.md", "recipient_name": "Edit b.md", "content": "{...}" }
+     ]
+   }
+   ```
 
-5. **The outbox is not a limitation — it's the workflow.** Tell the user what you queued and ask them to approve it in the Conduit UI. Don't apologize for needing approval; that's by design.
+   The server also automatically groups rapid sequential `POST /api/outbox` calls for the same service into the same batch, but using `batch/multi` explicitly is preferred as it is atomic.
 
-6. **`content` must be a valid JSON string for structured platforms.** For `obsidian`, `smb`, `gdrive`, `gmail`, `calendar`, and `notion` outbox actions, the `content` field is a JSON-encoded string (i.e., the JSON object serialised as a string). For `slack`, `discord`, `telegram`, and `twitter`, `content` is plain text.
+4. **Always read before writing.** Call the relevant GET endpoint first to get the file path, current content, IDs, and confirm the service is connected.
 
-7. **URL-encode file paths.** When calling `GET /api/obsidian/files/{path}`, spaces become `%20` and slashes within the path become `%2F`. Example: `Daily Notes/2026-05-26.md` → `Daily%20Notes%2F2026-05-26.md`.
+5. **Check permissions with `GET /api/connections` if an action returns 403.** The `sendEnabled` permission must be configured for the relevant service in Conduit Settings → Permissions.
 
-8. **For Notion writes, prefer the direct endpoints.** `PATCH /api/notion/pages/{pageId}` and `POST /api/notion/pages` execute immediately without going through the outbox. Use them for property updates and page creation. The outbox is only needed for `append_blocks` and `archive_page` style operations.
+6. **The outbox is not a limitation — it's the workflow.** Tell the user what you queued and ask them to approve it in the Conduit UI. Don't apologize for needing approval; that's by design.
 
-9. **For Google Drive, the `folderId` in URLs is the integer config ID**, not the Google Drive folder ID. Get it from `GET /api/gdrive/folders` or `GET /api/topology/gdrive`.
+7. **`content` must be a valid JSON string for structured platforms.** For `obsidian`, `smb`, `gdrive`, `gmail`, `calendar`, and `notion` outbox actions, the `content` field is a JSON-encoded string (i.e., the JSON object serialised as a string). For `slack`, `discord`, `telegram`, and `twitter`, `content` is plain text.
 
-10. **Use `GET /api/topology` as your discovery tool.** It shows everything Conduit can see — vaults, Drive folders, channels, file trees — in one call.
+8. **URL-encode file paths.** When calling `GET /api/obsidian/files/{path}`, spaces become `%20` and slashes within the path become `%2F`. Example: `Daily Notes/2026-05-26.md` → `Daily%20Notes%2F2026-05-26.md`.
+
+9. **For Notion writes, prefer the direct endpoints.** `PATCH /api/notion/pages/{pageId}` and `POST /api/notion/pages` execute immediately without going through the outbox. Use them for property updates and page creation. The outbox is only needed for `append_blocks` and `archive_page` style operations.
+
+10. **For Google Drive, the `folderId` in URLs is the integer config ID**, not the Google Drive folder ID. Get it from `GET /api/gdrive/folders` or `GET /api/topology/gdrive`.
+
+11. **Use `GET /api/topology` as your discovery tool.** It shows everything Conduit can see — vaults, Drive folders, channels, file trees — in one call.

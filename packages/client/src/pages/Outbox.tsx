@@ -3,7 +3,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Check, X, Pencil, Trash2, SendHorizonal, Clock, CheckCircle2, XCircle,
-  Inbox, ChevronDown, ChevronUp, Save, RotateCcw, Terminal, Copy,
+  Inbox, ChevronDown, ChevronUp, Save, RotateCcw, Terminal, Copy, Layers,
+  AlertTriangle,
 } from 'lucide-react';
 import { api, type OutboxItem } from '@/lib/api';
 import { ServiceBadge } from '@/components/shared/ServiceBadge';
@@ -382,11 +383,17 @@ function RawRequestPanel({ toolCallId }: { toolCallId: string }) {
   );
 }
 
-// ── Outbox card ───────────────────────────────────────────────────────────────
+// ── Outbox card (single item) ─────────────────────────────────────────────────
 
-function OutboxCard({ item }: { item: OutboxItem }) {
+interface OutboxCardProps {
+  item: OutboxItem;
+  /** When true, suppress the top-level batch chip and indent slightly for nesting */
+  nested?: boolean;
+}
+
+function OutboxCard({ item, nested = false }: OutboxCardProps) {
   const [editing, setEditing] = useState(false);
-  const [expanded, setExpanded] = useState(item.status === 'pending');
+  const [expanded, setExpanded] = useState(!nested && item.status === 'pending');
   const [editDraft, setEditDraft] = useState<Record<string, string>>({});
   const qc = useQueryClient();
 
@@ -459,15 +466,12 @@ function OutboxCard({ item }: { item: OutboxItem }) {
   }
 
   return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -4 }}
+    <div
       className={cn(
         'card-warm overflow-hidden transition-all duration-200',
         isPending && 'border-primary/20 amber-surface',
         editing && 'border-primary/30 ring-1 ring-primary/10',
+        nested && 'rounded-lg shadow-none border-border/60',
       )}
     >
       {/* ── Card header ─────────────────────────────────────────────────── */}
@@ -477,19 +481,23 @@ function OutboxCard({ item }: { item: OutboxItem }) {
         role="button"
         aria-expanded={expanded}
       >
-        <div className="mt-0.5 flex-shrink-0">
-          <ServiceBadge service={item.source} size="sm" />
-        </div>
+        {!nested && (
+          <div className="mt-0.5 flex-shrink-0">
+            <ServiceBadge service={item.source} size="sm" />
+          </div>
+        )}
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm font-semibold truncate">
               → {item.recipientName || item.recipientId}
             </span>
-            {item.batchId && <span className="chip chip-violet text-[10px]">batch</span>}
-            <span className={cn('chip text-[10px]', item.requester === 'api' ? 'chip-violet' : 'chip-sky')}>
-              {item.requester}
-            </span>
+            {!nested && item.batchId && <span className="chip chip-violet text-[10px]">batch</span>}
+            {!nested && (
+              <span className={cn('chip text-[10px]', item.requester === 'api' ? 'chip-violet' : 'chip-sky')}>
+                {item.requester}
+              </span>
+            )}
             {item.editedContent && item.editedContent !== item.content && (
               <span className="chip chip-amber text-[10px]">edited</span>
             )}
@@ -609,8 +617,199 @@ function OutboxCard({ item }: { item: OutboxItem }) {
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  );
+}
+
+// ── Batch card (grouped items) ────────────────────────────────────────────────
+
+function deriveBatchStatus(items: OutboxItem[]): string {
+  if (items.every((i) => i.status === 'sent')) return 'sent';
+  if (items.every((i) => i.status === 'rejected')) return 'rejected';
+  if (items.some((i) => i.status === 'failed')) return 'failed';
+  if (items.some((i) => i.status === 'pending')) return 'pending';
+  if (items.some((i) => i.status === 'approved')) return 'approved';
+  return items[0]?.status ?? 'pending';
+}
+
+function BatchCard({ batchId, items }: { batchId: string; items: OutboxItem[] }) {
+  const [expanded, setExpanded] = useState(items.some((i) => i.status === 'pending'));
+  const qc = useQueryClient();
+
+  const source = items[0]?.source ?? '';
+  const batchStatus = deriveBatchStatus(items);
+  const pendingItems = items.filter((i) => i.status === 'pending');
+  const isPending = pendingItems.length > 0;
+  const hasError = pendingItems.some((i) => i.errorMessage);
+
+  const approveAll = useMutation({
+    mutationFn: () => api.batchOutboxAction(batchId, 'approve'),
+    onSuccess: () => {
+      toast({ title: `Batch approved & sent (${pendingItems.length} items)`, variant: 'success' });
+      qc.invalidateQueries({ queryKey: ['outbox'] });
+    },
+    onError: (e: Error) => toast({ title: 'Batch approve failed', description: e.message, variant: 'destructive' }),
+  });
+
+  const rejectAll = useMutation({
+    mutationFn: () => api.batchOutboxAction(batchId, 'reject'),
+    onSuccess: () => {
+      toast({ title: `Batch rejected (${pendingItems.length} items)` });
+      qc.invalidateQueries({ queryKey: ['outbox'] });
+    },
+    onError: (e: Error) => toast({ title: 'Batch reject failed', description: e.message, variant: 'destructive' }),
+  });
+
+  // Compute a summary label: e.g. "3 actions · #general, alice, #dev"
+  const recipientSummary = items
+    .map((i) => i.recipientName || i.recipientId)
+    .filter((v, idx, arr) => arr.indexOf(v) === idx)  // unique
+    .slice(0, 3)
+    .join(', ');
+  const extraCount = items.length > 3 ? ` +${items.length - 3} more` : '';
+
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -4 }}
+      className={cn(
+        'card-warm overflow-hidden transition-all duration-200',
+        isPending && 'border-primary/20 amber-surface',
+        hasError && 'border-red-500/30',
+      )}
+    >
+      {/* ── Batch header ─────────────────────────────────────────────────── */}
+      <div
+        className="flex items-start gap-3 p-4 cursor-pointer select-none"
+        onClick={() => setExpanded((v) => !v)}
+        role="button"
+        aria-expanded={expanded}
+      >
+        <div className="mt-0.5 flex-shrink-0">
+          <ServiceBadge service={source} size="sm" />
+        </div>
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="chip chip-violet text-[10px] gap-1">
+              <Layers className="w-2.5 h-2.5" />
+              {items.length} actions
+            </span>
+            <span className="text-sm font-semibold truncate">
+              {recipientSummary}{extraCount}
+            </span>
+            {hasError && (
+              <span className="chip chip-red text-[10px] gap-1">
+                <AlertTriangle className="w-2.5 h-2.5" /> validation error
+              </span>
+            )}
+          </div>
+          <p className="text-[11px] text-muted-foreground mt-0.5">
+            {timeAgo(items[0]?.createdAt ?? '')}
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <StatusChip status={batchStatus} />
+          {expanded
+            ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" />
+            : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
+        </div>
+      </div>
+
+      {/* ── Expanded body ────────────────────────────────────────────────── */}
+      <AnimatePresence initial={false}>
+        {expanded && (
+          <motion.div
+            key="batch-body"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+            className="overflow-hidden"
+          >
+            <div className="border-t border-border/50">
+              {/* ── Batch-level action bar ─────────────────────────────────── */}
+              {isPending && (
+                <div className="px-4 pt-3 pb-3 flex items-center gap-2">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); approveAll.mutate(); }}
+                    disabled={approveAll.isPending || hasError}
+                    title={hasError ? 'Fix or reject the failed item before approving the batch' : undefined}
+                    className="btn-primary text-xs flex-1"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    {approveAll.isPending ? 'Sending…' : `Approve All (${pendingItems.length})`}
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); rejectAll.mutate(); }}
+                    disabled={rejectAll.isPending}
+                    className="btn-danger text-xs"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    {rejectAll.isPending ? 'Rejecting…' : 'Reject All'}
+                  </button>
+                </div>
+              )}
+
+              {hasError && (
+                <div className="px-4 pb-2">
+                  <p className="text-[11px] text-red-400 flex items-center gap-1.5">
+                    <AlertTriangle className="w-3 h-3 shrink-0" />
+                    One or more items have validation errors. Reject them individually or fix the issue before approving the batch.
+                  </p>
+                </div>
+              )}
+
+              {/* ── Individual items ──────────────────────────────────────── */}
+              <div className="px-3 pb-3 space-y-2">
+                {items.map((item) => (
+                  <OutboxCard key={item.id} item={item} nested />
+                ))}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
+}
+
+// ── Group items by batchId ────────────────────────────────────────────────────
+
+interface GroupedEntry {
+  key: string;
+  batchId: string | null;
+  items: OutboxItem[];
+}
+
+/**
+ * Group the flat list of outbox items so that items sharing a batchId appear
+ * together, while singleton items (no batchId) are each their own group.
+ * Order is preserved by the first item in each group.
+ */
+function groupByBatch(items: OutboxItem[]): GroupedEntry[] {
+  const groups: GroupedEntry[] = [];
+  const batchMap = new Map<string, GroupedEntry>();
+
+  for (const item of items) {
+    if (item.batchId) {
+      const existing = batchMap.get(item.batchId);
+      if (existing) {
+        existing.items.push(item);
+      } else {
+        const entry: GroupedEntry = { key: `batch-${item.batchId}`, batchId: item.batchId, items: [item] };
+        batchMap.set(item.batchId, entry);
+        groups.push(entry);
+      }
+    } else {
+      groups.push({ key: `item-${item.id}`, batchId: null, items: [item] });
+    }
+  }
+
+  return groups;
 }
 
 // ── Page ──────────────────────────────────────────────────────────────────────
@@ -630,6 +829,7 @@ export default function Outbox() {
 
   const items = data?.items || [];
   const pendingCount = data?.pendingCount || 0;
+  const groups = groupByBatch(items);
 
   return (
     <div className="p-4 space-y-4 animate-fade-in overflow-y-auto h-full">
@@ -662,7 +862,7 @@ export default function Outbox() {
       {/* Items */}
       {isLoading ? (
         <div className="space-y-3"><TableSkeleton rows={4} /></div>
-      ) : items.length === 0 ? (
+      ) : groups.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 gap-4 text-muted-foreground">
           <div className="w-16 h-16 rounded-2xl bg-secondary/60 border border-border flex items-center justify-center">
             <Inbox className="w-8 h-8 opacity-20" />
@@ -675,7 +875,13 @@ export default function Outbox() {
       ) : (
         <div className="space-y-2">
           <AnimatePresence>
-            {items.map((item) => <OutboxCard key={item.id} item={item} />)}
+            {groups.map((group) =>
+              group.batchId && group.items.length > 1 ? (
+                <BatchCard key={group.key} batchId={group.batchId} items={group.items} />
+              ) : (
+                <OutboxCard key={group.key} item={group.items[0]!} />
+              )
+            )}
           </AnimatePresence>
         </div>
       )}

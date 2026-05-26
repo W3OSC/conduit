@@ -195,6 +195,11 @@ export const api = {
     }),
   deleteOutboxItem: (id: number) =>
     request<{ success: boolean }>(`/outbox/${id}`, { method: 'DELETE' }),
+  batchOutboxAction: (batchId: string, action: 'approve' | 'reject') =>
+    request<{ success: boolean; results?: Array<{ id: number; status: string; error?: string }>; count?: number }>(`/outbox/batch/${batchId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ action }),
+    }),
 
   // Permissions
   permissions: () => request<Permission[]>('/permissions'),
