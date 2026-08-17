@@ -12,11 +12,11 @@ import { getDb } from '../db/client.js';
 import { twitterDms, outbox, permissions, settings, accounts, contacts, apiKeyPermissions } from '../db/schema.js';
 import type { TwitterFineGrained } from '../db/schema.js';
 import { desc, eq, sql, and } from 'drizzle-orm';
-import { optionalAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
+import { optionalAuth, uiOnlyAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
 import { getConnectionManager } from '../connections/manager.js';
 import { broadcast } from '../websocket/hub.js';
 import type { TwitterAction, TwitterCreds } from '../sync/twitter.js';
-import { parseFgConfig } from './permissions-utils.js';
+import { parseFgConfig, requireRead, resolveTwitterReadPerms, isSendEnabled, isApprovalRequired } from './permissions-utils.js';
 
 const router = Router();
 const CREDS_KEY = 'credentials.twitter';
@@ -30,7 +30,7 @@ function getTwitterCreds(): TwitterCreds | null {
 
 // ── Status ────────────────────────────────────────────────────────────────────
 
-router.get('/status', optionalAuth, (req, res) => {
+router.get('/status', optionalAuth, requireRead('twitter'), (req, res) => {
   const manager = getConnectionManager();
   const status = manager.getStatus('twitter');
   const db = getDb();
@@ -48,7 +48,7 @@ router.get('/status', optionalAuth, (req, res) => {
 
 // ── Auth routes ───────────────────────────────────────────────────────────────
 
-router.get('/auth/status', optionalAuth, (req, res) => {
+router.get('/auth/status', optionalAuth, requireRead('twitter'), (req, res) => {
   const creds = getTwitterCreds();
   const manager = getConnectionManager();
   const status = manager.getStatus('twitter');
@@ -60,7 +60,7 @@ router.get('/auth/status', optionalAuth, (req, res) => {
   });
 });
 
-router.post('/auth/connect', optionalAuth, (req, res) => {
+router.post('/auth/connect', uiOnlyAuth, (req, res) => {
   const { cookieString } = req.body as Partial<TwitterCreds>;
   if (!cookieString?.trim()) {
     return res.status(400).json({ error: 'cookieString is required — paste the Cookie header from your browser DevTools' });
@@ -75,13 +75,13 @@ router.post('/auth/connect', optionalAuth, (req, res) => {
   res.json({ success: true, status: 'connecting' });
 });
 
-router.delete('/auth/disconnect', optionalAuth, (req, res) => {
+router.delete('/auth/disconnect', uiOnlyAuth, (req, res) => {
   const manager = getConnectionManager();
   manager.getTwitter()?.disconnect();
   res.json({ success: true });
 });
 
-router.post('/auth/refresh', optionalAuth, async (req, res) => {
+router.post('/auth/refresh', uiOnlyAuth, async (req, res) => {
   const creds = getTwitterCreds();
   if (!creds?.cookieString) return res.status(400).json({ error: 'No credentials configured' });
   const manager = getConnectionManager();
@@ -91,7 +91,10 @@ router.post('/auth/refresh', optionalAuth, async (req, res) => {
 
 // ── Feed / Explore ────────────────────────────────────────────────────────────
 
-router.get('/feed', optionalAuth, async (req, res) => {
+router.get('/feed', optionalAuth, requireRead('twitter'), async (req, res) => {
+  if (!resolveTwitterReadPerms((req as AuthedRequest).apiKey?.id).readTimeline) {
+    return res.status(403).json({ error: 'Timeline access is not permitted for this API key' });
+  }
   const { count = '20', reset = 'false' } = req.query as Record<string, string>;
   const manager = getConnectionManager();
   const twitter = manager.getTwitter();
@@ -105,7 +108,7 @@ router.get('/feed', optionalAuth, async (req, res) => {
   }
 });
 
-router.get('/search', optionalAuth, async (req, res) => {
+router.get('/search', optionalAuth, requireRead('twitter'), async (req, res) => {
   const { q = '', count = '20', mode = 'Latest' } = req.query as Record<string, string>;
   if (!q) return res.status(400).json({ error: 'q is required' });
 
@@ -125,7 +128,7 @@ router.get('/search', optionalAuth, async (req, res) => {
   }
 });
 
-router.get('/trends', optionalAuth, async (req, res) => {
+router.get('/trends', optionalAuth, requireRead('twitter'), async (req, res) => {
   const manager = getConnectionManager();
   const twitter = manager.getTwitter();
   if (!twitter) return res.status(503).json({ error: 'Twitter not connected' });
@@ -138,7 +141,7 @@ router.get('/trends', optionalAuth, async (req, res) => {
   }
 });
 
-router.get('/tweet/:id', optionalAuth, async (req, res) => {
+router.get('/tweet/:id', optionalAuth, requireRead('twitter'), async (req, res) => {
   const manager = getConnectionManager();
   const twitter = manager.getTwitter();
   if (!twitter) return res.status(503).json({ error: 'Twitter not connected' });
@@ -152,7 +155,7 @@ router.get('/tweet/:id', optionalAuth, async (req, res) => {
   }
 });
 
-router.get('/tweet/:id/thread', optionalAuth, async (req, res) => {
+router.get('/tweet/:id/thread', optionalAuth, requireRead('twitter'), async (req, res) => {
   const manager = getConnectionManager();
   const twitter = manager.getTwitter();
   if (!twitter) return res.status(503).json({ error: 'Twitter not connected' });
@@ -165,7 +168,7 @@ router.get('/tweet/:id/thread', optionalAuth, async (req, res) => {
   }
 });
 
-router.get('/user/:handle', optionalAuth, async (req, res) => {
+router.get('/user/:handle', optionalAuth, requireRead('twitter'), async (req, res) => {
   const manager = getConnectionManager();
   const twitter = manager.getTwitter();
   if (!twitter) return res.status(503).json({ error: 'Twitter not connected' });
@@ -179,7 +182,7 @@ router.get('/user/:handle', optionalAuth, async (req, res) => {
   }
 });
 
-router.get('/user/:handle/tweets', optionalAuth, async (req, res) => {
+router.get('/user/:handle/tweets', optionalAuth, requireRead('twitter'), async (req, res) => {
   const { count = '20' } = req.query as Record<string, string>;
   const manager = getConnectionManager();
   const twitter = manager.getTwitter();
@@ -193,7 +196,7 @@ router.get('/user/:handle/tweets', optionalAuth, async (req, res) => {
   }
 });
 
-router.get('/user/:handle/followers', optionalAuth, async (req, res) => {
+router.get('/user/:handle/followers', optionalAuth, requireRead('twitter'), async (req, res) => {
   const { count = '50' } = req.query as Record<string, string>;
   const manager = getConnectionManager();
   const twitter = manager.getTwitter();
@@ -207,7 +210,7 @@ router.get('/user/:handle/followers', optionalAuth, async (req, res) => {
   }
 });
 
-router.get('/user/:handle/following', optionalAuth, async (req, res) => {
+router.get('/user/:handle/following', optionalAuth, requireRead('twitter'), async (req, res) => {
   const { count = '50' } = req.query as Record<string, string>;
   const manager = getConnectionManager();
   const twitter = manager.getTwitter();
@@ -221,7 +224,7 @@ router.get('/user/:handle/following', optionalAuth, async (req, res) => {
   }
 });
 
-router.get('/me', optionalAuth, async (req, res) => {
+router.get('/me', optionalAuth, requireRead('twitter'), async (req, res) => {
   const creds = getTwitterCreds();
   if (!creds?.handle) return res.status(503).json({ error: 'Twitter not connected' });
   const manager = getConnectionManager();
@@ -236,7 +239,10 @@ router.get('/me', optionalAuth, async (req, res) => {
   }
 });
 
-router.get('/notifications/mentions', optionalAuth, async (req, res) => {
+router.get('/notifications/mentions', optionalAuth, requireRead('twitter'), async (req, res) => {
+  if (!resolveTwitterReadPerms((req as AuthedRequest).apiKey?.id).readTimeline) {
+    return res.status(403).json({ error: 'Timeline access is not permitted for this API key' });
+  }
   const { count = '20' } = req.query as Record<string, string>;
   const manager = getConnectionManager();
   const twitter = manager.getTwitter();
@@ -252,7 +258,10 @@ router.get('/notifications/mentions', optionalAuth, async (req, res) => {
 
 // ── DM routes (stored data) ───────────────────────────────────────────────────
 
-router.get('/dms', optionalAuth, (req, res) => {
+router.get('/dms', optionalAuth, requireRead('twitter'), (req, res) => {
+  if (!resolveTwitterReadPerms((req as AuthedRequest).apiKey?.id).readDms) {
+    return res.status(403).json({ error: 'DM access is not permitted for this API key' });
+  }
   const { limit = '50', offset = '0' } = req.query as Record<string, string>;
   const db = getDb();
   const creds = getTwitterCreds();
@@ -342,7 +351,10 @@ router.get('/dms', optionalAuth, (req, res) => {
   res.json({ conversations: conversations.slice(off, off + lim), total: conversations.length });
 });
 
-router.get('/dms/:conversationId', optionalAuth, (req, res) => {
+router.get('/dms/:conversationId', optionalAuth, requireRead('twitter'), (req, res) => {
+  if (!resolveTwitterReadPerms((req as AuthedRequest).apiKey?.id).readDms) {
+    return res.status(403).json({ error: 'DM access is not permitted for this API key' });
+  }
   const { limit = '100' } = req.query as Record<string, string>;
   const db = getDb();
   const messages = db.select().from(twitterDms)
@@ -371,7 +383,7 @@ router.get('/dms/:conversationId', optionalAuth, (req, res) => {
 
 // ── Analytics ─────────────────────────────────────────────────────────────────
 
-router.get('/analytics', optionalAuth, async (req, res) => {
+router.get('/analytics', optionalAuth, requireRead('twitter'), async (req, res) => {
   const manager = getConnectionManager();
   const twitter = manager.getTwitter();
   if (!twitter) return res.status(503).json({ error: 'Twitter not connected' });
@@ -452,7 +464,7 @@ router.get('/analytics', optionalAuth, async (req, res) => {
   }
 });
 
-router.post('/sync', optionalAuth, async (req, res) => {
+router.post('/sync', optionalAuth, requireRead('twitter'), async (req, res) => {
   const manager = getConnectionManager();
   const twitter = manager.getTwitter();
   if (!twitter) return res.status(503).json({ error: 'Twitter not connected' });
@@ -476,8 +488,7 @@ function queueTwitterAction(
   authedReq: AuthedRequest,
 ): { outboxId: number; status: string } {
   const db = getDb();
-  const perm = db.select().from(permissions).where(eq(permissions.service, 'twitter')).get();
-  if (!perm?.sendEnabled) {
+  if (!isSendEnabled('twitter', authedReq.apiKey?.id)) {
     throw Object.assign(new Error('Twitter actions are not enabled'), { statusCode: 403 });
   }
 
@@ -503,7 +514,7 @@ function queueTwitterAction(
     }
   }
 
-  const status = perm.requireApproval ? 'pending' : 'approved';
+  const status = isApprovalRequired('twitter', authedReq.apiKey?.id) ? 'pending' : 'approved';
   const recipientId = action.conversationId || action.handle || action.tweetId || 'twitter';
   const recipientName = action.handle || action.action;
 

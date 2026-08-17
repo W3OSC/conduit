@@ -23,7 +23,8 @@ import {
 } from '../db/schema.js';
 
 import { eq, and, or, like, desc, lt, gte, sql, isNull } from 'drizzle-orm';
-import { optionalAuth, writeAuditLog, trackAiCall } from '../auth/middleware.js';
+import { optionalAuth, writeAuditLog, trackAiCall, type AuthedRequest } from '../auth/middleware.js';
+import { isReadEnabled } from './permissions-utils.js';
 import { getContactCriteria, setContactCriteria, syncGmailContactsFromDb, syncCalendarContactsFromDb, rebuildContactsFromMessages, type ContactCriteria } from '../sync/contacts.js';
 import { getConnectionManager } from '../connections/manager.js';
 
@@ -300,6 +301,20 @@ router.get('/', optionalAuth, trackAiCall, (req, res) => {
 
   let rows = db.select().from(contacts).all();
 
+  // Read-toggle enforcement for API keys — contacts are derived from message
+  // data, so a disabled source must not leak through the contact list.
+  const apiKeyId = (req as AuthedRequest).apiKey?.id;
+  if (apiKeyId) {
+    if (source && !isReadEnabled(source, apiKeyId)) {
+      return res.status(403).json({ error: `Read access to ${source} is not permitted for this API key` });
+    }
+    const enabledCache = new Map<string, boolean>();
+    rows = rows.filter((c) => {
+      if (!enabledCache.has(c.source)) enabledCache.set(c.source, isReadEnabled(c.source, apiKeyId));
+      return enabledCache.get(c.source);
+    });
+  }
+
   // Filter by source
   if (source) rows = rows.filter((c) => c.source === source);
 
@@ -539,6 +554,10 @@ router.post('/rebuild', optionalAuth, async (req, res) => {
 
 router.get('/:source/:platformId', optionalAuth, trackAiCall, (req, res) => {
   const { source, platformId } = req.params as { source: string; platformId: string };
+  const keyId = (req as AuthedRequest).apiKey?.id;
+  if (keyId && !isReadEnabled(source, keyId)) {
+    return res.status(403).json({ error: `Read access to ${source} is not permitted for this API key` });
+  }
   const db = getDb();
   const contact = db.select().from(contacts)
     .where(and(eq(contacts.source, source), eq(contacts.platformId, platformId)))
@@ -551,6 +570,10 @@ router.get('/:source/:platformId', optionalAuth, trackAiCall, (req, res) => {
 
 router.get('/:source/:platformId/history', optionalAuth, trackAiCall, (req, res) => {
   const { source, platformId } = req.params as { source: string; platformId: string };
+  const keyId = (req as AuthedRequest).apiKey?.id;
+  if (keyId && !isReadEnabled(source, keyId)) {
+    return res.status(403).json({ error: `Read access to ${source} is not permitted for this API key` });
+  }
   const { limit = '100', before, after } = req.query as Record<string, string>;
   const lim = Math.min(parseInt(limit) || 100, 500);
   const db = getDb();
@@ -686,7 +709,12 @@ router.get('/:source/:platformId/history', optionalAuth, trackAiCall, (req, res)
     }
   }
 
-  writeAuditLog('read', 'ui', { service: source, targetId: platformId });
+  const historyReq = req as AuthedRequest;
+  writeAuditLog('read', historyReq.actor, {
+    service: source,
+    targetId: platformId,
+    apiKeyId: historyReq.apiKey?.id,
+  });
 
   res.json({ messages, total: messages.length, source, platformId });
 });

@@ -70,6 +70,7 @@ import type {
   AuthenticatorTransportFuture,
 } from '@simplewebauthn/server';
 import { getDb } from '../db/client.js';
+import { findValidApiKey } from '../auth/middleware.js';
 import { settings, passkeyCredentials } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import type { Request, Response, NextFunction } from 'express';
@@ -143,6 +144,15 @@ interface RateEntry { count: number; resetAt: number }
 const loginAttempts = new Map<string, RateEntry>();
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX = 10;
+
+/**
+ * Client IP for rate limiting. req.ip honours X-Forwarded-For only when
+ * `trust proxy` is enabled (TRUST_PROXY env) — never trust the header blindly,
+ * or a brute-forcer could rotate identities by spoofing it.
+ */
+function clientIp(req: Request): string {
+  return req.ip || req.socket.remoteAddress || 'unknown';
+}
 
 function checkRateLimit(ip: string): boolean {
   const now = Date.now();
@@ -268,12 +278,17 @@ function getSessionToken(req: Request): string | null {
 function issueSession(
   cfg: UiAuthConfig,
   method: 'password' | 'totp' | 'passkey',
+  req: Request,
   res: Response,
 ): void {
   const methodCfg = cfg[method];
   const durationMs = methodCfg.sessionDurationHours > 0
     ? methodCfg.sessionDurationHours * 60 * 60 * 1000
     : 0;
+
+  // `secure` is set when the request arrived over HTTPS (directly, or via a
+  // proxy when TRUST_PROXY is enabled). Plain-HTTP LAN installs keep working.
+  const secure = req.secure;
 
   if (durationMs === 0) {
     // Duration 0 → always require login; still issue a very short session so the
@@ -284,7 +299,7 @@ function issueSession(
     cfg.sessionMethod    = method;
     saveConfig(cfg);
     res.cookie(SESSION_COOKIE_NAME, token, {
-      httpOnly: true, sameSite: 'lax', maxAge: 1, path: '/',
+      httpOnly: true, sameSite: 'lax', secure, maxAge: 1, path: '/',
     });
     return;
   }
@@ -295,15 +310,29 @@ function issueSession(
   cfg.sessionMethod    = method;
   saveConfig(cfg);
   res.cookie(SESSION_COOKIE_NAME, token, {
-    httpOnly: true, sameSite: 'lax', maxAge: durationMs, path: '/',
+    httpOnly: true, sameSite: 'lax', secure, maxAge: durationMs, path: '/',
   });
 }
 
 // ── Middleware ─────────────────────────────────────────────────────────────────
 
 export function uiAuthMiddleware(req: Request, res: Response, next: NextFunction): void {
-  if (req.headers['x-api-key']) { next(); return; }
+  // API-key callers: the key must actually be VALID — a junk header must never
+  // bypass the login gate. Per-route middleware (optionalAuth etc.) re-resolves
+  // the key for permission scoping.
+  const rawKey = req.headers['x-api-key'];
+  if (typeof rawKey === 'string' && rawKey) {
+    if (findValidApiKey(rawKey)) { next(); return; }
+    res.status(401).json({ error: 'Invalid or revoked API key' });
+    return;
+  }
+
+  // Only the API is gated. The static SPA shell must load so the login page
+  // can render; every data route lives under /api.
+  if (!req.path.startsWith('/api')) { next(); return; }
   if (req.path.startsWith('/api/ui-auth')) { next(); return; }
+  // The skill file is public documentation (also served from the GitHub repo).
+  if (req.path === '/api/skill') { next(); return; }
 
   const cfg = getConfig();
   if (!anyMethodEnabled(cfg)) { next(); return; }
@@ -477,9 +506,7 @@ router.post('/login', async (req, res) => {
     return res.status(400).json({ error: 'Password required' });
   }
 
-  const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
-    || req.socket.remoteAddress || 'unknown';
-  if (!checkRateLimit(ip)) {
+  if (!checkRateLimit(clientIp(req))) {
     res.setHeader('Retry-After', '60');
     return res.status(429).json({ error: 'Too many login attempts. Please wait a minute before trying again.' });
   }
@@ -500,7 +527,7 @@ router.post('/login', async (req, res) => {
     return res.json({ success: true, totpRequired: true });
   }
 
-  issueSession(cfg, 'password', res);
+  issueSession(cfg, 'password', req, res);
   res.json({ success: true, totpRequired: false });
 });
 
@@ -514,6 +541,11 @@ router.post('/login/totp', (req, res) => {
   if (!cfg.totp.enabled || !cfg.totp.secret) {
     return res.status(400).json({ error: '2FA not configured' });
   }
+  // TOTP codes are 6 digits — without a rate limit they are brute-forceable.
+  if (!checkRateLimit(clientIp(req))) {
+    res.setHeader('Retry-After', '60');
+    return res.status(429).json({ error: 'Too many attempts. Please wait a minute before trying again.' });
+  }
   if (!intermediateToken || cfg.sessionTokenHash !== `pending:${hashToken(intermediateToken)}`) {
     return res.status(401).json({ error: 'Invalid or expired login session. Please start the login process again.' });
   }
@@ -524,7 +556,7 @@ router.post('/login/totp', (req, res) => {
   }
 
   res.clearCookie(TOTP_INTERMEDIATE_COOKIE, { path: '/' });
-  issueSession(cfg, 'totp', res);
+  issueSession(cfg, 'totp', req, res);
   res.json({ success: true });
 });
 
@@ -724,9 +756,7 @@ router.post('/passkey/login/finish', async (req, res) => {
     return res.status(400).json({ error: 'Challenge expired or missing — start login again' });
   }
 
-  const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
-    || req.socket.remoteAddress || 'unknown';
-  if (!checkRateLimit(ip)) {
+  if (!checkRateLimit(clientIp(req))) {
     res.setHeader('Retry-After', '60');
     return res.status(429).json({ error: 'Too many login attempts. Please wait a minute before trying again.' });
   }
@@ -772,7 +802,7 @@ router.post('/passkey/login/finish', async (req, res) => {
     .run();
 
   const cfg = getConfig();
-  issueSession(cfg, 'passkey', res);
+  issueSession(cfg, 'passkey', req, res);
   res.json({ success: true });
 });
 

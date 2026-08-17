@@ -28,7 +28,9 @@ import multer from 'multer';
 import { getDb } from '../db/client.js';
 import { smbShareConfig } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
-import { optionalAuth, uiOnlyAuth } from '../auth/middleware.js';
+import { optionalAuth, uiOnlyAuth, type AuthedRequest } from '../auth/middleware.js';
+import { requireRead, resolveSmbPathPermission, resolveEffectiveFineGrained } from './permissions-utils.js';
+import type { SmbFineGrained } from '../db/schema.js';
 import { getConnectionManager } from '../connections/manager.js';
 import { SmbSync } from '../sync/smb.js';
 
@@ -231,7 +233,7 @@ router.get('/shares/:id/status', optionalAuth, (req, res) => {
 
 // ── GET /smb/shares/:id/files — list directory ────────────────────────────────
 
-router.get('/shares/:id/files', optionalAuth, async (req, res) => {
+router.get('/shares/:id/files', optionalAuth, requireRead('smb'), async (req, res) => {
   const id = parseShareId(req.params['id'] as string);
   if (id === null) return res.status(400).json({ error: 'Invalid share ID' });
 
@@ -242,7 +244,24 @@ router.get('/shares/:id/files', optionalAuth, async (req, res) => {
   const dirPath = (req.query['path'] as string | undefined) ?? '';
 
   try {
-    const entries = await sync.listDirectory(dirPath);
+    let entries = await sync.listDirectory(dirPath);
+
+    // Path allowlist for API keys: keep entries inside an allowed prefix, plus
+    // directories that are ancestors of one (so the allowed subtree is reachable).
+    const apiKeyId = (req as AuthedRequest).apiKey?.id;
+    if (apiKeyId) {
+      const fg = resolveEffectiveFineGrained('smb', apiKeyId) as SmbFineGrained | null;
+      if (fg?.readEnabled === false) {
+        return res.status(403).json({ error: 'SMB read access is not permitted for this API key' });
+      }
+      const readPaths = fg?.readPaths ?? [];
+      if (readPaths.length > 0) {
+        entries = entries.filter((e) =>
+          readPaths.some((prefix) => e.path.startsWith(prefix) || prefix.startsWith(e.path + '/')),
+        );
+      }
+    }
+
     res.json({ path: dirPath || '/', entries });
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
@@ -251,12 +270,16 @@ router.get('/shares/:id/files', optionalAuth, async (req, res) => {
 
 // ── GET /smb/shares/:id/files/* — read file contents ─────────────────────────
 
-router.get('/shares/:id/files/*path', optionalAuth, async (req, res) => {
+router.get('/shares/:id/files/*path', optionalAuth, requireRead('smb'), async (req, res) => {
   const id = parseShareId(req.params['id'] as string);
   if (id === null) return res.status(400).json({ error: 'Invalid share ID' });
 
   const filePath = (req.params as Record<string, string>)['path'] ?? '';
   if (!filePath) return res.status(400).json({ error: 'File path is required' });
+
+  if (!resolveSmbPathPermission(filePath, 'read', (req as AuthedRequest).apiKey?.id)) {
+    return res.status(403).json({ error: `Reading "${filePath}" is not permitted for this API key` });
+  }
 
   const manager = getConnectionManager();
   const sync = manager.getSmbShare(id);
@@ -285,12 +308,16 @@ router.get('/shares/:id/files/*path', optionalAuth, async (req, res) => {
 
 // ── GET /smb/shares/:id/download/* — download raw file as browser blob ────────
 
-router.get('/shares/:id/download/*path', optionalAuth, async (req, res) => {
+router.get('/shares/:id/download/*path', optionalAuth, requireRead('smb'), async (req, res) => {
   const id = parseShareId(req.params['id'] as string);
   if (id === null) return res.status(400).json({ error: 'Invalid share ID' });
 
   const filePath = (req.params as Record<string, string>)['path'] ?? '';
   if (!filePath) return res.status(400).json({ error: 'File path is required' });
+
+  if (!resolveSmbPathPermission(filePath, 'read', (req as AuthedRequest).apiKey?.id)) {
+    return res.status(403).json({ error: `Reading "${filePath}" is not permitted for this API key` });
+  }
 
   const manager = getConnectionManager();
   const sync = manager.getSmbShare(id);

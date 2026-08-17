@@ -3,11 +3,11 @@ import { randomBytes, createHash } from 'crypto';
 import { getDb } from '../db/client.js';
 import { apiKeys } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
-import { optionalAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
+import { uiOnlyAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
 
 const router = Router();
 
-router.get('/', optionalAuth, (req, res) => {
+router.get('/', uiOnlyAuth, (req, res) => {
   const db = getDb();
   const keys = db.select().from(apiKeys).all().map((k) => ({
     id: k.id,
@@ -20,7 +20,7 @@ router.get('/', optionalAuth, (req, res) => {
   res.json(keys);
 });
 
-router.post('/', optionalAuth, (req, res) => {
+router.post('/', uiOnlyAuth, (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
   const { name } = req.body as { name: string };
@@ -46,7 +46,7 @@ router.post('/', optionalAuth, (req, res) => {
   res.json({ id: key.id, name: key.name, keyPrefix: prefix, key: rawKey, createdAt: key.createdAt });
 });
 
-router.delete('/:id', optionalAuth, (req, res) => {
+router.delete('/:id', uiOnlyAuth, (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
   const id = parseInt(req.params['id'] as string);

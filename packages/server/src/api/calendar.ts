@@ -5,17 +5,31 @@
 
 import { Router } from 'express';
 import { getDb } from '../db/client.js';
-import { calendarEvents, outbox, permissions } from '../db/schema.js';
-import { and, eq, gte, lte, sql } from 'drizzle-orm';
+import { calendarEvents, outbox, type CalendarFineGrained } from '../db/schema.js';
+import { and, eq, gte, inArray, lte, sql, type SQL } from 'drizzle-orm';
 import { optionalAuth, writeAuditLog, trackAiCall, type AuthedRequest } from '../auth/middleware.js';
+import {
+  requireRead,
+  isSendEnabled,
+  isApprovalRequired,
+  resolveEffectiveFineGrained,
+} from './permissions-utils.js';
 import { getConnectionManager } from '../connections/manager.js';
 import { broadcast } from '../websocket/hub.js';
 import type { CalendarAction } from '../sync/google-calendar.js';
 
 const router = Router();
 
+/** Per-key calendar allowlist; null = unrestricted. */
+function calendarAllowlist(apiKeyId: number | null | undefined): string[] | null {
+  if (!apiKeyId) return null;
+  const fg = resolveEffectiveFineGrained('calendar', apiKeyId) as CalendarFineGrained | null;
+  const ids = fg?.readCalendarIds;
+  return ids && ids.length > 0 ? ids : null;
+}
+
 // GET /api/calendar/status
-router.get('/status', optionalAuth, (req, res) => {
+router.get('/status', optionalAuth, requireRead('calendar'), (req, res) => {
   const manager = getConnectionManager();
   const status = manager.getStatus('calendar');
   const db = getDb();
@@ -28,13 +42,17 @@ router.get('/status', optionalAuth, (req, res) => {
 });
 
 // GET /api/calendar/calendars
-router.get('/calendars', optionalAuth, trackAiCall, async (req, res) => {
+router.get('/calendars', optionalAuth, requireRead('calendar'), trackAiCall, async (req, res) => {
   const manager = getConnectionManager();
   const calendar = manager.getCalendar();
   if (!calendar) return res.status(503).json({ error: 'Calendar not connected' });
 
   try {
-    const calendars = await calendar.getCalendars();
+    let calendars = await calendar.getCalendars();
+    const allowlist = calendarAllowlist((req as AuthedRequest).apiKey?.id);
+    if (allowlist) {
+      calendars = calendars.filter((c: { id?: string | null }) => c.id && allowlist.includes(c.id));
+    }
     res.json({ calendars });
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
@@ -42,34 +60,55 @@ router.get('/calendars', optionalAuth, trackAiCall, async (req, res) => {
 });
 
 // GET /api/calendar/events
-router.get('/events', optionalAuth, trackAiCall, (req, res) => {
+router.get('/events', optionalAuth, requireRead('calendar'), trackAiCall, (req, res) => {
   const { from, to, calendarId, limit = '200' } = req.query as Record<string, string>;
   const db = getDb();
+  const apiKeyId = (req as AuthedRequest).apiKey?.id ?? null;
 
-  let rows = db.select().from(calendarEvents)
-    .orderBy(calendarEvents.startTime)
-    .all();
-
-  // Default: today - 7 days to today + 30 days
+  // Default window: today - 7 days to today + 30 days
   const defaultFrom = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
   const defaultTo   = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-  const filterFrom = from || defaultFrom;
-  const filterTo   = to   || defaultTo;
 
-  rows = rows.filter((e) => e.startTime >= filterFrom && e.startTime <= filterTo);
-  if (calendarId) rows = rows.filter((e) => e.calendarId === calendarId);
+  const conds: SQL[] = [
+    gte(calendarEvents.startTime, from || defaultFrom),
+    lte(calendarEvents.startTime, to || defaultTo),
+  ];
 
+  const allowlist = calendarAllowlist(apiKeyId);
+  if (calendarId) {
+    if (allowlist && !allowlist.includes(calendarId)) {
+      return res.status(403).json({ error: `Reading calendar "${calendarId}" is not permitted for this API key` });
+    }
+    conds.push(eq(calendarEvents.calendarId, calendarId));
+  } else if (allowlist) {
+    conds.push(inArray(calendarEvents.calendarId, allowlist));
+  }
+
+  const where = and(...conds);
   const lim = Math.min(parseInt(limit) || 200, 500);
-  res.json({ events: rows.slice(0, lim), total: rows.length });
+
+  const events = db.select().from(calendarEvents)
+    .where(where)
+    .orderBy(calendarEvents.startTime)
+    .limit(lim)
+    .all();
+  const totalRow = db.select({ count: sql<number>`count(*)` }).from(calendarEvents).where(where).get();
+
+  res.json({ events, total: totalRow?.count ?? 0 });
 });
 
 // GET /api/calendar/events/:id
-router.get('/events/:id', optionalAuth, trackAiCall, (req, res) => {
+router.get('/events/:id', optionalAuth, requireRead('calendar'), trackAiCall, (req, res) => {
   const db = getDb();
   const event = db.select().from(calendarEvents)
     .where(eq(calendarEvents.eventId, req.params['id'] as string))
     .get();
   if (!event) return res.status(404).json({ error: 'Event not found' });
+
+  const allowlist = calendarAllowlist((req as AuthedRequest).apiKey?.id);
+  if (allowlist && !allowlist.includes(event.calendarId)) {
+    return res.status(403).json({ error: 'Reading this event is not permitted for this API key' });
+  }
   res.json(event);
 });
 
@@ -82,12 +121,12 @@ router.post('/actions', optionalAuth, (req, res) => {
   if (!action.calendarId) return res.status(400).json({ error: 'calendarId is required' });
 
   const db = getDb();
-  const perm = db.select().from(permissions).where(eq(permissions.service, 'calendar')).get();
-  if (!perm?.sendEnabled) {
+  const apiKeyId = authedReq.apiKey?.id ?? null;
+  if (!isSendEnabled('calendar', apiKeyId)) {
     return res.status(403).json({ error: 'Calendar actions are not enabled' });
   }
 
-  const status = perm.requireApproval ? 'pending' : 'approved';
+  const status = isApprovalRequired('calendar', apiKeyId) ? 'pending' : 'approved';
 
   const insertResult = db.insert(outbox).values({
     source: 'calendar',
@@ -125,7 +164,7 @@ router.post('/actions', optionalAuth, (req, res) => {
 });
 
 // POST /api/calendar/sync
-router.post('/sync', optionalAuth, async (req, res) => {
+router.post('/sync', optionalAuth, requireRead('calendar'), async (req, res) => {
   const manager = getConnectionManager();
   manager.triggerSync('calendar').catch(console.error);
   res.json({ success: true, message: 'Calendar sync started' });

@@ -8,7 +8,7 @@ import { eq, and, desc, like, gte, lte, sql, isNull, inArray } from 'drizzle-orm
 import { optionalAuth, writeAuditLog, trackAiCall, type AuthedRequest } from '../auth/middleware.js';
 import {
   filterReadIds, filterGmailByLabels, resolveTwitterReadPerms, resolveEffectiveFineGrained,
-  isReadPermitted,
+  isReadPermitted, filterEnabledSources,
 } from './permissions-utils.js';
 import type { DiscordFineGrained } from '../db/schema.js';
 
@@ -222,8 +222,14 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
 
   const result: Record<string, ServiceTree> = {};
 
+  // Service-level read toggles for API keys — a disabled service contributes
+  // no tree at all.
+  const enabledChatSources = new Set(
+    filterEnabledSources(['discord', 'slack', 'telegram', 'twitter', 'gmail'], apiKeyId),
+  );
+
   // ── Discord ─────────────────────────────────────────────────────────────────
-  {
+  if (enabledChatSources.has('discord')) {
     const dcCache = buildContactCache(db, 'discord');
     // Get all distinct channels with their latest message info
     const allDiscordChannels = db.selectDistinct({
@@ -325,7 +331,7 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
   }
 
   // ── Slack ───────────────────────────────────────────────────────────────────
-  {
+  if (enabledChatSources.has('slack')) {
     const slackCache = buildContactCache(db, 'slack');
     const allSlackChannels = db.selectDistinct({
       channelId: slackMessages.channelId,
@@ -430,7 +436,7 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
   }
 
   // ── Telegram ────────────────────────────────────────────────────────────────
-  {
+  if (enabledChatSources.has('telegram')) {
     // Single query: per-chat stats (count, latest timestamp, latest chatName/chatType)
     // Uses MAX(timestamp) for correct recency ordering — avoids N+1 queries.
     const tgStatsRows = db.select({
@@ -568,7 +574,7 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
   }
 
   // ── Twitter ─────────────────────────────────────────────────────────────────
-  {
+  if (enabledChatSources.has('twitter')) {
     const { readDms: twitterReadDms } = resolveTwitterReadPerms(apiKeyId);
     const twCache = buildContactCache(db, 'twitter');
     const twConvs = twitterReadDms
@@ -613,7 +619,7 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
   }
 
   // ── Gmail ───────────────────────────────────────────────────────────────────
-  {
+  if (enabledChatSources.has('gmail')) {
     const gmailFg = apiKeyId
       ? resolveEffectiveFineGrained('gmail', apiKeyId) as import('../db/schema.js').GmailFineGrained | null
       : null;
@@ -738,7 +744,11 @@ router.get('/messages', optionalAuth, trackAiCall, (req, res) => {
     return q.orderBy(desc(table.timestamp)).limit(lim).all();
   }
 
-  const sources = source ? [source] : [...MSG_SOURCES];
+  const sources = filterEnabledSources(source ? [source] : [...MSG_SOURCES], apiKeyId);
+  if (source && sources.length === 0) {
+    res.status(403).json({ error: `Read access to ${source} is not permitted for this API key` });
+    return;
+  }
 
   for (const src of sources) {
     // Build contact cache once per source
@@ -834,37 +844,57 @@ router.get('/search', optionalAuth, trackAiCall, (req, res) => {
 
   const lim = Math.min(parseInt(limit) || 50, 200);
   const results: unknown[] = [];
-  const sources = source ? [source] : [...MSG_SOURCES];
+  const apiKeyId = authedReq.apiKey?.id ?? null;
+
+  // Same read enforcement as /messages: service toggles + per-chat allowlists.
+  // Search must not be a side door around channel-scoped keys.
+  const sources = filterEnabledSources(source ? [source] : [...MSG_SOURCES], apiKeyId);
+  if (source && sources.length === 0) {
+    res.status(403).json({ error: `Read access to ${source} is not permitted for this API key` });
+    return;
+  }
+
+  /** Filter rows to chats the key may read (no-op for the UI actor). */
+  function permittedRows<T>(svc: string, rows: T[], chatIdOf: (r: T) => string): T[] {
+    if (!apiKeyId) return rows;
+    const ids = [...new Set(rows.map(chatIdOf))];
+    const allowed = new Set(filterReadIds(svc, ids, apiKeyId));
+    return rows.filter((r) => allowed.has(chatIdOf(r)));
+  }
 
   if (sources.includes('telegram')) {
-    results.push(...db.select().from(telegramMessages)
+    const rows = permittedRows('telegram', db.select().from(telegramMessages)
       .where(like(telegramMessages.content, `%${q}%`))
-      .orderBy(desc(telegramMessages.timestamp)).limit(lim).all()
-      .map((m) => ({ source: 'telegram', ...m })));
+      .orderBy(desc(telegramMessages.timestamp)).limit(lim).all(), (m) => String(m.chatId));
+    results.push(...rows.map((m) => ({ source: 'telegram', ...m })));
   }
   if (sources.includes('discord')) {
-    results.push(...db.select().from(discordMessages)
+    const rows = permittedRows('discord', db.select().from(discordMessages)
       .where(like(discordMessages.content, `%${q}%`))
-      .orderBy(desc(discordMessages.timestamp)).limit(lim).all()
-      .map((m) => ({ source: 'discord', ...m })));
+      .orderBy(desc(discordMessages.timestamp)).limit(lim).all(), (m) => m.channelId);
+    results.push(...rows.map((m) => ({ source: 'discord', ...m })));
   }
   if (sources.includes('slack')) {
-    results.push(...db.select().from(slackMessages)
+    const rows = permittedRows('slack', db.select().from(slackMessages)
       .where(like(slackMessages.content, `%${q}%`))
-      .orderBy(desc(slackMessages.timestamp)).limit(lim).all()
-      .map((m) => ({ source: 'slack', ...m })));
+      .orderBy(desc(slackMessages.timestamp)).limit(lim).all(), (m) => m.channelId);
+    results.push(...rows.map((m) => ({ source: 'slack', ...m })));
   }
-  if (sources.includes('twitter')) {
+  if (sources.includes('twitter') && (!apiKeyId || resolveTwitterReadPerms(apiKeyId).readDms)) {
     results.push(...db.select().from(twitterDms)
       .where(like(twitterDms.text, `%${q}%`))
       .orderBy(desc(twitterDms.createdAt)).limit(lim).all()
       .map((m) => ({ source: 'twitter', messageId: m.messageId, chatId: m.conversationId, content: m.text || '', timestamp: m.createdAt, senderName: m.senderHandle })));
   }
   if (sources.includes('gmail')) {
-    results.push(...db.select().from(gmailMessages)
-      .where(like(gmailMessages.snippet, `%${q}%`))
-      .orderBy(desc(gmailMessages.internalDate)).limit(lim).all()
-      .map((m) => ({ source: 'gmail', messageId: m.gmailId, chatId: m.threadId, content: m.snippet || '', timestamp: m.internalDate, senderName: m.fromName })));
+    const rows = filterGmailByLabels(
+      db.select().from(gmailMessages)
+        .where(like(gmailMessages.snippet, `%${q}%`))
+        .orderBy(desc(gmailMessages.internalDate)).limit(lim).all(),
+      (m) => { try { return JSON.parse(m.labels || '[]') as string[]; } catch { return []; } },
+      apiKeyId,
+    );
+    results.push(...rows.map((m) => ({ source: 'gmail', messageId: m.gmailId, chatId: m.threadId, content: m.snippet || '', timestamp: m.internalDate, senderName: m.fromName })));
   }
 
   results.sort((a, b) =>
@@ -905,9 +935,23 @@ router.get('/activity', optionalAuth, trackAiCall, (req, res) => {
   } = req.query as Record<string, string>;
 
   const lim = Math.min(parseInt(limit) || 50, 200);
-  const requestedSources = sourcesParam
-    ? sourcesParam.split(',').map((s) => s.trim())
-    : ['telegram', 'discord', 'slack', 'twitter', 'gmail'];
+  const apiKeyId = authedReq.apiKey?.id ?? null;
+  // Enforce the same service toggles + per-chat allowlists as /messages —
+  // the activity feed must not be a side door around scoped keys.
+  const requestedSources = filterEnabledSources(
+    sourcesParam
+      ? sourcesParam.split(',').map((s) => s.trim())
+      : ['telegram', 'discord', 'slack', 'twitter', 'gmail'],
+    apiKeyId,
+  );
+
+  /** Filter rows to chats the key may read (no-op for the UI actor). */
+  function permittedActivityRows<T>(svc: string, rows: T[], chatIdOf: (r: T) => string): T[] {
+    if (!apiKeyId) return rows;
+    const ids = [...new Set(rows.map(chatIdOf))];
+    const allowed = new Set(filterReadIds(svc, ids, apiKeyId));
+    return rows.filter((r) => allowed.has(chatIdOf(r)));
+  }
 
   type ActivityItem = {
     type: 'message' | 'email';
@@ -957,11 +1001,11 @@ router.get('/activity', optionalAuth, trackAiCall, (req, res) => {
     const cache = buildContactCache(db, src);
 
     if (src === 'telegram') {
-      const rows = db.select().from(telegramMessages)
+      const rows = permittedActivityRows('telegram', db.select().from(telegramMessages)
         .where(and(gte(telegramMessages.timestamp, since), lte(telegramMessages.timestamp, until)))
         .orderBy(desc(telegramMessages.timestamp))
         .limit(lim)
-        .all();
+        .all(), (r) => String(r.chatId));
       for (const r of rows) {
         const { senderName, avatarUrl, isMe } = enrichSender(
           r.senderId ? String(r.senderId) : null, r.senderName, cache, src,
@@ -980,11 +1024,11 @@ router.get('/activity', optionalAuth, trackAiCall, (req, res) => {
     }
 
     if (src === 'discord') {
-      const rows = db.select().from(discordMessages)
+      const rows = permittedActivityRows('discord', db.select().from(discordMessages)
         .where(and(gte(discordMessages.timestamp, since), lte(discordMessages.timestamp, until)))
         .orderBy(desc(discordMessages.timestamp))
         .limit(lim)
-        .all();
+        .all(), (r) => r.channelId);
       for (const r of rows) {
         const { senderName, avatarUrl, isMe } = enrichSender(r.authorId, r.authorName, cache, src);
         items.push({
@@ -1001,11 +1045,11 @@ router.get('/activity', optionalAuth, trackAiCall, (req, res) => {
     }
 
     if (src === 'slack') {
-      const rows = db.select().from(slackMessages)
+      const rows = permittedActivityRows('slack', db.select().from(slackMessages)
         .where(and(gte(slackMessages.timestamp, since), lte(slackMessages.timestamp, until)))
         .orderBy(desc(slackMessages.timestamp))
         .limit(lim)
-        .all();
+        .all(), (r) => r.channelId);
       for (const r of rows) {
         const { senderName, avatarUrl, isMe } = enrichSender(r.userId, r.userName, cache, src);
         items.push({
@@ -1022,6 +1066,7 @@ router.get('/activity', optionalAuth, trackAiCall, (req, res) => {
     }
 
     if (src === 'twitter') {
+      if (apiKeyId && !resolveTwitterReadPerms(apiKeyId).readDms) continue;
       const rows = db.select().from(twitterDms)
         .where(and(gte(twitterDms.createdAt, since), lte(twitterDms.createdAt, until)))
         .orderBy(desc(twitterDms.createdAt))
@@ -1056,14 +1101,18 @@ router.get('/activity', optionalAuth, trackAiCall, (req, res) => {
 
   // Gmail — surfaces as 'email' type items
   if (includeGmail) {
-    const rows = db.select().from(gmailMessages)
-      .where(and(
-        gte(gmailMessages.internalDate, since),
-        lte(gmailMessages.internalDate, until),
-      ))
-      .orderBy(desc(gmailMessages.internalDate))
-      .limit(lim)
-      .all();
+    const rows = filterGmailByLabels(
+      db.select().from(gmailMessages)
+        .where(and(
+          gte(gmailMessages.internalDate, since),
+          lte(gmailMessages.internalDate, until),
+        ))
+        .orderBy(desc(gmailMessages.internalDate))
+        .limit(lim)
+        .all(),
+      (m) => { try { return JSON.parse(m.labels || '[]') as string[]; } catch { return []; } },
+      apiKeyId,
+    );
     for (const r of rows) {
       items.push({
         type: 'email', source: 'gmail',

@@ -37,8 +37,11 @@ export function invalidateContextCache(): void {
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 function baseUrl(req: import('express').Request): string {
-  const proto = (req.headers['x-forwarded-proto'] as string | undefined) ?? req.protocol ?? 'http';
-  const host  = (req.headers['x-forwarded-host'] as string | undefined) ?? req.get('host') ?? 'localhost';
+  // req.protocol / req.get('host') honour X-Forwarded-* only when the app-level
+  // `trust proxy` setting is enabled (TRUST_PROXY env). Reading the raw headers
+  // here would let any caller poison the cached context URLs for an hour.
+  const proto = req.protocol || 'http';
+  const host  = req.get('host') || 'localhost';
   return `${proto}://${host}`;
 }
 

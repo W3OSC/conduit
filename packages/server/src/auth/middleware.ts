@@ -19,6 +19,43 @@ export function hashKey(raw: string): string {
   return createHash('sha256').update(raw).digest('hex');
 }
 
+const LAST_USED_WRITE_INTERVAL_MS = 60_000;
+
+/**
+ * Look up a raw X-API-Key value. Returns the key row when it exists and is not
+ * revoked, null otherwise. Refreshes lastUsedAt at most once per minute so the
+ * hot path isn't a synchronous UPDATE on every request.
+ */
+export function findValidApiKey(rawKey: string): { id: number; name: string } | null {
+  const db = getDb();
+  const key = db
+    .select()
+    .from(apiKeys)
+    .where(eq(apiKeys.keyHash, hashKey(rawKey)))
+    .get();
+
+  if (!key || key.revokedAt) return null;
+
+  const lastUsed = key.lastUsedAt ? Date.parse(key.lastUsedAt) : 0;
+  if (!Number.isFinite(lastUsed) || Date.now() - lastUsed > LAST_USED_WRITE_INTERVAL_MS) {
+    db.update(apiKeys)
+      .set({ lastUsedAt: new Date().toISOString() })
+      .where(eq(apiKeys.id, key.id))
+      .run();
+  }
+
+  return { id: key.id, name: key.name };
+}
+
+function attachApiActor(req: AuthedRequest, key: { id: number; name: string }): void {
+  req.apiKey = { id: key.id, name: key.name };
+  req.actor = 'api';
+  const sessionId = req.headers['x-session-id'];
+  if (typeof sessionId === 'string' && sessionId) {
+    req.aiSessionId = sessionId;
+  }
+}
+
 export function apiKeyAuth(required = true) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const authedReq = req as AuthedRequest;
@@ -34,34 +71,13 @@ export function apiKeyAuth(required = true) {
       return;
     }
 
-    const db = getDb();
-    const hash = hashKey(rawKey);
-    const key = db
-      .select()
-      .from(apiKeys)
-      .where(eq(apiKeys.keyHash, hash))
-      .get();
-
-    if (!key || key.revokedAt) {
+    const key = findValidApiKey(rawKey);
+    if (!key) {
       res.status(401).json({ error: 'Invalid or revoked API key' });
       return;
     }
 
-    // Update last used
-    db.update(apiKeys)
-      .set({ lastUsedAt: new Date().toISOString() })
-      .where(eq(apiKeys.id, key.id))
-      .run();
-
-    authedReq.apiKey = { id: key.id, name: key.name };
-    authedReq.actor = 'api';
-
-    // Attach AI session ID if provided by the AI agent
-    const sessionId = req.headers['x-session-id'];
-    if (typeof sessionId === 'string' && sessionId) {
-      authedReq.aiSessionId = sessionId;
-    }
-
+    attachApiActor(authedReq, key);
     next();
   };
 }
@@ -83,26 +99,16 @@ export function optionalAuth(req: Request, res: Response, next: NextFunction): v
   const rawKey = req.headers['x-api-key'] as string | undefined;
 
   if (rawKey) {
-    const db = getDb();
-    const hash = hashKey(rawKey);
-    const key = db.select().from(apiKeys).where(eq(apiKeys.keyHash, hash)).get();
-    if (key && !key.revokedAt) {
-      authedReq.apiKey = { id: key.id, name: key.name };
-      authedReq.actor = 'api';
-      db.update(apiKeys)
-        .set({ lastUsedAt: new Date().toISOString() })
-        .where(eq(apiKeys.id, key.id))
-        .run();
-
-      // Attach AI session ID if provided
-      const sessionId = req.headers['x-session-id'];
-      if (typeof sessionId === 'string' && sessionId) {
-        authedReq.aiSessionId = sessionId;
-      }
-
-      next();
+    // A presented key MUST be valid. Never demote an invalid/revoked key to the
+    // trusted UI actor — that would turn a junk header into an auth bypass.
+    const key = findValidApiKey(rawKey);
+    if (!key) {
+      res.status(401).json({ error: 'Invalid or revoked API key' });
       return;
     }
+    attachApiActor(authedReq, key);
+    next();
+    return;
   }
 
   authedReq.actor = 'ui';
