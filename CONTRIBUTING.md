@@ -49,7 +49,6 @@ packages/
       hooks/       React hooks
       pages/       Page-level components
       store/       Client state
-  openclaw-plugin/ OpenClaw channel plugin
 ```
 
 The server and client are separate npm workspaces. The server is a standard Express app with better-sqlite3 for synchronous SQLite access via Drizzle ORM. The client is a Vite + React SPA that the server serves in production.

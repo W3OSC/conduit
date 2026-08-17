@@ -18,7 +18,7 @@ import {
   XCircle, AlertTriangle, Database, Key, Plus, Copy, Check, Trash2, X,
   Send, Server, Shield, Settings, PlugZap, UserCircle2, Clock, Users, ExternalLink,
   MessageSquare as MessageSquareIcon, Mail as MailIcon, Lock, ShieldCheck, QrCode,
-  LogOut, Zap, FileText, Bot, Unplug, ArrowRight, CircleCheck, CircleX, Bell, Volume2, VolumeX,
+  LogOut, Zap, FileText, Bot, Unplug, ArrowRight, Bell, Volume2, VolumeX,
   BookOpen, GitBranch, Palette, Play, RotateCcw, Download, Fingerprint,
   SlidersHorizontal, Search, Filter, Link, HardDrive, FolderOpen, FolderPlus,
   ChevronRight as ChevronRightIcon, File, Folder,
@@ -26,7 +26,7 @@ import {
 import { AppearanceTab } from '@/components/settings/AppearanceTab';
 import {
   api, uiAuth, type ServiceCredential, type DiscordGuildInfo, type Permission, type ApiKeyItem,
-  type ContactCriteria, type KeyPermissionsResponse, type KeyServicePerm, type AiConnection, type AiPermissions,
+  type ContactCriteria, type KeyPermissionsResponse, type KeyServicePerm,
   type ObsidianVaultConfigRow, type PasskeyCredential, type ConnectionStatus,
   type ServiceFineGrained, type SlackFineGrained, type DiscordFineGrained, type TelegramFineGrained,
   type GmailFineGrained, type CalendarFineGrained, type TwitterFineGrained, type NotionFineGrained,
@@ -2310,7 +2310,7 @@ function PermissionsTab() {
                 <p className="text-sm font-semibold">Generate API key</p>
                 <input
                   autoFocus value={newKeyName} onChange={(e) => setNewKeyName(e.target.value)}
-                  placeholder="Name — e.g. Claude, OpenClaw, Home Assistant"
+                  placeholder="Name — e.g. my-assistant, automation"
                   className="input-warm"
                   onKeyDown={(e) => { if (e.key === 'Enter' && newKeyName.trim()) createKey.mutate(); }}
                 />
@@ -2613,9 +2613,9 @@ function InstallTab() {
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         {[
-          { name: 'OpenClaw', icon: '🦾', step: 'Settings → Skills → Add Custom Skill → paste the config' },
-          { name: 'Claude Projects', icon: '🤖', step: 'Project → Add Tool → Custom Tool → enter the API URL and key' },
+          { name: 'CLI agents', icon: '⌨️', step: 'Install the skill file below — the agent reads it and calls the API with your key' },
           { name: 'Any OpenAPI agent', icon: '⚡', step: 'Point to the spec URL and set X-API-Key in headers' },
+          { name: 'Custom scripts', icon: '🔧', step: 'Call the REST API from any language with an X-API-Key header' },
         ].map(({ name, icon, step }) => (
           <div key={name} className="rounded-xl border border-border bg-secondary/20 p-4 space-y-2">
             <div className="flex items-center gap-2">
@@ -4725,168 +4725,31 @@ function StepNumber({ n }: { n: number }) {
   );
 }
 
-// ─── AI Permissions Panel ─────────────────────────────────────────────────────
-
-const READ_CHECKS: Array<{ key: 'readMessages' | 'readEmails' | 'readCalendar' | 'readContacts'; label: string }> = [
-  { key: 'readMessages', label: 'Messages' },
-  { key: 'readEmails',   label: 'Emails'   },
-  { key: 'readCalendar', label: 'Calendar' },
-  { key: 'readContacts', label: 'Contacts' },
-];
-
-function AiPermissionsPanel() {
-  const qc = useQueryClient();
-
-  const { data: perms, isLoading } = useQuery<AiPermissions>({
-    queryKey: ['ai-permissions'],
-    queryFn: api.aiPermissions,
-    staleTime: 15000,
-  });
-
-  const [local, setLocal] = useState<AiPermissions | null>(null);
-  useEffect(() => { if (perms) setLocal({ ...perms }); }, [perms]);
-
-  const updateMutation = useMutation({
-    mutationFn: (patch: Partial<AiPermissions>) => api.updateAiPermissions(patch),
-    onSuccess: (updated) => { setLocal(updated); qc.invalidateQueries({ queryKey: ['ai-permissions'] }); },
-    onError: (e: Error) => toast({ title: 'Failed to save permission', description: e.message, variant: 'destructive' }),
-  });
-
-  const set = (patch: Partial<AiPermissions>) => {
-    if (!local) return;
-    if ('sendOutbox' in patch && !patch.sendOutbox) patch.requireApproval = true;
-    setLocal((prev) => prev ? { ...prev, ...patch } : prev);
-    updateMutation.mutate(patch);
-  };
-
-  if (isLoading || !local) {
-    return <div className="flex justify-center py-3"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground" /></div>;
-  }
-
-  // Read access is "on" if any read sub-permission is enabled
-  const anyRead = READ_CHECKS.some(({ key }) => local[key]);
-
-  const toggleReadAll = (on: boolean) => {
-    const patch = Object.fromEntries(READ_CHECKS.map(({ key }) => [key, on])) as Partial<AiPermissions>;
-    set(patch);
-  };
-
-  return (
-    <div className="rounded-xl border border-border bg-secondary/30 overflow-hidden">
-      <div className="px-3 py-2 border-b border-border flex items-center justify-between">
-        <div className="flex items-center gap-1.5">
-          <Shield className="w-3 h-3 text-muted-foreground" />
-          <p className="text-xs font-semibold text-foreground">Permissions</p>
-        </div>
-        <p className="text-[10px] text-muted-foreground">Takes effect on next conversation</p>
-      </div>
-
-      {/* Read row */}
-      <div className="divide-y divide-border">
-        <div className="flex items-center gap-3 px-3 py-2">
-          <p className="text-xs text-foreground/80 flex-shrink-0">Read access</p>
-          {/* Checkboxes sit between label and toggle, fade in when read is on */}
-          <div className="flex items-center gap-3 flex-1">
-            <AnimatePresence initial={false}>
-              {anyRead && (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.15 }}
-                  className="flex items-center gap-3"
-                >
-                  {READ_CHECKS.map(({ key, label }) => (
-                    <label key={key} className="flex items-center gap-1 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={local[key]}
-                        onChange={(e) => set({ [key]: e.target.checked })}
-                        className="w-3 h-3 rounded accent-primary cursor-pointer"
-                      />
-                      <span className="text-[11px] text-muted-foreground">{label}</span>
-                    </label>
-                  ))}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-          <MiniToggle checked={anyRead} onChange={toggleReadAll} />
-        </div>
-
-        {/* Send row */}
-        <div className="px-3 py-2 space-y-2">
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-foreground/80">Queue messages for sending</p>
-            <MiniToggle checked={local.sendOutbox} onChange={(v) => set({ sendOutbox: v })} />
-          </div>
-          <AnimatePresence initial={false}>
-            {local.sendOutbox && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: 'auto' }}
-                exit={{ opacity: 0, height: 0 }}
-                transition={{ duration: 0.15 }}
-                className="overflow-hidden"
-              >
-                <div className="flex items-center justify-between pl-1">
-                  <p className="text-[11px] text-muted-foreground">Require approval before sending</p>
-                  <MiniToggle checked={local.requireApproval} onChange={(v) => set({ requireApproval: v })} />
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ─── Skill Install Panel ──────────────────────────────────────────────────────
-
-const SKILL_RAW_URL = 'https://raw.githubusercontent.com/W3OSC/conduit/main/skills/conduit/SKILL.md';
-
-type SkillTarget = 'claude' | 'gemini';
-
-const SKILL_TARGETS: { id: SkillTarget; label: string; path: string }[] = [
-  { id: 'claude', label: 'Claude / Copilot CLI', path: '~/.claude/conduit/SKILL.md' },
-  { id: 'gemini', label: 'Gemini CLI / Codex',  path: '~/.agents/conduit/SKILL.md' },
-];
-
-function skillPrompt(path: string) {
-  return `Please install the Conduit skill: fetch ${SKILL_RAW_URL} and save it to ${path}, creating the directory if it doesn't exist.`;
-}
+// The skill file is served by this server at /api/skill, so the installed
+// skill always matches the running server version.
 
 function SkillInstallPanel() {
-  const [target, setTarget] = useState<SkillTarget>('claude');
-  const selected = SKILL_TARGETS.find((t) => t.id === target)!;
-  const prompt = skillPrompt(selected.path);
+  const baseUrl = typeof window !== 'undefined' ? window.location.origin : 'http://your-server:3101';
+  const skillUrl = `${baseUrl}/api/skill`;
+  const prompt = `Please install the Conduit skill: fetch ${skillUrl} and save it as a skill/instructions file for this agent (e.g. conduit/SKILL.md in your skills directory), creating the directory if it doesn't exist.`;
+
+  // Fetch the skill from this server so the copyable content always matches
+  // the running server version (for agents that cannot fetch URLs themselves).
+  const { data: skillMd } = useQuery({
+    queryKey: ['skill-md'],
+    queryFn: api.skill,
+    staleTime: 60_000,
+  });
 
   return (
     <div className="rounded-xl border border-border bg-secondary/30 overflow-hidden">
       <div className="px-3 py-2 border-b border-border flex items-center gap-1.5">
         <Download className="w-3 h-3 text-muted-foreground" />
         <p className="text-xs font-semibold text-foreground">Install as Skill</p>
-        <p className="text-[10px] text-muted-foreground ml-auto">Paste this prompt into your AI agent</p>
+        <p className="text-[10px] text-muted-foreground ml-auto">Paste this prompt into your agent</p>
       </div>
       <div className="p-3 space-y-2.5">
-        {/* Target selector */}
-        <div className="flex gap-1.5">
-          {SKILL_TARGETS.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTarget(t.id)}
-              className={cn(
-                'px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors',
-                target === t.id
-                  ? 'bg-primary/15 border-primary/40 text-primary'
-                  : 'bg-secondary/40 border-border text-muted-foreground hover:text-foreground',
-              )}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
         {/* Copyable prompt */}
         <div className="relative group">
           <pre className="text-[11px] font-mono bg-background border border-border rounded-xl p-3 pr-8 overflow-x-auto text-foreground/80 whitespace-pre-wrap break-all leading-relaxed">
@@ -4898,187 +4761,40 @@ function SkillInstallPanel() {
             className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"
           />
         </div>
-        <p className="text-[10px] text-muted-foreground">
-          Installs to <code className="font-mono">{selected.path}</code>
-          {' · '}
+        <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+          <span>Served from this Conduit server — always matches the running version</span>
+          <span>·</span>
           <a
-            href={SKILL_RAW_URL}
+            href="/api/skill"
             target="_blank"
             rel="noopener noreferrer"
             className="text-primary hover:underline"
           >
             view SKILL.md
           </a>
-        </p>
+          {skillMd && (
+            <>
+              <span>·</span>
+              <CopyButton
+                text={skillMd}
+                title="Copy SKILL.md contents"
+                className="h-5 px-1 py-0"
+                iconClassName="w-3 h-3"
+              />
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Agent Access Tab ─────────────────────────────────────────────────────────
+// Provider-agnostic: external AI agents connect to Conduit over the REST API
+// with an API key — no in-app chat, no vendor-specific wiring.
 
-type AiSetupMethod = 'channel' | 'gateway' | 'cli' | 'other';
-
-function AiConnectionTab() {
-  const qc = useQueryClient();
+function AgentAccessTab() {
   const navigate = useNavigate();
-  const [webhookUrl, setWebhookUrl] = useState('');
-  // Where is the AI agent running? drives the host used in webhook URL + callback base URL
-  const [agentLocation, setAgentLocation] = useState<'localhost' | 'docker' | 'custom'>('localhost');
-  const [customAgentHost, setCustomAgentHost] = useState('');
-  const [channelPort, setChannelPort] = useState('18789');
-  const [testState, setTestState] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
-  const [testError, setTestError] = useState<string | null>(null);
-  const [disconnecting, setDisconnecting] = useState(false);
-  const [method, setMethod] = useState<AiSetupMethod>('channel');
-  // Gateway token — sent as Authorization: Bearer <token> to the webhook
-  const [gatewayToken, setGatewayToken] = useState('');
-  const [gatewayTokenSaving, setGatewayTokenSaving] = useState(false);
-  // Callback base URL panel (connected state)
-  const [cbLocation, setCbLocation] = useState<'auto' | 'localhost' | 'docker' | 'custom'>('auto');
-  const [customCbHost, setCustomCbHost] = useState('');
-  const [cbPort, setCbPort] = useState(window.location.port || '3101');
-  const [callbackSaving, setCallbackSaving] = useState(false);
-
-  const { data: conn, isLoading } = useQuery<AiConnection>({
-    queryKey: ['ai-connection'],
-    queryFn: api.aiConnection,
-    staleTime: 10000,
-  });
-
-  // Gateway token is write-only (server never returns the raw token), so the
-  // local input always starts empty and the user types a new value to change it.
-
-  // Pre-populate agent location + port from the saved webhook URL
-  useEffect(() => {
-    if (!conn?.webhookUrl) return;
-    try {
-      const u = new URL(conn.webhookUrl);
-      if (u.pathname === '/channels/conduit/inbound') {
-        const host = u.hostname;
-        if (host === 'localhost' || host === '127.0.0.1') setAgentLocation('localhost');
-        else if (host === '172.17.0.1') setAgentLocation('docker');
-        else { setAgentLocation('custom'); setCustomAgentHost(host); }
-        setChannelPort(u.port || '18789');
-      }
-    } catch {
-      // not a valid URL — leave defaults
-    }
-  }, [conn?.webhookUrl]);
-
-  // Pre-populate callback base URL selector from saved setting
-  useEffect(() => {
-    const saved = conn?.callbackBaseUrl;
-    if (!saved) { setCbLocation('auto'); return; }
-    try {
-      const u = new URL(saved);
-      const h = u.hostname;
-      const p = u.port || '3101';
-      setCbPort(p);
-      if (h === 'localhost' || h === '127.0.0.1') setCbLocation('localhost');
-      else if (h === '172.17.0.1') setCbLocation('docker');
-      else { setCbLocation('custom'); setCustomCbHost(h); }
-    } catch {
-      setCbLocation('custom'); setCustomCbHost(saved);
-    }
-  }, [conn?.callbackBaseUrl]);
-
-  const setupMutation = useMutation({
-    mutationFn: (url: string) => api.setupAiConnection(url, gatewayToken || undefined),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['ai-connection'] });
-      toast({ title: 'AI connection saved', variant: 'success' });
-    },
-    onError: (err) => toast({ title: 'Setup failed', description: String(err), variant: 'destructive' }),
-  });
-
-  const handleSaveGatewayToken = async () => {
-    setGatewayTokenSaving(true);
-    try {
-      await api.updateAiConnection({ gatewayToken: gatewayToken.trim() || null });
-      qc.invalidateQueries({ queryKey: ['ai-connection'] });
-      toast({ title: 'Gateway token saved', variant: 'success' });
-    } catch (e) {
-      toast({ title: 'Failed to save', description: String(e), variant: 'destructive' });
-    } finally {
-      setGatewayTokenSaving(false);
-    }
-  };
-
-  const handleTest = async () => {
-    setTestState('testing');
-    setTestError(null);
-    try {
-      const result = await api.testAiConnection();
-      if (result.success) {
-        setTestState('success');
-        qc.invalidateQueries({ queryKey: ['ai-connection'] });
-        toast({ title: `Connection verified (${result.latencyMs}ms)`, variant: 'success' });
-      } else {
-        setTestState('error');
-        setTestError(result.error ?? 'Unknown error');
-      }
-    } catch (e) {
-      setTestState('error');
-      setTestError(String(e));
-    }
-  };
-
-  const handleDisconnect = async () => {
-    setDisconnecting(true);
-    try {
-      await api.disconnectAi();
-      setTestState('idle');
-      qc.invalidateQueries({ queryKey: ['ai-connection'] });
-      toast({ title: 'AI connection removed' });
-    } catch (e) {
-      toast({ title: 'Failed to disconnect', description: String(e), variant: 'destructive' });
-    } finally {
-      setDisconnecting(false);
-    }
-  };
-
-  const resolvedCbUrl = (() => {
-    const port = cbPort || window.location.port || '3101';
-    if (cbLocation === 'auto') return null;
-    if (cbLocation === 'localhost') return `http://localhost:${port}`;
-    if (cbLocation === 'docker')    return `http://172.17.0.1:${port}`;
-    return customCbHost.trim() ? `http://${customCbHost.trim()}:${port}` : null;
-  })();
-
-  const handleSaveCallbackBase = async () => {
-    setCallbackSaving(true);
-    try {
-      await api.updateAiCallbackBase(resolvedCbUrl);
-      qc.invalidateQueries({ queryKey: ['ai-connection'] });
-      toast({ title: 'Callback base URL saved', variant: 'success' });
-    } catch (e) {
-      toast({ title: 'Failed to save', description: String(e), variant: 'destructive' });
-    } finally {
-      setCallbackSaving(false);
-    }
-  };
-
-  if (isLoading) {
-    return <div className="flex justify-center py-10"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground" /></div>;
-  }
-
-  const configured = conn?.configured ?? false;
-  const verified   = conn?.verified   ?? false;
-
-  // Derive the host for the OpenClaw webhook URL from the agent location selector
-  const resolvedChannelHost =
-    agentLocation === 'localhost' ? 'localhost' :
-    agentLocation === 'docker'    ? '172.17.0.1' :
-    customAgentHost.trim();
-  const resolvedChannelUrl = `http://${resolvedChannelHost || 'localhost'}:${channelPort || '18789'}/channels/conduit/inbound`;
-
-  const methods: { id: AiSetupMethod; label: string; sub: string }[] = [
-    { id: 'channel', label: 'OpenClaw Channel', sub: '@w3osc/openclaw-conduit plugin' },
-    { id: 'gateway', label: 'OpenClaw Gateway', sub: 'via webhooks plugin' },
-    { id: 'cli',     label: 'OpenClaw CLI',     sub: 'direct session injection' },
-    { id: 'other',   label: 'Other tools',       sub: 'n8n, custom scripts, etc.' },
-  ];
 
   return (
     <div className="space-y-6">
@@ -5088,712 +4804,52 @@ function AiConnectionTab() {
           <Bot className="w-5 h-5 text-primary" />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2.5 flex-wrap">
-            <h2 className="text-sm font-semibold">AI Connection</h2>
-            {verified ? (
-              <span className="chip chip-emerald text-[10px]">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block" />
-                Connected
-              </span>
-            ) : configured ? (
-              <span className="chip chip-amber text-[10px]">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block" />
-                Needs test
-              </span>
-            ) : (
-              <span className="chip chip-zinc text-[10px]">Not configured</span>
-            )}
-          </div>
-          {verified && (
-            <button onClick={() => navigate('/ai')} className="mt-2 inline-flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 transition-colors">
-              Open AI Chat <ArrowRight className="w-3 h-3" />
-            </button>
-          )}
+          <h2 className="text-sm font-semibold">Connect your agent</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Any AI agent can use Conduit through its REST API — no vendor-specific integration required.
+          </p>
         </div>
       </div>
 
-      {/* ── PERMISSIONS (always visible) ── */}
-      <AiPermissionsPanel />
+      {/* How it works */}
+      <div className="rounded-xl border border-border bg-secondary/30 overflow-hidden">
+        <div className="px-3 py-2 border-b border-border flex items-center gap-1.5">
+          <Zap className="w-3 h-3 text-muted-foreground" />
+          <p className="text-xs font-semibold text-foreground">How it works</p>
+        </div>
+        <div className="p-3 space-y-3">
+          <div className="flex items-start gap-3">
+            <StepNumber n={1} />
+            <p className="text-xs text-foreground/80 leading-relaxed pt-1">
+              Create an API key in{' '}
+              <button onClick={() => navigate('/settings/permissions')} className="text-primary hover:underline font-semibold cursor-pointer">
+                Settings → Permissions
+              </button>{' '}
+              and give it to your agent. Key permissions control what the agent can access.
+            </p>
+          </div>
+          <div className="flex items-start gap-3">
+            <StepNumber n={2} />
+            <p className="text-xs text-foreground/80 leading-relaxed pt-1">
+              Install the skill below so your agent knows the API surface and conventions.
+            </p>
+          </div>
+          <div className="flex items-start gap-3">
+            <StepNumber n={3} />
+            <p className="text-xs text-foreground/80 leading-relaxed pt-1">
+              The agent calls the REST API with an{' '}
+              <code className="font-mono text-primary/70 text-[11px]">X-API-Key</code> header. All writes queue in the{' '}
+              <button onClick={() => navigate('/outbox')} className="text-primary hover:underline font-semibold cursor-pointer">
+                Outbox
+              </button>{' '}
+              for your approval.
+            </p>
+          </div>
+        </div>
+      </div>
 
-      {/* ── SKILL INSTALL (always visible) ── */}
+      {/* Skill install */}
       <SkillInstallPanel />
-
-      {/* ── METHOD SELECTOR ── */}
-      {!configured && (
-        <div className="flex gap-2 flex-wrap">
-          {methods.map((m) => (
-            <button
-              key={m.id}
-              onClick={() => setMethod(m.id)}
-              className={cn(
-                'flex-1 min-w-[140px] rounded-xl border px-3 py-2.5 text-left transition-colors',
-                method === m.id
-                  ? 'border-primary/40 bg-primary/10 text-foreground'
-                  : 'border-border bg-secondary/20 text-muted-foreground hover:border-border/80 hover:bg-secondary/40',
-              )}
-            >
-              <p className="text-xs font-semibold leading-tight">{m.label}</p>
-              <p className="text-[11px] text-muted-foreground mt-0.5">{m.sub}</p>
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* ── SETUP FLOW ── */}
-      {!configured ? (
-        <div className="space-y-5">
-
-          {/* ── Gateway (OpenClaw webhooks) ── */}
-          {/* ── OpenClaw Channel plugin ── */}
-          {method === 'channel' && (
-            <div className="rounded-xl border border-border bg-secondary/30 divide-y divide-border">
-              <div className="p-4 space-y-2">
-                <div className="flex items-center gap-2.5">
-                  <StepNumber n={1} />
-                  <h3 className="text-sm font-semibold">Install the Conduit channel plugin</h3>
-                </div>
-                <div className="pl-8 space-y-2">
-                   <CodeBlock>{`openclaw plugins install @w3osc/openclaw-conduit`}</CodeBlock>
-                </div>
-              </div>
-
-              <div className="p-4 space-y-2">
-                <div className="flex items-center gap-2.5">
-                  <StepNumber n={2} />
-                  <h3 className="text-sm font-semibold">Generate a Conduit API key</h3>
-                </div>
-                <div className="pl-8 space-y-2">
-                  <span className="text-xs text-muted-foreground">
-                    Go to <button onClick={() => navigate('/settings/permissions')} className="text-primary hover:underline font-semibold cursor-pointer">Settings → Permissions</button> and generate an API key. You will add it to your OpenClaw config in the next step.
-                  </span>
-                </div>
-              </div>
-
-              <div className="p-4 space-y-3">
-                <div className="flex items-center gap-2.5">
-                  <StepNumber n={3} />
-                  <h3 className="text-sm font-semibold">Enter the Gateway address and connect</h3>
-                </div>
-                <div className="pl-8 space-y-3">
-                  <p className="text-xs text-muted-foreground">
-                    Enter the host and port where your OpenClaw Gateway is running. Conduit will POST AI chat messages to <code className="font-mono text-primary/70 text-[11px]">/channels/conduit/inbound</code> on that address.
-                  </p>
-                  {/* Agent location selector */}
-                  <div className="flex gap-2">
-                    {(['localhost', 'docker', 'custom'] as const).map((loc) => (
-                      <button
-                        key={loc}
-                        onClick={() => setAgentLocation(loc)}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                          agentLocation === loc
-                            ? 'bg-primary/15 border-primary/40 text-primary'
-                            : 'bg-secondary/40 border-border text-muted-foreground hover:text-foreground'
-                        }`}
-                      >
-                        {loc === 'localhost' ? 'Localhost' : loc === 'docker' ? 'Docker' : 'Custom'}
-                      </button>
-                    ))}
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', maxWidth: '360px' }}>
-                    {agentLocation === 'custom' ? (
-                      <input
-                        type="text"
-                        value={customAgentHost}
-                        onChange={(e) => setCustomAgentHost(e.target.value)}
-                        placeholder="e.g. 192.168.1.10"
-                        className="input-warm"
-                        style={{ flex: '1 1 auto', width: 0 }}
-                      />
-                    ) : (
-                      <div
-                        className="input-warm text-muted-foreground select-none"
-                        style={{ flex: '1 1 auto', width: 0 }}
-                      >
-                        {agentLocation === 'docker' ? '172.17.0.1' : 'localhost'}
-                      </div>
-                    )}
-                    <span className="text-muted-foreground text-sm" style={{ flexShrink: 0 }}>:</span>
-                    <input
-                      type="text"
-                      value={channelPort}
-                      onChange={(e) => setChannelPort(e.target.value.replace(/\D/g, ''))}
-                      placeholder="18789"
-                      className="input-warm"
-                      style={{ flex: '0 0 80px', width: '80px' }}
-                    />
-                  </div>
-                  <p className="text-[11px] text-muted-foreground font-mono">
-                    → {resolvedChannelUrl}
-                  </p>
-                  <button
-                    onClick={() => setupMutation.mutate(resolvedChannelUrl)}
-                    disabled={(agentLocation === 'custom' && !customAgentHost.trim()) || !channelPort.trim() || setupMutation.isPending}
-                    className="btn-primary"
-                  >
-                    {setupMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlugZap className="w-4 h-4" />}
-                    Connect
-                  </button>
-                </div>
-              </div>
-
-              <div className="p-4 space-y-2">
-                <div className="flex items-center gap-2.5">
-                  <StepNumber n={4} />
-                  <h3 className="text-sm font-semibold">Add the channel config to OpenClaw</h3>
-                </div>
-                <div className="pl-8 space-y-2">
-                  <p className="text-xs text-muted-foreground">
-                    Run this snippet to automatically inject the channel config into <code className="font-mono text-primary/70 text-[11px]">~/.openclaw/openclaw.json</code>:
-                  </p>
-                  <CodeBlock className="leading-relaxed">{`python3 - <<'EOF'
-import json, pathlib, sys
-
-def prompt(msg):
-    with open("/dev/tty") as tty:
-        sys.stdout.write(msg)
-        sys.stdout.flush()
-        return tty.readline().rstrip("\\n")
-
-config_path = pathlib.Path.home() / ".openclaw" / "openclaw.json"
-config_path.parent.mkdir(parents=True, exist_ok=True)
-
-default_url = "${window.location.origin}"
-base_url = prompt(f"Conduit base URL [{default_url}]: ").strip() or default_url
-api_key = prompt("API key (from Step 2): ").strip()
-
-cfg = json.loads(config_path.read_text()) if config_path.exists() else {}
-cfg.setdefault("channels", {})["conduit"] = {
-    "baseUrl": base_url,
-    "apiKey": api_key,
-    "allowFrom": [],
-    "webhookSecret": ""
-}
-
-config_path.write_text(json.dumps(cfg, indent=2))
-print("openclaw.json updated.")
-EOF`}</CodeBlock>
-                  <p className="text-xs text-muted-foreground">
-                    Restart the Gateway: <code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    The plugin registers an inbound route at: <code className="font-mono text-primary/70 text-[11px]">http://{resolvedChannelHost || 'localhost'}:{channelPort || '18789'}/channels/conduit/inbound</code>
-                  </p>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {method === 'gateway' && (
-            <div className="rounded-xl border border-border bg-secondary/30 divide-y divide-border">
-              <div className="p-4 space-y-2">
-                <div className="flex items-center gap-2.5">
-                  <StepNumber n={1} />
-                  <h3 className="text-sm font-semibold">Generate a Conduit API key</h3>
-                </div>
-                <div className="pl-8 space-y-2">
-                  <p className="text-xs text-muted-foreground">
-                    Go to <button onClick={() => navigate('/settings/permissions')} className="text-primary hover:underline font-semibold cursor-pointer">Settings → Permissions</button> and generate an API key. Configure your OpenClaw agent with it so it can authenticate against the Conduit API.
-                  </p>
-                </div>
-              </div>
-
-              <div className="p-4 space-y-2">
-                <div className="flex items-center gap-2.5">
-                  <StepNumber n={2} />
-                  <h3 className="text-sm font-semibold">Enable the Webhooks plugin</h3>
-                </div>
-                <div className="pl-8 space-y-2">
-                  <p className="text-xs text-muted-foreground">
-                    Edit <code className="font-mono text-primary/70 text-[11px]">~/.openclaw/openclaw.json</code> and add:
-                  </p>
-                   <CodeBlock className="leading-relaxed">{`{
-  "plugins": {
-    "entries": {
-      "webhooks": {
-        "enabled": true,
-        "config": {
-          "routes": {
-              "conduit": {
-                "path": "/plugins/webhooks/conduit",
-                "sessionKey": "agent:main:main",
-                "secret": "YOUR_STRONG_SECRET_HERE",
-                "description": "Conduit AI chat bridge"
-            }
-          }
-        }
-      }
-    }
-  }
-}`}</CodeBlock>
-                  <p className="text-xs text-muted-foreground">
-                    Restart the Gateway: <code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    Webhook URL (local): <code className="font-mono text-primary/70 text-[11px]">http://&lt;machine-ip&gt;:18789/plugins/webhooks/conduit</code>
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    Webhook URL (Tailscale Serve): <code className="font-mono text-primary/70 text-[11px]">https://&lt;magicdns&gt;/plugins/webhooks/conduit</code>
-                  </p>
-                </div>
-              </div>
-
-              <div className="p-4 space-y-3">
-                <div className="flex items-center gap-2.5">
-                  <StepNumber n={3} />
-                  <h3 className="text-sm font-semibold">Enter the webhook URL and connect</h3>
-                </div>
-                <div className="pl-8 space-y-3">
-                  <input
-                    type="url"
-                    value={webhookUrl}
-                    onChange={(e) => setWebhookUrl(e.target.value)}
-                    placeholder="http://192.168.1.x:18789/plugins/webhooks/conduit"
-                    className="input-warm"
-                  />
-                  <div className="space-y-1.5">
-                    <label className="text-xs text-muted-foreground font-medium">Gateway token (if required)</label>
-                    <input
-                      type="password"
-                      value={gatewayToken}
-                      onChange={(e) => setGatewayToken(e.target.value)}
-                      placeholder="Bearer token your gateway requires"
-                      className="input-warm font-mono"
-                    />
-                    <p className="text-[11px] text-muted-foreground">
-                      Sent as <code className="font-mono text-[11px]">Authorization: Bearer &lt;token&gt;</code> on every outbound request. Leave blank if not required.
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => setupMutation.mutate(webhookUrl)}
-                    disabled={!webhookUrl.trim() || setupMutation.isPending}
-                    className="btn-primary"
-                  >
-                    {setupMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlugZap className="w-4 h-4" />}
-                    Connect
-                  </button>
-                </div>
-              </div>
-
-              <div className="p-4 space-y-3">
-                <div className="flex items-center gap-2.5">
-                  <StepNumber n={4} />
-                  <h3 className="text-sm font-semibold">Test the connection</h3>
-                </div>
-                <p className="text-xs text-muted-foreground pl-8">
-                  Ensure your Gateway is running (<code className="font-mono text-primary/70 text-[11px]">openclaw gateway</code>), then send a test ping.
-                </p>
-                <div className="pl-8 flex items-center gap-3 flex-wrap">
-                  <button
-                    onClick={handleTest}
-                    disabled={testState === 'testing'}
-                    className="btn-secondary"
-                  >
-                    {testState === 'testing'
-                      ? <Loader2 className="w-4 h-4 animate-spin" />
-                      : <RefreshCw className="w-4 h-4" />}
-                    {testState === 'testing' ? 'Testing…' : 'Test connection'}
-                  </button>
-                  {testState === 'success' && (
-                    <span className="flex items-center gap-1.5 text-xs text-emerald-400">
-                      <CircleCheck className="w-4 h-4" /> Round-trip confirmed
-                    </span>
-                  )}
-                  {testState === 'error' && (
-                    <span className="flex items-center gap-1.5 text-xs text-red-400">
-                      <CircleX className="w-4 h-4" /> {testError}
-                    </span>
-                  )}
-                </div>
-                {testState === 'success' && (
-                  <div className="pl-8">
-                    <button onClick={() => navigate('/ai')} className="btn-primary">
-                      <Bot className="w-4 h-4" /> Open AI Chat
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* ── CLI (direct session injection) ── */}
-          {method === 'cli' && (
-            <div className="rounded-xl border border-border bg-secondary/30 divide-y divide-border">
-              <div className="p-4 space-y-2">
-                <div className="flex items-center gap-2.5">
-                  <StepNumber n={1} />
-                  <h3 className="text-sm font-semibold">Generate an API key</h3>
-                </div>
-                <div className="pl-8 space-y-2">
-                  <p className="text-xs text-muted-foreground">
-                    Go to <button onClick={() => navigate('/settings/permissions')} className="text-primary hover:underline font-semibold">Settings → Permissions</button> and generate an API key. All CLI requests must include <code className="font-mono text-primary/70 text-[11px]">X-API-Key: &lt;your-key&gt;</code>.
-                  </p>
-                </div>
-              </div>
-
-              <div className="p-4 space-y-2">
-                <div className="flex items-center gap-2.5">
-                  <StepNumber n={2} />
-                  <h3 className="text-sm font-semibold">Enter a webhook URL and connect</h3>
-                </div>
-                <div className="pl-8 space-y-3">
-                  <p className="text-xs text-muted-foreground">
-                    Provide a URL that Conduit will POST new chat messages to. This can be a local HTTP server, a script, or any endpoint you control.
-                  </p>
-                  <input
-                    type="url"
-                    value={webhookUrl}
-                    onChange={(e) => setWebhookUrl(e.target.value)}
-                    placeholder="http://localhost:8080/conduit-hook"
-                    className="input-warm"
-                  />
-                  <button
-                    onClick={() => setupMutation.mutate(webhookUrl)}
-                    disabled={!webhookUrl.trim() || setupMutation.isPending}
-                    className="btn-primary"
-                  >
-                    {setupMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlugZap className="w-4 h-4" />}
-                    Connect
-                  </button>
-                </div>
-              </div>
-
-              <div className="p-4 space-y-2">
-                <div className="flex items-center gap-2.5">
-                  <StepNumber n={3} />
-                  <h3 className="text-sm font-semibold">Handle incoming payloads and stream back</h3>
-                </div>
-                <div className="pl-8 space-y-2">
-                  <p className="text-xs text-muted-foreground">
-                    Conduit POSTs JSON to your webhook URL on each message:
-                  </p>
-                   <CodeBlock className="leading-relaxed">{`{
-  "sessionId": "<uuid>",
-  "streamUrl": "<baseUrl>/api/ai/sessions/<id>/stream",
-  "messages": [{ "role": "user", "content": "..." }],
-  "systemPrompt": "..."
-}`}</CodeBlock>
-                  <p className="text-xs text-muted-foreground">
-                    Stream your response back by POSTing chunks to <code className="font-mono text-primary/70 text-[11px]">streamUrl</code>:
-                  </p>
-                   <CodeBlock className="leading-relaxed">{`# First chunk — omit messageId, save the returned one
-POST <streamUrl>
-X-API-Key: <your-key>
-{ "delta": "text chunk", "done": false }
-
-# Subsequent chunks
-{ "delta": "next chunk", "done": false, "messageId": "<returned-id>" }
-
-# Final chunk
-{ "delta": "", "done": true, "messageId": "<returned-id>" }`}</CodeBlock>
-                </div>
-              </div>
-
-              <div className="p-4 space-y-3">
-                <div className="flex items-center gap-2.5">
-                  <StepNumber n={4} />
-                  <h3 className="text-sm font-semibold">Test the connection</h3>
-                </div>
-                <p className="text-xs text-muted-foreground pl-8">
-                  Ensure your endpoint is running, then send a test ping.
-                </p>
-                <div className="pl-8 flex items-center gap-3 flex-wrap">
-                  <button
-                    onClick={handleTest}
-                    disabled={testState === 'testing'}
-                    className="btn-secondary"
-                  >
-                    {testState === 'testing'
-                      ? <Loader2 className="w-4 h-4 animate-spin" />
-                      : <RefreshCw className="w-4 h-4" />}
-                    {testState === 'testing' ? 'Testing…' : 'Test connection'}
-                  </button>
-                  {testState === 'success' && (
-                    <span className="flex items-center gap-1.5 text-xs text-emerald-400">
-                      <CircleCheck className="w-4 h-4" /> Round-trip confirmed
-                    </span>
-                  )}
-                  {testState === 'error' && (
-                    <span className="flex items-center gap-1.5 text-xs text-red-400">
-                      <CircleX className="w-4 h-4" /> {testError}
-                    </span>
-                  )}
-                </div>
-                {testState === 'success' && (
-                  <div className="pl-8">
-                    <button onClick={() => navigate('/ai')} className="btn-primary">
-                      <Bot className="w-4 h-4" /> Open AI Chat
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* ── Other tools ── */}
-          {method === 'other' && (
-            <div className="rounded-xl border border-border bg-secondary/30 divide-y divide-border">
-              <div className="p-4 space-y-2">
-                <div className="flex items-center gap-2.5">
-                  <StepNumber n={1} />
-                  <h3 className="text-sm font-semibold">Generate an API key</h3>
-                </div>
-                <div className="pl-8 space-y-2">
-                  <p className="text-xs text-muted-foreground">
-                    Go to <button onClick={() => navigate('/settings/permissions')} className="text-primary hover:underline font-semibold">Settings → Permissions</button> and generate an API key. Include it as <code className="font-mono text-primary/70 text-[11px]">X-API-Key: &lt;your-key&gt;</code> on every request.
-                  </p>
-                </div>
-              </div>
-
-              <div className="p-4 space-y-2">
-                <div className="flex items-center gap-2.5">
-                  <StepNumber n={2} />
-                  <h3 className="text-sm font-semibold">Point your tool at the OpenAPI spec</h3>
-                </div>
-                <div className="pl-8 space-y-2">
-                  <p className="text-xs text-muted-foreground">
-                    The full REST API is described at:
-                  </p>
-                   <CodeBlock>{`GET ${typeof window !== 'undefined' ? window.location.origin : '<baseUrl>'}/api/openapi.json`}</CodeBlock>
-                  <p className="text-xs text-muted-foreground">
-                    Configure your tool (n8n, Zapier, custom script, etc.) to use that spec URL and set <code className="font-mono text-primary/70 text-[11px]">X-API-Key</code> as an auth header.
-                  </p>
-                </div>
-              </div>
-
-              <div className="p-4 space-y-2">
-                <div className="flex items-center gap-2.5">
-                  <StepNumber n={3} />
-                  <h3 className="text-sm font-semibold">Register a webhook URL and connect</h3>
-                </div>
-                <div className="pl-8 space-y-3">
-                  <p className="text-xs text-muted-foreground">
-                    Provide the URL Conduit will POST AI chat messages to. Your tool must listen at that URL and stream responses back.
-                  </p>
-                  <input
-                    type="url"
-                    value={webhookUrl}
-                    onChange={(e) => setWebhookUrl(e.target.value)}
-                    placeholder="https://your-tool.example.com/webhook"
-                    className="input-warm"
-                  />
-                  <button
-                    onClick={() => setupMutation.mutate(webhookUrl)}
-                    disabled={!webhookUrl.trim() || setupMutation.isPending}
-                    className="btn-primary"
-                  >
-                    {setupMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlugZap className="w-4 h-4" />}
-                    Connect
-                  </button>
-                </div>
-              </div>
-
-              <div className="p-4 space-y-2">
-                <div className="flex items-center gap-2.5">
-                  <StepNumber n={4} />
-                  <h3 className="text-sm font-semibold">Stream responses back</h3>
-                </div>
-                <div className="pl-8 space-y-2">
-                  <p className="text-xs text-muted-foreground">
-                    Conduit POSTs this payload to your webhook on each message:
-                  </p>
-                   <CodeBlock className="leading-relaxed">{`{
-  "sessionId": "<uuid>",
-  "streamUrl": "<baseUrl>/api/ai/sessions/<id>/stream",
-  "messages": [{ "role": "user", "content": "..." }],
-  "systemPrompt": "..."
-}`}</CodeBlock>
-                  <p className="text-xs text-muted-foreground">
-                    POST token chunks to <code className="font-mono text-primary/70 text-[11px]">streamUrl</code> with <code className="font-mono text-primary/70 text-[11px]">X-API-Key</code>:
-                  </p>
-                   <CodeBlock className="leading-relaxed">{`{ "delta": "text chunk", "done": false }              // first — save returned messageId
-{ "delta": "next chunk", "done": false, "messageId": "<id>" }
-{ "delta": "", "done": true,  "messageId": "<id>" }    // final`}</CodeBlock>
-                </div>
-              </div>
-
-              <div className="p-4 space-y-3">
-                <div className="flex items-center gap-2.5">
-                  <StepNumber n={5} />
-                  <h3 className="text-sm font-semibold">Test the connection</h3>
-                </div>
-                <p className="text-xs text-muted-foreground pl-8">
-                  Ensure your tool is running, then send a test ping.
-                </p>
-                <div className="pl-8 flex items-center gap-3 flex-wrap">
-                  <button
-                    onClick={handleTest}
-                    disabled={testState === 'testing'}
-                    className="btn-secondary"
-                  >
-                    {testState === 'testing'
-                      ? <Loader2 className="w-4 h-4 animate-spin" />
-                      : <RefreshCw className="w-4 h-4" />}
-                    {testState === 'testing' ? 'Testing…' : 'Test connection'}
-                  </button>
-                  {testState === 'success' && (
-                    <span className="flex items-center gap-1.5 text-xs text-emerald-400">
-                      <CircleCheck className="w-4 h-4" /> Round-trip confirmed
-                    </span>
-                  )}
-                  {testState === 'error' && (
-                    <span className="flex items-center gap-1.5 text-xs text-red-400">
-                      <CircleX className="w-4 h-4" /> {testError}
-                    </span>
-                  )}
-                </div>
-                {testState === 'success' && (
-                  <div className="pl-8">
-                    <button onClick={() => navigate('/ai')} className="btn-primary">
-                      <Bot className="w-4 h-4" /> Open AI Chat
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      ) : (
-        <div className="space-y-5">
-
-          {/* Connection details */}
-          <div className="rounded-xl border border-border bg-secondary/30 divide-y divide-border">
-            <div className="p-4 space-y-1.5">
-              <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Webhook URL</p>
-              <p className="text-sm text-foreground font-mono break-all">{conn?.webhookUrl}</p>
-            </div>
-            <div className="p-4 space-y-3">
-              <div className="space-y-1">
-                <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Gateway Token</p>
-                <p className="text-[11px] text-muted-foreground">
-                  Sent as <code className="font-mono text-[11px]">Authorization: Bearer &lt;token&gt;</code> on every outbound webhook request.
-                  Required when the webhook endpoint enforces gateway authentication.
-                </p>
-              </div>
-              <input
-                type="password"
-                value={gatewayToken}
-                onChange={(e) => setGatewayToken(e.target.value)}
-                placeholder="Leave blank if not required"
-                className="input font-mono text-sm w-full"
-              />
-              <button
-                onClick={handleSaveGatewayToken}
-                disabled={gatewayTokenSaving}
-                className="btn-secondary"
-              >
-                {gatewayTokenSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save'}
-              </button>
-            </div>
-            <div className="p-4 space-y-3">
-              <div className="space-y-1">
-                <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Callback Base URL</p>
-                <p className="text-[11px] text-muted-foreground">
-                  The URL Conduit sends to the AI agent as <code className="font-mono text-[11px]">conduitBaseUrl</code> / <code className="font-mono text-[11px]">streamUrl</code>.
-                  Use <strong>Docker</strong> when the agent runs in a separate container and can't reach localhost.
-                </p>
-              </div>
-              {/* Location selector */}
-              <div className="flex gap-2 flex-wrap">
-                {(['auto', 'localhost', 'docker', 'custom'] as const).map((loc) => (
-                  <button
-                    key={loc}
-                    onClick={() => setCbLocation(loc)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                      cbLocation === loc
-                        ? 'bg-primary/15 border-primary/40 text-primary'
-                        : 'bg-secondary/40 border-border text-muted-foreground hover:text-foreground'
-                    }`}
-                  >
-                    {loc === 'auto' ? 'Auto' : loc === 'localhost' ? 'Localhost' : loc === 'docker' ? 'Docker' : 'Custom'}
-                  </button>
-                ))}
-              </div>
-              {cbLocation !== 'auto' && (
-                <div className="flex items-center gap-2">
-                  {cbLocation === 'custom' ? (
-                    <input
-                      type="text"
-                      value={customCbHost}
-                      onChange={(e) => setCustomCbHost(e.target.value)}
-                      placeholder="e.g. 192.168.1.10"
-                      className="input flex-1 font-mono text-sm"
-                    />
-                  ) : (
-                    <div className="input flex-1 font-mono text-sm text-muted-foreground select-none">
-                      {cbLocation === 'docker' ? '172.17.0.1' : 'localhost'}
-                    </div>
-                  )}
-                  <span className="text-muted-foreground text-sm flex-shrink-0">:</span>
-                  <input
-                    type="text"
-                    value={cbPort}
-                    onChange={(e) => setCbPort(e.target.value.replace(/\D/g, ''))}
-                    placeholder={window.location.port || '3101'}
-                    className="input font-mono text-sm flex-shrink-0"
-                    style={{ width: '80px' }}
-                  />
-                </div>
-              )}
-              {resolvedCbUrl && (
-                <p className="text-[11px] text-muted-foreground font-mono">→ {resolvedCbUrl}</p>
-              )}
-              {cbLocation === 'auto' && (
-                <p className="text-[11px] text-muted-foreground">Uses the auto-detected server URL from the incoming request.</p>
-              )}
-              <button
-                onClick={handleSaveCallbackBase}
-                disabled={callbackSaving || (cbLocation === 'custom' && !customCbHost.trim())}
-                className="btn-secondary"
-              >
-                {callbackSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save'}
-              </button>
-            </div>
-            <div className="p-4 flex items-center gap-3 flex-wrap">
-              <button
-                onClick={handleTest}
-                disabled={testState === 'testing'}
-                className="btn-secondary"
-              >
-                {testState === 'testing'
-                  ? <Loader2 className="w-4 h-4 animate-spin" />
-                  : <RefreshCw className="w-4 h-4" />}
-                {testState === 'testing' ? 'Testing…' : 'Test connection'}
-              </button>
-              {testState === 'success' && (
-                <span className="flex items-center gap-1.5 text-xs text-emerald-400">
-                  <CircleCheck className="w-4 h-4" /> Round-trip confirmed
-                </span>
-              )}
-              {testState === 'error' && (
-                <span className="flex items-center gap-1.5 text-xs text-red-400">
-                  <CircleX className="w-4 h-4" /> {testError}
-                </span>
-              )}
-              {testState === 'success' && (
-                <button onClick={() => navigate('/ai')} className="btn-primary">
-                  <Bot className="w-4 h-4" /> Open AI Chat
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Danger zone */}
-          <div className="rounded-xl border border-red-500/15 bg-red-500/5 p-4 flex items-center justify-between gap-4">
-            <div>
-              <p className="text-sm font-medium text-foreground">Disconnect AI</p>
-              <p className="text-xs text-muted-foreground mt-0.5">Clears the webhook URL and connection settings. Chat sessions and messages are preserved.</p>
-            </div>
-            <button
-              onClick={handleDisconnect}
-              disabled={disconnecting}
-              className="btn-danger flex-shrink-0"
-            >
-              {disconnecting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Unplug className="w-4 h-4" />}
-              Disconnect
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -7721,7 +6777,7 @@ const VALID_TABS = new Set<TabId>([
 const CONNECTION_SUB_TABS: { id: ConnectionSubTabId; label: string; icon: React.ElementType }[] = [
   { id: 'messaging',      label: 'Messaging', icon: MessageSquareIcon },
   { id: 'email-calendar', label: 'Google',    icon: MailIcon },
-  { id: 'ai',             label: 'AI',        icon: Bot },
+  { id: 'ai',             label: 'Agents',    icon: Bot },
   { id: 'files',          label: 'Files',     icon: FileText },
   { id: 'install',        label: 'Install',   icon: Zap },
 ];
@@ -7883,10 +6939,10 @@ export default function Connections() {
                   {activeConnTab === 'ai' && (
                     <div className="card-warm overflow-hidden">
                       <div className="px-4 py-3 border-b border-border bg-secondary/20">
-                        <h2 className="text-sm font-semibold">AI Connection</h2>
-                        <p className="text-xs text-muted-foreground mt-0.5">Connect an AI agent like OpenClaw to the Conduit chat</p>
+                        <h2 className="text-sm font-semibold">Agent Access</h2>
+                        <p className="text-xs text-muted-foreground mt-0.5">Connect any AI agent to Conduit via the REST API</p>
                       </div>
-                      <div className="p-4"><AiConnectionTab /></div>
+                      <div className="p-4"><AgentAccessTab /></div>
                     </div>
                   )}
                   {activeConnTab === 'files' && (

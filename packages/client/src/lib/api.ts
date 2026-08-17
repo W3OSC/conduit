@@ -456,40 +456,11 @@ export const api = {
   meetNotesUpdateSettings: (settings: { driveSearchEnabled: boolean }) =>
     request<{ success: boolean; driveSearchEnabled: boolean }>('/meet-notes/settings', { method: 'PUT', body: JSON.stringify(settings) }),
 
-  // ── AI Chat ─────────────────────────────────────────────────────────────────
-  aiConnection: () => request<AiConnection>('/ai/connection'),
-  setupAiConnection: (webhookUrl: string, gatewayToken?: string) =>
-    request<AiConnection>('/ai/connection', { method: 'POST', body: JSON.stringify({ webhookUrl, gatewayToken: gatewayToken || undefined }) }),
-  updateAiConnection: (patch: { callbackBaseUrl?: string | null; gatewayToken?: string | null }) =>
-    request<AiConnection>('/ai/connection', { method: 'PATCH', body: JSON.stringify(patch) }),
-  updateAiCallbackBase: (callbackBaseUrl: string | null) =>
-    request<AiConnection>('/ai/connection', { method: 'PATCH', body: JSON.stringify({ callbackBaseUrl }) }),
-  testAiConnection: () =>
-    request<{ success: boolean; latencyMs?: number; error?: string }>('/ai/connection/test', { method: 'POST' }),
-  disconnectAi: () =>
-    request<{ success: boolean }>('/ai/connection', { method: 'DELETE' }),
-  aiPermissions: () => request<AiPermissions>('/ai/permissions'),
-  updateAiPermissions: (body: Partial<AiPermissions>) =>
-    request<AiPermissions>('/ai/permissions', { method: 'PUT', body: JSON.stringify(body) }),
-
-  aiSessions: () => request<AiSession[]>('/ai/sessions'),
-  createAiSession: (body?: { title?: string }) =>
-    request<AiSession>('/ai/sessions', { method: 'POST', body: JSON.stringify(body ?? {}) }),
-  updateAiSession: (id: string, body: { title?: string }) =>
-    request<AiSession>(`/ai/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  deleteAiSession: (id: string) =>
-    request<{ success: boolean }>(`/ai/sessions/${id}`, { method: 'DELETE' }),
-  aiMessages: (sessionId: string, limit?: number) => {
-    const q = new URLSearchParams();
-    if (limit) q.set('limit', String(limit));
-    return request<{ session: AiSession; messages: AiMessage[] }>(`/ai/sessions/${sessionId}/messages?${q}`);
-  },
-  aiToolCalls: (sessionId: string) =>
-    request<{ toolCalls: AiToolCall[] }>(`/ai/sessions/${sessionId}/tool-calls`),
+  // ── AI Tool Calls ───────────────────────────────────────────────────────────
+  // Single tool-call lookup — powers the Outbox "Raw AI request" panel, which
+  // shows the original API request an external agent made.
   aiToolCall: (id: string) =>
     request<AiToolCall>(`/ai/tool-calls/${id}`),
-  sendAiMessage: (sessionId: string, content: string) =>
-    request<AiMessage>(`/ai/sessions/${sessionId}/messages`, { method: 'POST', body: JSON.stringify({ content }) }),
 
   // ── Obsidian Vaults (multi-vault) ────────────────────────────────────────────
   listObsidianVaults: () =>
@@ -1359,42 +1330,6 @@ export interface KeyPermissionsResponse {
   permissions: KeyServicePerm[];
 }
 
-// ─── AI Chat types ────────────────────────────────────────────────────────────
-
-export interface AiConnection {
-  configured: boolean;
-  /** True only after a connection test has passed. The connection is not fully enabled until this is true. */
-  verified: boolean;
-  webhookUrl: string | null;
-  /**
-   * Optional override for the base URL sent to the AI agent as `conduitBaseUrl` and used to
-   * build `streamUrl` in webhook payloads. Set this when the AI agent runs in a separate
-   * container or machine and cannot reach `localhost`.
-   */
-  callbackBaseUrl: string | null;
-  /**
-   * Whether a gateway token is stored. The raw token is never returned by the API —
-   * use PATCH /api/ai/connection to update it.
-   */
-  hasGatewayToken: boolean;
-  baseUrl: string;
-  streamUrlTemplate: string;
-  openApiUrl: string;
-}
-
-export interface AiPermissions {
-  readMessages: boolean;
-  readEmails: boolean;
-  readCalendar: boolean;
-  readContacts: boolean;
-  readVault: boolean;
-  writeVault: boolean;
-  readDrive: boolean;
-  writeDrive: boolean;
-  sendOutbox: boolean;
-  requireApproval: boolean;
-}
-
 // ─── Google Drive types ───────────────────────────────────────────────────────
 
 export type DriveEditability = 'direct' | 'find-replace' | 'read-only';
@@ -1485,24 +1420,7 @@ export interface DriveOutboxAction {
   newName?: string;
 }
 
-export interface AiSession {
-  id: string;
-  title: string;
-  systemPromptSent: boolean;
-  createdAt: string | null;
-  updatedAt: string | null;
-}
-
-export interface AiMessage {
-  id: string;
-  sessionId: string;
-  role: 'user' | 'assistant' | 'system' | 'tool';
-  content: string;
-  streaming: boolean;
-  createdAt: string | null;
-}
-
-// A single API call made by the AI agent, detected server-side via X-Session-Id header.
+// A single API call made by an external AI agent, recorded server-side.
 export interface AiToolCall {
   id: string;
   sessionId: string;

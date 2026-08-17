@@ -1,9 +1,6 @@
 import { create } from 'zustand';
 import type { ConnectionStatus, OutboxItem, Message, ActiveSyncRun, UpdateStatus } from '../lib/api';
 
-export { useAiChatStore } from './aiChat';
-export type { StreamingMessage } from './aiChat';
-
 export { useThemeStore } from './theme';
 export type { ColorMode, PrimaryColor, FontSize, BorderRadius, ThemeSettings } from './theme';
 

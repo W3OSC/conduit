@@ -19,7 +19,6 @@ const ROUTE_LABELS: Record<string, { title: string; subtitle: string }> = {
   '/calendar':    { title: 'Calendar',    subtitle: 'Google Calendar events and scheduling' },
   '/files':       { title: 'Files',       subtitle: 'Browse and manage your files across all sources' },
   '/connections': { title: 'Settings',    subtitle: 'Connections, credentials, and settings' },
-  '/metrics':     { title: 'Metrics',     subtitle: 'Sync and usage analytics' },
   '/audit-log':   { title: 'Audit Log',   subtitle: 'Full activity history' },
   '/settings':    { title: 'Settings',    subtitle: 'Connections, credentials, and settings' },
 };

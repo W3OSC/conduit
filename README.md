@@ -32,8 +32,7 @@ A self-hosted personal communications hub. Aggregates Slack, Discord, Telegram, 
 - **Contacts** — cross-platform contact list with activity scoring and message history
 - **Email** — Gmail inbox with sandboxed HTML rendering and action buttons
 - **Calendar** — weekly view, event detail, RSVP
-- **AI agent API** — full REST + OpenAPI spec, designed for tool use by LLMs
-- **AI chat** — built-in chat interface with session history and tool call tracking
+- **AI agent API** — full REST + OpenAPI spec, designed for tool use by LLMs; agents authenticate with an API key and a served skill file
 - **Outbox approval** — all AI-generated actions queue for human review before sending
 - **Audit log** — complete history of all actions by actor and service
 - **Password + TOTP 2FA + passkeys** — optional browser login with WebAuthn, rate limiting, and session management

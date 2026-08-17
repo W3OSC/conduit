@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import {
   useConnectionStore, useOutboxStore, useSyncStore, useMessageStreamStore,
-  useNotificationStore, useAiChatStore, useUpdateStore,
+  useNotificationStore, useUpdateStore,
 } from '../store';
 import { api } from '../lib/api';
 import type { ConnectionStatus, Message } from '../lib/api';
@@ -16,17 +16,6 @@ interface WsEvent {
 let globalWs: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let listeners = new Set<(event: WsEvent) => void>();
-
-// ── Reconnect callbacks ───────────────────────────────────────────────────────
-// Components can subscribe to be notified whenever the WebSocket successfully
-// (re)connects.  This is used by the AI chat to trigger a re-fetch and recover
-// any messages that were streamed while the connection was down.
-let reconnectCallbacks = new Set<() => void>();
-
-export function onWsReconnect(cb: () => void): () => void {
-  reconnectCallbacks.add(cb);
-  return () => { reconnectCallbacks.delete(cb); };
-}
 
 // ── Exponential backoff ───────────────────────────────────────────────────────
 const BACKOFF_BASE_MS  = 1_000;
@@ -68,12 +57,6 @@ function connectGlobal() {
     // Seed connection status — server fires connection:status events at startup,
     // which the browser would miss if it connects after those events fired.
     syncConnectionStatusFromServer();
-
-    // Notify all subscribers that the WebSocket (re)connected so they can
-    // trigger any necessary data re-fetches (e.g. AI message recovery).
-    for (const cb of reconnectCallbacks) {
-      try { cb(); } catch { /* ignore */ }
-    }
   };
 
   globalWs.onmessage = (event) => {
@@ -194,46 +177,6 @@ export function useWebSocket() {
             source: 'calendar',
             timestamp: new Date().toISOString(),
           });
-          break;
-        }
-
-        case 'ai:token': {
-          const d = event.data as {
-            sessionId: string; messageId: string; delta: string; done: boolean;
-          };
-          const store = useAiChatStore.getState();
-          // Always append the delta first (the final chunk may carry the last token)
-          store.appendToken(d.sessionId, d.messageId, d.delta);
-          if (store.waiting[d.sessionId]) store.setWaiting(d.sessionId, false);
-          if (d.done) {
-            store.finalizeStream(d.sessionId, d.messageId);
-          }
-          break;
-        }
-
-        case 'ai:toolcall': {
-          const d = event.data as { sessionId: string; toolCall: import('../lib/api').AiToolCall };
-          useAiChatStore.getState().addToolCall(d.sessionId, d.toolCall);
-          break;
-        }
-
-        case 'ai:message': {
-          const d = event.data as { sessionId: string; message: import('../lib/api').AiMessage };
-          const store = useAiChatStore.getState();
-          if (d.message.role === 'user') {
-            // Replace any optimistic placeholder for this user message
-            store.replaceOptimisticMessage(d.sessionId, d.message);
-          } else {
-            const existing = store.messages[d.sessionId] || [];
-            if (!existing.some((m) => m.id === d.message.id)) store.addMessage(d.sessionId, d.message);
-          }
-          break;
-        }
-
-        case 'ai:error': {
-          const d = event.data as { sessionId: string; error: string };
-          useAiChatStore.getState().setError(d.sessionId, d.error);
-          useAiChatStore.getState().setWaiting(d.sessionId, false);
           break;
         }
 
