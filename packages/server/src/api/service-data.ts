@@ -21,7 +21,7 @@ import {
   telegramMessages, discordMessages, slackMessages,
   gmailMessages, calendarEvents, twitterDms,
   syncState, syncRuns, settings, contacts, meetNotes,
-  aiSessions, aiMessages, aiToolCalls,
+  aiToolCalls,
   auditLog, outbox, errorLog,
 } from '../db/schema.js';
 import { eq, and, like } from 'drizzle-orm';
@@ -168,9 +168,7 @@ router.post('/reset-app-data', uiOnlyAuth, async (req, res) => {
     db.delete(syncState).run();
     db.delete(syncRuns).run();
 
-    // AI
-    db.delete(aiSessions).run();
-    db.delete(aiMessages).run();
+    // AI tool-call log
     db.delete(aiToolCalls).run();
 
     // Operational

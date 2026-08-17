@@ -1,7 +1,7 @@
 /**
  * OpenAPI 3.0 spec for the Conduit API — agent-relevant endpoints only.
  *
- * This spec is designed for AI agents (Claude, OpenClaw, etc.) and covers
+ * This spec is designed for AI agent tool use and covers
  * all read, search, send, and context-gathering endpoints. Admin/setup routes
  * (credentials, service resets, sync management) are intentionally excluded.
  */

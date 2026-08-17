@@ -124,11 +124,6 @@ router.get('/context', async (req, res) => {
             'GET /api/calendar/calendars',
           ],
         },
-        {
-          name: 'AI assistant',
-          description: 'Chat with an AI assistant that has tool access to all Conduit data.',
-          examples: ['POST /api/ai/chat', 'GET /api/ai/sessions'],
-        },
       ],
     };
 

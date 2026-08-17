@@ -19,7 +19,7 @@ import { getDb } from '../db/client.js';
 import { settings, obsidianVaultConfig, smbShareConfig, googleDriveFolderConfig } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 
-export type ServiceName = 'slack' | 'discord' | 'telegram' | 'gmail' | 'calendar' | 'twitter' | 'notion' | 'obsidian' | 'smb' | 'gdrive' | 'ai';
+export type ServiceName = 'slack' | 'discord' | 'telegram' | 'gmail' | 'calendar' | 'twitter' | 'notion' | 'obsidian' | 'smb' | 'gdrive';
 // Vault-specific status key format: 'obsidian:<id>'
 export type VaultStatusKey = `obsidian:${number}`;
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
@@ -67,7 +67,6 @@ export class ConnectionManager {
     obsidian: { status: 'disconnected' },
     smb:      { status: 'disconnected' },
     gdrive:   { status: 'disconnected' },
-    ai:       { status: 'disconnected' },
   };
 
   // Per-account Gmail/Calendar statuses
@@ -330,32 +329,8 @@ export class ConnectionManager {
       tasks.push(this.connectSmbShare(smbRow.id).catch((e) => console.error(`[smb:${smbRow.id}] Auto-connect failed:`, e)));
     }
 
-    // AI — reflect configured status from stored settings
-    this.checkAiStatus();
-
     await Promise.allSettled(tasks);
     console.log('[conduit] Auto-connect complete.');
-  }
-
-  /** Reads AI webhook settings and updates the ai connection status accordingly. */
-  checkAiStatus(): void {
-    const db = getDb();
-    const webhookRow  = db.select().from(settings).where(eq(settings.key, 'ai.webhookUrl')).get();
-    const keyIdRow    = db.select().from(settings).where(eq(settings.key, 'ai.apiKeyId')).get();
-    const verifiedRow = db.select().from(settings).where(eq(settings.key, 'ai.verified')).get();
-    const configured  = !!(webhookRow?.value && keyIdRow?.value);
-    const verified    = configured && verifiedRow?.value === '1';
-    this.setStatus('ai',
-      !configured
-        ? { status: 'disconnected' }
-        : verified
-          ? { status: 'connected',   mode: 'webhook', displayName: webhookRow!.value }
-          : { status: 'connecting',  mode: 'webhook', displayName: webhookRow!.value },
-    );
-  }
-
-  disconnectAi(): void {
-    this.setStatus('ai', { status: 'disconnected', mode: undefined, displayName: undefined });
   }
 
   async connectSlack(): Promise<void> {

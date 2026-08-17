@@ -358,28 +358,13 @@ export const meetNotes = sqliteTable('meet_notes', {
 
 // ─── AI Chat Sessions ─────────────────────────────────────────────────────────
 
-export const aiSessions = sqliteTable('ai_sessions', {
-  id:               text('id').primaryKey(),                        // nanoid
-  title:            text('title').notNull().default('New Chat'),
-  systemPromptSent: integer('system_prompt_sent', { mode: 'boolean' }).notNull().default(false),
-  createdAt:        text('created_at').default(sql`(datetime('now'))`),
-  updatedAt:        text('updated_at').default(sql`(datetime('now'))`),
-});
-
-export const aiMessages = sqliteTable('ai_messages', {
-  id:        text('id').primaryKey(),                              // nanoid
-  sessionId: text('session_id').notNull(),                        // FK → ai_sessions
-  role:      text('role').notNull(),                              // 'user' | 'assistant' | 'system' | 'tool'
-  content:   text('content').notNull().default(''),
-  streaming: integer('streaming', { mode: 'boolean' }).notNull().default(false),
-  createdAt: text('created_at').default(sql`(datetime('now'))`),
-});
-
-// AI API access events — one row per Conduit API call made by the AI agent.
-// Populated server-side when the AI passes X-Session-Id on its requests.
+// AI API access events — one row per Conduit API call made by an external
+// agent that passes an X-Session-Id header. sessionId is an agent-supplied
+// grouping id (no FK); outbox.aiToolCallId links approval items back to the
+// originating call for the Outbox "raw request" view.
 export const aiToolCalls = sqliteTable('ai_tool_calls', {
   id:        text('id').primaryKey(),           // nanoid
-  sessionId: text('session_id').notNull(),      // FK → ai_sessions.id
+  sessionId: text('session_id').notNull(),      // agent-supplied grouping id
   name:      text('name').notNull(),            // e.g. 'getMessages', 'getChats'
   input:     text('input').notNull(),           // JSON: { method, path, params }
   output:    text('output'),                    // compact human-readable summary
@@ -568,10 +553,6 @@ export type InsertAuditLog = typeof auditLog.$inferInsert;
 export type MeetNote = typeof meetNotes.$inferSelect;
 export type InsertMeetNote = typeof meetNotes.$inferInsert;
 
-export type AiSession = typeof aiSessions.$inferSelect;
-export type InsertAiSession = typeof aiSessions.$inferInsert;
-export type AiMessage = typeof aiMessages.$inferSelect;
-export type InsertAiMessage = typeof aiMessages.$inferInsert;
 
 export type ObsidianVaultConfig = typeof obsidianVaultConfig.$inferSelect;
 export type SmbShareConfig = typeof smbShareConfig.$inferSelect;

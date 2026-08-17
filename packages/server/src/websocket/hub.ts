@@ -19,9 +19,7 @@ export interface WsEvent {
     | 'outbox:updated'    // outbox item status change
     | 'connection:status' // service connection state change
     | 'test:result'       // connection test step result
-    | 'ai:token'          // AI streaming token
-    | 'ai:message'        // AI message complete
-    | 'ai:error'          // AI error
+   
     | 'ai:toolcall'       // AI API access recorded
     | 'update:available'  // new git commits available upstream
     | 'ping'
