@@ -110,6 +110,7 @@ export class TwitterSync {
   private scraper: Scraper | null = null;
   private creds: TwitterCreds | null = null;
   private pollInterval: NodeJS.Timeout | null = null;
+  private syncInFlight = false;
   private seenFeedIds = new Set<string>(); // for fetchHomeTimeline
   private _cancelRequested = false;
   public connected = false;
@@ -216,7 +217,13 @@ export class TwitterSync {
 
     // Start DM polling (syncDMs also runs immediately on first connect)
     this.syncDMs().catch(console.error);
-    this.pollInterval = setInterval(() => this.syncDMs().catch(console.error), 2 * 60 * 1000);
+    this.pollInterval = setInterval(() => {
+      if (this.syncInFlight) return; // previous cycle still running — skip this tick
+      this.syncInFlight = true;
+      this.syncDMs()
+        .catch(console.error)
+        .finally(() => { this.syncInFlight = false; });
+    }, 2 * 60 * 1000);
 
     broadcast({ type: 'connection:status', data: { service: 'twitter', status: 'connected', displayName, accountId: userId, mode: 'cookie' } });
     console.log(`[twitter] Connected as @${handle}`);
@@ -255,12 +262,11 @@ export class TwitterSync {
     this._cancelRequested = false;
     let saved = 0;
 
-    const runId = db.insert(syncRuns).values({
-      source: 'twitter',
-      syncType: this.hasBeenSynced() ? 'incremental' : 'full',
-      status: 'running',
-      startedAt: new Date().toISOString(),
-    }).run().lastInsertRowid as number;
+    // NOTE: a sync_runs row is only written when this poll actually saved new
+    // messages (or errored). Writing one per silent 2-minute poll added ~720
+    // no-op rows/day that were never pruned.
+    const startedAt = new Date().toISOString();
+    const syncType = this.hasBeenSynced() ? 'incremental' : 'full';
 
     broadcast({ type: 'sync:progress', data: { service: 'twitter', status: 'running', type: 'full', messagesSaved: 0 } });
 
@@ -343,10 +349,14 @@ export class TwitterSync {
       }
 
       if (this._cancelRequested) {
-        db.update(syncRuns).set({ status: 'cancelled', finishedAt: new Date().toISOString(), messagesSaved: saved }).where(eq(syncRuns.id, runId)).run();
+        if (saved > 0) {
+          db.insert(syncRuns).values({ source: 'twitter', syncType, status: 'cancelled', startedAt, finishedAt: new Date().toISOString(), messagesSaved: saved }).run();
+        }
         broadcast({ type: 'sync:progress', data: { service: 'twitter', status: 'idle' } });
       } else {
-        db.update(syncRuns).set({ status: 'success', finishedAt: new Date().toISOString(), messagesSaved: saved }).where(eq(syncRuns.id, runId)).run();
+        if (saved > 0) {
+          db.insert(syncRuns).values({ source: 'twitter', syncType, status: 'success', startedAt, finishedAt: new Date().toISOString(), messagesSaved: saved }).run();
+        }
         broadcast({ type: 'sync:progress', data: { service: 'twitter', status: 'success', messagesSaved: saved } });
 
         // Also sync following list as contacts (fire-and-forget, non-blocking)
@@ -354,7 +364,7 @@ export class TwitterSync {
       }
     } catch (e) {
       console.error('[twitter] DM sync error:', e);
-      db.update(syncRuns).set({ status: 'error', errorMessage: String(e), finishedAt: new Date().toISOString() }).where(eq(syncRuns.id, runId)).run();
+      db.insert(syncRuns).values({ source: 'twitter', syncType, status: 'error', errorMessage: String(e), startedAt, finishedAt: new Date().toISOString(), messagesSaved: saved }).run();
       broadcast({ type: 'sync:progress', data: { service: 'twitter', status: 'error' } });
     }
 

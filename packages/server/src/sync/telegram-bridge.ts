@@ -4,7 +4,7 @@ import { StringSession } from 'telegram/sessions/index.js';
 import { NewMessage, NewMessageEvent } from 'telegram/events/index.js';
 import { getDb } from '../db/client.js';
 import { telegramMessages, syncState, syncRuns, accounts } from '../db/schema.js';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, isNull, sql } from 'drizzle-orm';
 import { broadcast } from '../websocket/hub.js';
 import { getCreds, setCreds, type TelegramCreds } from '../api/credentials.js';
 import {
@@ -112,6 +112,8 @@ export class TelegramBridge {
       if (ok) {
         this._reconnectAttempts = 0;
         console.log('[telegram] Reconnected successfully');
+        // Catch up on anything that arrived while the socket was down.
+        this.initialFullSync().catch((e) => console.error('[telegram] Post-reconnect catch-up failed:', e));
       }
     }, delay);
   }
@@ -119,6 +121,15 @@ export class TelegramBridge {
   async connect(cfg: TelegramConfig): Promise<boolean> {
     this.config = cfg;
     this._disconnecting = false;
+
+    // Tear down any previous client first — reconnects used to overwrite it
+    // without disconnecting, leaking the socket and stacking duplicate
+    // NewMessage handlers.
+    if (this.client) {
+      try { await this.client.destroy(); } catch { /* already dead */ }
+      this.client = null;
+    }
+
     const session = new StringSession(cfg.sessionString || '');
     this.client = new TelegramClient(session, cfg.apiId, cfg.apiHash, {
       connectionRetries: 5,
@@ -189,14 +200,18 @@ export class TelegramBridge {
         avatarUrl: selfAvatarUrl,
       });
 
-      // Handle disconnection events — schedule reconnect with backoff
-      this.client.addEventHandler(async () => {
+      // Handle disconnection via raw UpdateConnectionState updates. The old
+      // approach imported a `Disconnect` event builder that GramJS does not
+      // export, silently constructing an empty class — the handler never fired
+      // and dropped connections were never detected.
+      this.client.addEventHandler(async (update: { className?: string; state?: number }) => {
+        if (update?.className !== 'UpdateConnectionState') return;
+        if (update.state === 1) { this.connected = true; return; }
         if (this._disconnecting) return;
-        console.warn('[telegram] Disconnected from MTProto — scheduling reconnect');
+        console.warn('[telegram] MTProto connection lost — scheduling reconnect');
         this.connected = false;
         this._scheduleReconnect();
-      // @ts-ignore — GramJS Disconnected event
-      }, new (await import('telegram/events/index.js').then(m => m.Disconnect || class {}))());
+      });
 
       // Register live message event handler
       this.client.addEventHandler(async (event: NewMessageEvent) => {
@@ -229,23 +244,24 @@ export class TelegramBridge {
             rawJson: null,
           }).onConflictDoNothing().run();
 
-          // Broadcast for real-time display in open conversations
-          const broadcastContent = msg.text || msg.message || '';
-          broadcast({
-            type: 'message:new',
-            data: {
-              source: 'telegram',
-              message_id: String(msg.id),
-              chat_id: chatId,
-              chat_name: chatName,
-              sender_id: senderId,
-              sender_name: senderName,
-              content: broadcastContent,
-              timestamp,
-            },
-          });
-
           if (result.changes > 0) {
+            // Broadcast only when actually stored — redeliveries otherwise
+            // produce duplicate notifications in the UI.
+            const broadcastContent = msg.text || msg.message || '';
+            broadcast({
+              type: 'message:new',
+              data: {
+                source: 'telegram',
+                message_id: String(msg.id),
+                chat_id: chatId,
+                chat_name: chatName,
+                sender_id: senderId,
+                sender_name: senderName,
+                content: broadcastContent,
+                timestamp,
+              },
+            });
+            this.upsertSyncState(chatId, chatName, timestamp);
             // Update contact for sender — private chats (User entity) are DMs
             if (senderId && senderId !== this.accountInfo?.userId) {
               const isDm = chat.className === 'User';
@@ -291,11 +307,15 @@ export class TelegramBridge {
   async getMessages(chatId: string, since?: string, limit = 200): Promise<TelegramMessageData[]> {
     if (!this.client) throw new Error('Not connected');
     const entity = await this.client.getEntity(Number(chatId));
-    const minDate = since ? Math.floor(new Date(since).getTime() / 1000) : undefined;
-    const msgs = await this.client.getMessages(entity, {
-      limit,
-      ...(minDate ? { minId: 0, offsetDate: minDate } : {}),
-    });
+    // Fetch the newest `limit` messages and filter to those at/after `since`.
+    // The old code passed `offsetDate` as a lower bound, but MTProto pages
+    // BACKWARDS from offset_date — "incremental" sync was fetching the 500
+    // messages OLDER than the cursor.
+    const sinceMs = since ? Date.parse(since) : undefined;
+    let msgs = await this.client.getMessages(entity, { limit });
+    if (sinceMs && Number.isFinite(sinceMs)) {
+      msgs = msgs.filter((m) => ((m.date ?? 0) * 1000) >= sinceMs) as typeof msgs;
+    }
     return msgs.map((msg) => {
       const sender = msg.sender;
       const senderName = sender ? entityName(sender) : undefined;
@@ -316,6 +336,40 @@ export class TelegramBridge {
     if (!this.client) throw new Error('Not connected');
     const entity = await this.client.getEntity(Number(chatId));
     await this.client.sendMessage(entity, { message: text });
+  }
+
+  /**
+   * Upsert the per-chat sync cursor. Always writes accountId — the previous
+   * version omitted it, and since SQLite treats NULLs as distinct in unique
+   * indexes, the ON CONFLICT clause never matched and a new sync_state row
+   * accumulated on every run. Legacy NULL-account rows are cleaned up here.
+   */
+  private upsertSyncState(chatId: string, chatName: string, lastMessageTs: string | null, saved?: number): void {
+    const db = getDb();
+    const accountId = this.accountInfo?.userId ?? 'telegram';
+    db.delete(syncState).where(and(
+      eq(syncState.source, 'telegram'),
+      eq(syncState.chatId, chatId),
+      isNull(syncState.accountId),
+    )).run();
+    const nowIso = new Date().toISOString();
+    db.insert(syncState).values({
+      source: 'telegram',
+      accountId,
+      chatId,
+      chatName,
+      lastMessageTs,
+      lastFetchedAt: nowIso,
+      isFullSync: true,
+      messageCount: saved ?? 0,
+    }).onConflictDoUpdate({
+      target: [syncState.source, syncState.chatId, syncState.accountId],
+      set: {
+        lastFetchedAt: nowIso,
+        ...(saved !== undefined ? { messageCount: saved } : {}),
+        lastMessageTs: sql`MAX(COALESCE(${syncState.lastMessageTs}, ''), COALESCE(excluded.last_message_ts, ''))`,
+      },
+    }).run();
   }
 
   async initialFullSync(onProgress?: (service: string, chat: string, saved: number) => void): Promise<void> {
@@ -365,9 +419,11 @@ export class TelegramBridge {
           continue;
         }
         let saved = 0;
+        let maxTs: string | undefined;
 
         for (const msg of messages) {
           if (this._cancelRequested) break;
+          if (!maxTs || msg.timestamp > maxTs) maxTs = msg.timestamp;
           const result = db.insert(telegramMessages).values({
             messageId: parseInt(msg.message_id),
             chatId: parseInt(msg.chat_id),
@@ -388,18 +444,7 @@ export class TelegramBridge {
         onProgress?.('telegram', chat.name, saved);
         updateProgress();
 
-        db.insert(syncState).values({
-          source: 'telegram',
-          chatId: chat.chat_id,
-          chatName: chat.name,
-          lastMessageTs: new Date().toISOString(),
-          lastFetchedAt: new Date().toISOString(),
-          isFullSync: true,
-          messageCount: saved,
-        }).onConflictDoUpdate({
-          target: [syncState.source, syncState.chatId, syncState.accountId],
-          set: { lastFetchedAt: new Date().toISOString(), messageCount: saved },
-        }).run();
+        this.upsertSyncState(chat.chat_id, chat.name, maxTs ?? state?.lastMessageTs ?? null, saved);
       }
 
       if (this._cancelRequested) {

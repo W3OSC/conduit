@@ -4,7 +4,7 @@ const { Client } = DiscordJS as unknown as { Client: new (opts?: Record<string, 
 
 import { getDb } from '../db/client.js';
 import { discordMessages, syncState, syncRuns, accounts, settings } from '../db/schema.js';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { broadcast } from '../websocket/hub.js';
 import {
   syncDiscordContacts, upsertContact, upsertContactFromMessage, getContactCriteria,
@@ -197,13 +197,14 @@ export class DiscordSync {
       rawJson: JSON.stringify({ id: messageId, content, authorId, authorName }),
     }).onConflictDoNothing().run();
 
-    // Broadcast the message for real-time display in open conversations
-    broadcast({
-      type: 'message:new',
-      data: { source: 'discord', messageId, channelId, channelName, guildId, guildName, authorId, authorName, content, timestamp, attachments: attachmentsJson },
-    });
-
+    // Only broadcast when the insert actually stored something — gateway
+    // redeliveries otherwise produce duplicate notifications in the UI.
     if (result.changes > 0) {
+      broadcast({
+        type: 'message:new',
+        data: { source: 'discord', messageId, channelId, channelName, guildId, guildName, authorId, authorName, content, timestamp, attachments: attachmentsJson },
+      });
+      this.advanceCursor(channelId, channelName, timestamp);
       if (authorId && authorId !== this.accountInfo?.userId) {
         const isDm = !guildId;
         upsertContactFromMessage({
@@ -347,11 +348,13 @@ export class DiscordSync {
     channel: DiscordChannel,
     guildId: string | undefined,
     guildName: string | undefined,
-    _before?: string,
+    since?: string,
   ): Promise<number> {
     const db = getDb();
     let saved = 0;
     let lastId: string | undefined;
+    let maxTs: string | undefined;
+    let reachedCursor = false;
 
     while (true) {
       // Check cancel flag at the top of every page fetch
@@ -412,6 +415,11 @@ export class DiscordSync {
           rawJson: JSON.stringify({ id, content, authorId, authorName }),
         }).onConflictDoNothing().run();
         if (result.changes > 0) saved++;
+        if (!maxTs || timestamp > maxTs) maxTs = timestamp;
+        // Pages arrive newest-first: once we cross the stored cursor, every
+        // deeper page is already in the DB — stop instead of re-walking the
+        // channel back to its creation (the old behaviour on every sync).
+        if (since && timestamp <= since) reachedCursor = true;
 
         // Upsert contact for every message author — ensures DM participants are
         // always contacts even if they haven't sent a live message yet
@@ -433,25 +441,50 @@ export class DiscordSync {
       }
 
       if (this._cancelRequested) break;
+      if (reachedCursor) break;
       if (messages.size < 100) break;
       await sleep(500);
     }
 
+    const nowIso = new Date().toISOString();
     db.insert(syncState).values({
       source: 'discord',
       accountId: this.accountInfo?.userId,
       chatId: channel.id,
       chatName: (channel as { name?: string }).name || 'DM',
-      lastMessageTs: new Date().toISOString(),
-      lastFetchedAt: new Date().toISOString(),
+      lastMessageTs: maxTs ?? since ?? null,
+      lastFetchedAt: nowIso,
       isFullSync: true,
       messageCount: saved,
     }).onConflictDoUpdate({
       target: [syncState.source, syncState.chatId, syncState.accountId],
-      set: { lastFetchedAt: new Date().toISOString(), messageCount: saved },
+      set: {
+        lastFetchedAt: nowIso,
+        messageCount: saved,
+        lastMessageTs: sql`MAX(COALESCE(${syncState.lastMessageTs}, ''), COALESCE(excluded.last_message_ts, ''))`,
+      },
     }).run();
 
     return saved;
+  }
+
+  /** Advance the per-channel cursor from a realtime event (monotonic). */
+  private advanceCursor(channelId: string, channelName: string, timestamp: string): void {
+    const db = getDb();
+    db.insert(syncState).values({
+      source: 'discord',
+      accountId: this.accountInfo?.userId,
+      chatId: channelId,
+      chatName: channelName,
+      lastMessageTs: timestamp,
+      lastFetchedAt: new Date().toISOString(),
+    }).onConflictDoUpdate({
+      target: [syncState.source, syncState.chatId, syncState.accountId],
+      set: {
+        lastFetchedAt: new Date().toISOString(),
+        lastMessageTs: sql`MAX(COALESCE(${syncState.lastMessageTs}, ''), excluded.last_message_ts)`,
+      },
+    }).run();
   }
 
   async sendMessage(channelId: string, text: string): Promise<void> {

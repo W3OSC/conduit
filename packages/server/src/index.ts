@@ -143,6 +143,9 @@ async function main() {
   // already accepting requests so the UI can render immediately.
   manager.connectAll().catch((e) => console.error('[conduit] connectAll error:', e));
 
+  // Retry errored services with backoff; user-disconnected services are left alone.
+  manager.startSupervisor();
+
   // Bootstrap contacts from existing messages for any source that has messages
   // but no contacts yet (e.g. after a direct DB import or first run).
   try { bootstrapContactsIfEmpty(); } catch (e) { console.error('[contacts] Bootstrap error:', e); }
