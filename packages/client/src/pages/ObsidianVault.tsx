@@ -122,7 +122,8 @@ export default function ObsidianVault() {
     queryKey: ['smb-file-content', selectedSmbShareId, selectedSmbPath],
     queryFn: async () => {
       // Use raw fetch since SMB read file returns text/plain or binary
-      const res = await fetch(`/api/smb/shares/${selectedSmbShareId}/files/${selectedSmbPath!.split('/').map(encodeURIComponent).join('/')}`, { credentials: 'include' });
+      // Whole-path encoding — see the note on api.readSmbFile.
+      const res = await fetch(`/api/smb/shares/${selectedSmbShareId}/files/${encodeURIComponent(selectedSmbPath!)}`, { credentials: 'include' });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: res.statusText }));
         throw new Error((err as { error: string }).error || `HTTP ${res.status}`);

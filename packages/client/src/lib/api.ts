@@ -527,10 +527,14 @@ export const api = {
     const q = path ? `?path=${encodeURIComponent(path)}` : '';
     return request<{ path: string; entries: SmbEntry[] }>(`/smb/shares/${id}/files${q}`);
   },
+  // Encode the whole path (like the obsidian reads above), NOT per segment:
+  // these hit Express 5 wildcard routes, which hand the server an array of
+  // decoded segments. Per-segment encoding leaves the slashes intact, so a
+  // nested path arrives as multiple segments and coerces to "a,b.txt".
   readSmbFile: (id: number, filePath: string) =>
-    request<string>(`/smb/shares/${id}/files/${filePath.split('/').map(encodeURIComponent).join('/')}`),
+    request<string>(`/smb/shares/${id}/files/${encodeURIComponent(filePath)}`),
   smbDownloadUrl: (id: number, filePath: string) =>
-    `${BASE}/smb/shares/${id}/download/${filePath.split('/').map(encodeURIComponent).join('/')}`,
+    `${BASE}/smb/shares/${id}/download/${encodeURIComponent(filePath)}`,
   uploadSmbFile: async (id: number, file: File, dirPath = '') => {
     const csrfToken = getCsrfToken();
     const form = new FormData();
