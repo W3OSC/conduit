@@ -4,15 +4,55 @@
  * This spec is designed for AI agent tool use and covers
  * all read, search, send, and context-gathering endpoints. Admin/setup routes
  * (credentials, service resets, sync management) are intentionally excluded.
+ *
+ * ── Hand-written + generated ────────────────────────────────────────────────
+ *
+ * The `paths` object below is hand-maintained prose: summaries, descriptions
+ * and response shapes that no schema can produce. On top of it we MERGE the
+ * definitions generated from the zod schemas the routes validate with
+ * (`validate.ts` → `openapi-registry.ts`):
+ *
+ *   • for a route that has been migrated to zod, its `parameters` and
+ *     `requestBody` are replaced by the generated ones — they come from the
+ *     code that actually runs, so they cannot drift;
+ *   • everything else on that operation is preserved;
+ *   • routes not yet migrated keep their hand-written entry verbatim.
+ *
+ * `src/__tests__/openapi-drift.test.ts` walks the real Express router stack and
+ * fails if the served spec and the registered routes ever disagree about which
+ * endpoints exist — the failure mode that previously shipped 404ing endpoints
+ * to agents.
  */
 
 import { Router } from 'express';
+import { mergeGeneratedPaths, mergeGeneratedSchemas } from './openapi-registry.js';
+
+// Importing every route module guarantees their `documentRoute(...)` calls have
+// run before the first request is served. `router.ts` already imports them all,
+// but this file must not depend on that ordering.
+import './digest.js';
+import './messages.js';
+import './outbox.js';
+import './gmail.js';
+import './calendar.js';
+import './meet-notes.js';
+import './contacts.js';
+import './twitter.js';
+import './notion.js';
+import './obsidian.js';
+import './smb.js';
+import './gdrive.js';
+
 const router = Router();
 
 router.get('/openapi.json', (req, res) => {
   const baseUrl = `${req.protocol}://${req.get('host')}`;
 
-  res.json({
+  res.json(buildSpec(baseUrl));
+});
+
+export function buildSpec(baseUrl: string): Record<string, unknown> {
+  const doc = {
     openapi: '3.0.0',
     info: {
       title: 'Conduit',
@@ -3138,7 +3178,18 @@ The response includes an \`editability\` field:
       },
 
     },
-  });
-});
+  };
+
+  // Generated definitions win where present; hand-written entries survive for
+  // routes that have not been migrated to zod yet.
+  return {
+    ...doc,
+    components: {
+      ...doc.components,
+      schemas: mergeGeneratedSchemas(doc.components.schemas as Record<string, unknown>),
+    },
+    paths: mergeGeneratedPaths(doc.paths as Record<string, Record<string, unknown>>),
+  };
+}
 
 export default router;

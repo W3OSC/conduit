@@ -15,8 +15,82 @@ import { getConnectionManager } from '../connections/manager.js';
 import { broadcast } from '../websocket/hub.js';
 import { fuzzyFind, type FuzzyMatchInfo } from '../util/fuzzy-search.js';
 import type { Request } from 'express';
+import {
+  z, intParam, optionalEnum, paginationSchema, requiredString, SERVICE_SOURCES,
+  bodyOf, paramsOf, queryOf, validateBody, validateParams, validateQuery,
+} from './validate.js';
+import { documentRoute } from './openapi-registry.js';
 
 const router = Router();
+
+// ── Request schemas ───────────────────────────────────────────────────────────
+
+const OUTBOX_STATUSES = ['pending', 'approved', 'sent', 'failed', 'rejected'] as const;
+
+const ListQuery = z.object({
+  status: optionalEnum(OUTBOX_STATUSES, { description: 'Filter by outbox item status.' }),
+  source: optionalEnum(SERVICE_SOURCES, { description: 'Filter by target service.' }),
+  ...paginationSchema(50, 200),
+});
+
+const IdParam = z.object({ id: intParam('outbox') });
+const BatchParam = z.object({ batchId: z.string().min(1) });
+
+const BatchActionBody = z.object({
+  action: z.enum(['approve', 'reject'], { error: 'must be "approve" or "reject"' }),
+});
+
+const ItemActionBody = z.object({
+  action: z.enum(['approve', 'reject', 'edit'], { error: 'must be "approve", "reject" or "edit"' }),
+  content: z.string().optional().openapi({ description: 'Replacement text (action=edit only).' }),
+});
+
+/** Shared shape of a single queued operation. */
+const OperationBody = z.object({
+  source: requiredString('source').openapi({ description: 'Target service, e.g. slack, gmail, obsidian.' }),
+  recipient_id: requiredString('recipient_id')
+    .openapi({ description: 'Channel/chat/thread/file id the action targets.' }),
+  recipient_name: z.string().optional(),
+  content: requiredString('content')
+    .openapi({ description: 'Plain text for messaging services; a JSON action payload for structured services.' }),
+});
+
+const CreateBody = OperationBody;
+
+const BatchCreateBody = z.object({
+  source: requiredString('source'),
+  recipient_ids: z.array(z.object({ id: requiredString('id'), name: z.string().optional() }))
+    .min(1, { error: 'must contain at least one recipient' }),
+  content: requiredString('content'),
+});
+
+const MultiBatchBody = z.object({
+  operations: z.array(OperationBody).min(1, { error: 'must be a non-empty array' }),
+});
+
+documentRoute({ method: 'get', path: '/outbox', query: ListQuery });
+documentRoute({ method: 'post', path: '/outbox', body: CreateBody });
+documentRoute({ method: 'post', path: '/outbox/batch', body: BatchCreateBody });
+documentRoute({ method: 'post', path: '/outbox/batch/multi', body: MultiBatchBody });
+documentRoute({
+  method: 'get',
+  path: '/outbox/batch/{batchId}',
+  params: BatchParam,
+  summary: 'Read every item in an outbox batch',
+  description: 'Returns all outbox items sharing a batchId, in creation order.',
+});
+documentRoute({
+  method: 'patch',
+  path: '/outbox/batch/{batchId}',
+  params: BatchParam,
+  body: BatchActionBody,
+  summary: 'Approve or reject an entire outbox batch',
+  description: 'Approving dispatches each pending item sequentially; a failure on one item marks it failed and the rest continue.',
+});
+documentRoute({ method: 'get', path: '/outbox/{id}', params: IdParam });
+documentRoute({ method: 'patch', path: '/outbox/{id}', params: IdParam, body: ItemActionBody });
+documentRoute({ method: 'post', path: '/outbox/{id}/retry', params: IdParam });
+documentRoute({ method: 'delete', path: '/outbox/{id}', params: IdParam });
 
 // ── Auto-batching: group single POST /outbox requests by service ──────────────
 
@@ -521,15 +595,10 @@ function isUniqueConstraintError(e: unknown): boolean {
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 
-router.get('/', optionalAuth, (req, res) => {
+router.get('/', optionalAuth, validateQuery(ListQuery), (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
-  const { status, source, limit: limitQ, offset: offsetQ } = req.query as Record<string, string | undefined>;
-
-  const limitNum = parseInt(limitQ ?? '', 10);
-  const offsetNum = parseInt(offsetQ ?? '', 10);
-  const limit = Math.min(Number.isFinite(limitNum) && limitNum > 0 ? limitNum : 50, 200);
-  const offset = Number.isFinite(offsetNum) && offsetNum > 0 ? offsetNum : 0;
+  const { status, source, limit, offset } = queryOf(ListQuery, req);
 
   // API key actors only ever see their own items; the UI actor sees everything.
   const scope = [];
@@ -561,10 +630,10 @@ router.get('/', optionalAuth, (req, res) => {
 // ── Batch-level read ──────────────────────────────────────────────────────────
 // IMPORTANT: must be registered BEFORE /:id so Express doesn't treat "batch" as an id.
 
-router.get('/batch/:batchId', optionalAuth, (req, res) => {
+router.get('/batch/:batchId', optionalAuth, validateParams(BatchParam), (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
-  const { batchId } = req.params as { batchId: string };
+  const { batchId } = paramsOf(BatchParam, req);
 
   // API key actors only ever see their own items; the UI actor sees everything.
   const conditions = [eq(outbox.batchId, batchId)];
@@ -580,16 +649,16 @@ router.get('/batch/:batchId', optionalAuth, (req, res) => {
 
 // ── Batch-level approve / reject ──────────────────────────────────────────────
 
-router.patch('/batch/:batchId', optionalAuth, async (req, res) => {
+router.patch(
+  '/batch/:batchId',
+  optionalAuth,
+  validateParams(BatchParam),
+  validateBody(BatchActionBody),
+  async (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
-  const { batchId } = req.params as { batchId: string };
-  const { action } = req.body as { action: 'approve' | 'reject' };
-
-  if (action !== 'approve' && action !== 'reject') {
-    res.status(400).json({ error: 'action must be "approve" or "reject"' });
-    return;
-  }
+  const { batchId } = paramsOf(BatchParam, req);
+  const { action } = bodyOf(BatchActionBody, req);
 
   const items = db.select().from(outbox)
     .where(and(eq(outbox.batchId, batchId), eq(outbox.status, 'pending')))
@@ -665,10 +734,10 @@ router.patch('/batch/:batchId', optionalAuth, async (req, res) => {
   res.json({ success: allSent, approved, failed, results });
 });
 
-router.get('/:id', optionalAuth, (req, res) => {
+router.get('/:id', optionalAuth, validateParams(IdParam), (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
-  const item = db.select().from(outbox).where(eq(outbox.id, parseInt(req.params['id'] as string))).get();
+  const item = db.select().from(outbox).where(eq(outbox.id, paramsOf(IdParam, req).id)).get();
   // API key actors only ever see their own items (404 rather than 403 so the
   // existence of other keys' items is not leaked).
   if (!item || (authedReq.apiKey?.id && item.apiKeyId !== authedReq.apiKey.id)) {
@@ -678,20 +747,10 @@ router.get('/:id', optionalAuth, (req, res) => {
   res.json(item);
 });
 
-router.post('/', optionalAuth, async (req, res) => {
+router.post('/', optionalAuth, validateBody(CreateBody), async (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
-  const { source, recipient_id, recipient_name, content } = req.body as {
-    source: string;
-    recipient_id: string;
-    recipient_name?: string;
-    content: string;
-  };
-
-  if (!source || !recipient_id || !content) {
-    res.status(400).json({ error: 'source, recipient_id, content are required' });
-    return;
-  }
+  const { source, recipient_id, recipient_name, content } = bodyOf(CreateBody, req);
 
   // Idempotent replay: a retried POST carrying the same Idempotency-Key
   // returns the original row instead of double-queueing.
@@ -835,19 +894,10 @@ router.post('/', optionalAuth, async (req, res) => {
   res.json(db.select().from(outbox).where(eq(outbox.id, item.id)).get());
 });
 
-router.post('/batch', optionalAuth, async (req, res) => {
+router.post('/batch', optionalAuth, validateBody(BatchCreateBody), async (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
-  const { source, recipient_ids, content } = req.body as {
-    source: string;
-    recipient_ids: Array<{ id: string; name?: string }>;
-    content: string;
-  };
-
-  if (!source || !recipient_ids?.length || !content) {
-    res.status(400).json({ error: 'source, recipient_ids, content are required' });
-    return;
-  }
+  const { source, recipient_ids, content } = bodyOf(BatchCreateBody, req);
 
   const perm = db.select().from(permissions).where(eq(permissions.service, source)).get();
   if (!perm?.sendEnabled) {
@@ -936,30 +986,14 @@ router.post('/batch', optionalAuth, async (req, res) => {
  * Response:
  * { batchId: string, items: Array<{ id: number, source: string, status: string }> }
  */
-router.post('/batch/multi', optionalAuth, async (req, res) => {
+router.post('/batch/multi', optionalAuth, validateBody(MultiBatchBody), async (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
 
-  const { operations } = req.body as {
-    operations: Array<{
-      source: string;
-      recipient_id: string;
-      recipient_name?: string;
-      content: string;
-    }>;
-  };
-
-  if (!Array.isArray(operations) || operations.length === 0) {
-    res.status(400).json({ error: 'operations must be a non-empty array' });
-    return;
-  }
+  const { operations } = bodyOf(MultiBatchBody, req);
 
   for (let i = 0; i < operations.length; i++) {
     const op = operations[i];
-    if (!op.source || !op.recipient_id || !op.content) {
-      res.status(400).json({ error: `operations[${i}] is missing source, recipient_id, or content` });
-      return;
-    }
     const perm = db.select().from(permissions).where(eq(permissions.service, op.source)).get();
     if (!perm?.sendEnabled) {
       res.status(403).json({ error: `Sending is not enabled for ${op.source} (operations[${i}])` });
@@ -1057,11 +1091,16 @@ router.post('/batch/multi', optionalAuth, async (req, res) => {
   res.json({ batchId, items });
 });
 
-router.patch('/:id', optionalAuth, async (req, res) => {
+router.patch(
+  '/:id',
+  optionalAuth,
+  validateParams(IdParam),
+  validateBody(ItemActionBody),
+  async (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
-  const id = parseInt(req.params['id'] as string);
-  const { action, content } = req.body as { action: 'approve' | 'reject' | 'edit'; content?: string };
+  const { id } = paramsOf(IdParam, req);
+  const { action, content } = bodyOf(ItemActionBody, req);
 
   const item = db.select().from(outbox).where(eq(outbox.id, id)).get();
   // API key actors only ever touch their own items (404, not 403, so other
@@ -1124,10 +1163,10 @@ router.patch('/:id', optionalAuth, async (req, res) => {
 
 // ── POST /outbox/:id/retry — re-dispatch a failed item ───────────────────────
 
-router.post('/:id/retry', optionalAuth, async (req, res) => {
+router.post('/:id/retry', optionalAuth, validateParams(IdParam), async (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
-  const id = parseInt(req.params['id'] as string);
+  const { id } = paramsOf(IdParam, req);
 
   const item = db.select().from(outbox).where(eq(outbox.id, id)).get();
   if (!item || (authedReq.apiKey?.id && item.apiKeyId !== authedReq.apiKey.id)) {
@@ -1170,10 +1209,10 @@ router.post('/:id/retry', optionalAuth, async (req, res) => {
   }
 });
 
-router.delete('/:id', optionalAuth, (req, res) => {
+router.delete('/:id', optionalAuth, validateParams(IdParam), (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
-  const id = parseInt(req.params['id'] as string);
+  const { id } = paramsOf(IdParam, req);
 
   const item = db.select().from(outbox).where(eq(outbox.id, id)).get();
   if (!item || (authedReq.apiKey?.id && item.apiKeyId !== authedReq.apiKey.id)) {

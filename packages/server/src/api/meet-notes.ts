@@ -15,17 +15,41 @@ import { meetNotes, settings } from '../db/schema.js';
 import { eq, desc, gte, like, lte, and, or, sql } from 'drizzle-orm';
 import { optionalAuth, uiOnlyAuth, trackAiCall } from '../auth/middleware.js';
 import { requireRead } from './permissions-utils.js';
+import {
+  z, intParam, isoDateTime, paginationSchema,
+  bodyOf, paramsOf, queryOf, validateBody, validateParams, validateQuery,
+} from './validate.js';
+import { documentRoute } from './openapi-registry.js';
 
 const router = Router();
 const DRIVE_SEARCH_SETTING = 'meet_notes.drive_search_enabled';
 
+// ── Request schemas ───────────────────────────────────────────────────────────
+
+const ListQuery = z.object({
+  q: z.string().optional().openapi({ description: 'Substring match on title and summary.' }),
+  account_id: z.string().optional().openapi({ description: 'Restrict to one Google account.' }),
+  from: isoDateTime.optional().openapi({ description: 'Only meetings on or after this instant.' }),
+  to: isoDateTime.optional().openapi({ description: 'Only meetings on or before this instant.' }),
+  ...paginationSchema(50, 200),
+});
+
+const NoteIdParam = z.object({ id: intParam('meet note') });
+
+const SettingsBody = z.object({
+  driveSearchEnabled: z.boolean({ error: 'must be a boolean' }),
+});
+
+documentRoute({ method: 'get', path: '/meet-notes', query: ListQuery });
+documentRoute({ method: 'get', path: '/meet-notes/{id}', params: NoteIdParam });
+documentRoute({ method: 'post', path: '/meet-notes/{id}/refresh', params: NoteIdParam });
+documentRoute({ method: 'put', path: '/meet-notes/settings', body: SettingsBody });
+
 // ─── List notes ───────────────────────────────────────────────────────────────
 
-router.get('/', optionalAuth, requireRead('calendar'), trackAiCall, (req, res) => {
-  const { limit = '50', offset = '0', q, account_id, from, to } = req.query as Record<string, string>;
+router.get('/', optionalAuth, requireRead('calendar'), trackAiCall, validateQuery(ListQuery), (req, res) => {
+  const { limit: lim, offset: off, q, account_id, from, to } = queryOf(ListQuery, req);
   const db = getDb();
-  const lim = Math.min(parseInt(limit) || 50, 200);
-  const off = parseInt(offset) || 0;
 
   let query = db.select().from(meetNotes).$dynamic();
 
@@ -70,11 +94,8 @@ router.get('/settings', optionalAuth, requireRead('calendar'), (req, res) => {
   res.json({ driveSearchEnabled });
 });
 
-router.put('/settings', uiOnlyAuth, (req, res) => {
-  const { driveSearchEnabled } = req.body as { driveSearchEnabled?: boolean };
-  if (typeof driveSearchEnabled !== 'boolean') {
-    return res.status(400).json({ error: 'driveSearchEnabled must be a boolean' });
-  }
+router.put('/settings', uiOnlyAuth, validateBody(SettingsBody), (req, res) => {
+  const { driveSearchEnabled } = bodyOf(SettingsBody, req);
   const db = getDb();
   const value = driveSearchEnabled ? 'true' : 'false';
   db.insert(settings)
@@ -107,9 +128,9 @@ router.post('/sync', optionalAuth, requireRead('calendar'), async (_req, res) =>
 
 // ─── Single note ──────────────────────────────────────────────────────────────
 
-router.get('/:id', optionalAuth, requireRead('calendar'), trackAiCall, (req, res) => {
+router.get('/:id', optionalAuth, requireRead('calendar'), trackAiCall, validateParams(NoteIdParam), (req, res) => {
   const db  = getDb();
-  const id  = parseInt(req.params['id'] as string);
+  const { id } = paramsOf(NoteIdParam, req);
   const note = db.select().from(meetNotes).where(eq(meetNotes.id, id)).get();
   if (!note) return res.status(404).json({ error: 'Note not found' });
   res.json(note);
@@ -117,9 +138,9 @@ router.get('/:id', optionalAuth, requireRead('calendar'), trackAiCall, (req, res
 
 // ─── Refresh content from Drive ───────────────────────────────────────────────
 
-router.post('/:id/refresh', optionalAuth, requireRead('calendar'), async (req, res) => {
+router.post('/:id/refresh', optionalAuth, requireRead('calendar'), validateParams(NoteIdParam), async (req, res) => {
   const db   = getDb();
-  const id   = parseInt(req.params['id'] as string);
+  const { id } = paramsOf(NoteIdParam, req);
   const note = db.select().from(meetNotes).where(eq(meetNotes.id, id)).get();
   if (!note) return res.status(404).json({ error: 'Note not found' });
   if (!note.driveFileId) return res.status(400).json({ error: 'No Drive file associated with this note' });

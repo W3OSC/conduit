@@ -7,17 +7,17 @@
  *   GET    /api/gdrive/available-folders?email=&driveType=  — folders available to add (from Google API)
  *   GET    /api/gdrive/folders                        — list all whitelisted folder configs (includes integer `id` for each)
  *   POST   /api/gdrive/folders                        — add a new whitelisted folder
- *   GET    /api/gdrive/folders/:id                    — get a single folder config
- *   PUT    /api/gdrive/folders/:id                    — update folder config (rename)
- *   DELETE /api/gdrive/folders/:id                    — remove folder from whitelist
- *   POST   /api/gdrive/folders/:id/sync               — trigger manual sync (force cache refresh)
- *   POST   /api/gdrive/folders/:id/test               — verify Drive access
+ *   GET    /api/gdrive/folders/:folderId                    — get a single folder config
+ *   PUT    /api/gdrive/folders/:folderId                    — update folder config (rename)
+ *   DELETE /api/gdrive/folders/:folderId                    — remove folder from whitelist
+ *   POST   /api/gdrive/folders/:folderId/sync               — trigger manual sync (force cache refresh)
+ *   POST   /api/gdrive/folders/:folderId/test               — verify Drive access
  *
  * File operations:
- *   GET    /api/gdrive/folders/:id/files              — get recursive file tree for folder (each node has a `fileId`)
- *   GET    /api/gdrive/folders/:id/files/:fileId      — READ FILE CONTENT — returns text/markdown/csv for Google Docs/Sheets/text files
- *   GET    /api/gdrive/folders/:id/download/:fileId   — download raw file as browser blob (binary)
- *   POST   /api/gdrive/folders/:id/upload             — upload a file (multipart/form-data)
+ *   GET    /api/gdrive/folders/:folderId/files              — get recursive file tree for folder (each node has a `fileId`)
+ *   GET    /api/gdrive/folders/:folderId/files/*fileId     — READ FILE CONTENT — returns text/markdown/csv for Google Docs/Sheets/text files
+ *   GET    /api/gdrive/folders/:folderId/download/*fileId  — download raw file as browser blob (binary)
+ *   POST   /api/gdrive/folders/:folderId/upload             — upload a file (multipart/form-data)
  *
  * ── How to read a Google Doc ──────────────────────────────────────────────────
  *
@@ -55,18 +55,66 @@ import { optionalAuth, uiOnlyAuth, type AuthedRequest } from '../auth/middleware
 import { requireRead, resolveEffectiveFineGrained } from './permissions-utils.js';
 import type { GdriveFineGrained } from '../db/schema.js';
 import { getConnectionManager } from '../connections/manager.js';
+import {
+  z, booleanFlag, intParam, trimmedString, wildcardPath,
+  bodyOf, paramsOf, queryOf, validateBody, validateParams, validateQuery,
+} from './validate.js';
+import { documentRoute } from './openapi-registry.js';
 
 // Multer: store uploads in memory (max 100 MB per file)
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
 
 const router = Router();
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
+// ── Request schemas ───────────────────────────────────────────────────────────
+//
+// The Express params are named `:folderId` / `*fileId` to match the names the
+// OpenAPI document has always used — before this change the spec said
+// `{folderId}`/`{fileId}` while the code said `:id`/`*path`.
 
-function parseFolderId(raw: string): number | null {
-  const id = parseInt(raw, 10);
-  return isNaN(id) ? null : id;
-}
+const FolderIdParam = z.object({ folderId: intParam('folder') });
+
+const FolderFileParams = z.object({
+  folderId: intParam('folder'),
+  fileId: wildcardPath.openapi({ description: 'Google Drive file ID.' }),
+});
+
+const AvailableFoldersQuery = z.object({
+  email: trimmedString('email').openapi({ description: 'Connected Google account.' }),
+  driveType: z.enum(['personal', 'shared']).default('personal'),
+});
+
+const FileTreeQuery = z.object({
+  refresh: booleanFlag.openapi({ description: 'Bypass the cache and re-fetch from Drive.' }),
+});
+
+const CreateFolderBody = z.object({
+  email: trimmedString('email'),
+  folderId: trimmedString('folderId'),
+  folderName: trimmedString('folderName'),
+  driveType: z.string().optional(),
+  driveId: z.string().optional(),
+});
+
+const UpdateFolderBody = z.object({ folderName: z.string().optional() });
+const UploadBody = z.looseObject({ parentFolderId: z.string().optional() });
+
+documentRoute({ method: 'get', path: '/gdrive/folders/{folderId}', params: FolderIdParam });
+documentRoute({ method: 'get', path: '/gdrive/folders/{folderId}/files', params: FolderIdParam, query: FileTreeQuery });
+documentRoute({ method: 'get', path: '/gdrive/folders/{folderId}/files/{fileId}', params: FolderFileParams });
+documentRoute({
+  method: 'get',
+  path: '/gdrive/folders/{folderId}/download/{fileId}',
+  params: FolderFileParams,
+  summary: 'Download the raw bytes of a Google Drive file',
+  description: 'Returns the file as a binary attachment. Google Workspace files are exported as PDF. Use GET /gdrive/folders/{folderId}/files/{fileId} for text content instead.',
+  responses: {
+    200: { description: 'Raw file bytes', content: { 'application/octet-stream': { schema: { type: 'string', format: 'binary' } } } },
+    403: { description: 'The file does not belong to the specified folder config' },
+    503: { description: 'No active Google Drive connection for this folder\'s account' },
+  },
+});
+documentRoute({ method: 'post', path: '/gdrive/folders', body: CreateFolderBody });
 
 /**
  * Per-folder read permission for API keys. Absent entry = inherit the
@@ -92,11 +140,8 @@ router.get('/accounts', optionalAuth, requireRead('gdrive'), (_req, res) => {
 // ── GET /gdrive/available-folders ─────────────────────────────────────────────
 // Fetches the list of folders available to whitelist from Google's API.
 
-router.get('/available-folders', uiOnlyAuth, async (req, res) => {
-  const email     = (req.query['email'] as string | undefined)?.trim();
-  const driveType = ((req.query['driveType'] as string | undefined) ?? 'personal') as 'personal' | 'shared';
-
-  if (!email) return res.status(400).json({ error: 'email query parameter is required' });
+router.get('/available-folders', uiOnlyAuth, validateQuery(AvailableFoldersQuery), async (req, res) => {
+  const { email, driveType } = queryOf(AvailableFoldersQuery, req);
 
   const manager = getConnectionManager();
   const gdrive = manager.getGdrive(email);
@@ -127,25 +172,15 @@ router.get('/folders', optionalAuth, requireRead('gdrive'), (req, res) => {
 
 // ── POST /gdrive/folders — whitelist a new folder ─────────────────────────────
 
-router.post('/folders', uiOnlyAuth, async (req, res) => {
-  const { email, folderId, folderName, driveType, driveId } = req.body as {
-    email?: string;
-    folderId?: string;
-    folderName?: string;
-    driveType?: string;
-    driveId?: string;
-  };
-
-  if (!email || !folderId || !folderName) {
-    return res.status(400).json({ error: 'email, folderId, and folderName are required' });
-  }
+router.post('/folders', uiOnlyAuth, validateBody(CreateFolderBody), async (req, res) => {
+  const { email, folderId, folderName, driveType, driveId } = bodyOf(CreateFolderBody, req);
 
   const db = getDb();
   const result = db.insert(googleDriveFolderConfig)
     .values({
-      email:      email.trim(),
-      folderId:   folderId.trim(),
-      folderName: folderName.trim(),
+      email,
+      folderId,
+      folderName,
       driveType:  (driveType === 'shared' ? 'shared' : 'personal'),
       driveId:    driveId?.trim() || null,
       syncStatus: 'idle',
@@ -155,10 +190,10 @@ router.post('/folders', uiOnlyAuth, async (req, res) => {
 
   // Kick off an initial sync in the background
   const manager = getConnectionManager();
-  const gdrive = manager.getGdrive(email.trim());
+  const gdrive = manager.getGdrive(email);
   if (gdrive) {
     gdrive.syncFolder(result.id).catch((e) => console.error(`[gdrive:${result.id}] Initial sync failed:`, e));
-    manager.startGdriveFolderPolling(result.id, email.trim());
+    manager.startGdriveFolderPolling(result.id, email);
   }
 
   res.status(201).json({ ...result, connectionStatus: manager.getGdriveFolderStatus(result.id) });
@@ -166,9 +201,8 @@ router.post('/folders', uiOnlyAuth, async (req, res) => {
 
 // ── GET /gdrive/folders/:id — get a single folder ─────────────────────────────
 
-router.get('/folders/:id', optionalAuth, requireRead('gdrive'), (req, res) => {
-  const id = parseFolderId(req.params['id'] as string);
-  if (id === null) return res.status(400).json({ error: 'Invalid folder ID' });
+router.get('/folders/:folderId', optionalAuth, requireRead('gdrive'), validateParams(FolderIdParam), (req, res) => {
+  const { folderId: id } = paramsOf(FolderIdParam, req);
 
   const db = getDb();
   const manager = getConnectionManager();
@@ -180,15 +214,14 @@ router.get('/folders/:id', optionalAuth, requireRead('gdrive'), (req, res) => {
 
 // ── PUT /gdrive/folders/:id — rename / update a folder ────────────────────────
 
-router.put('/folders/:id', uiOnlyAuth, (req, res) => {
-  const id = parseFolderId(req.params['id'] as string);
-  if (id === null) return res.status(400).json({ error: 'Invalid folder ID' });
+router.put('/folders/:folderId', uiOnlyAuth, validateParams(FolderIdParam), validateBody(UpdateFolderBody), (req, res) => {
+  const { folderId: id } = paramsOf(FolderIdParam, req);
 
   const db = getDb();
   const row = db.select().from(googleDriveFolderConfig).where(eq(googleDriveFolderConfig.id, id)).get();
   if (!row) return res.status(404).json({ error: 'Folder not found' });
 
-  const { folderName } = req.body as { folderName?: string };
+  const { folderName } = bodyOf(UpdateFolderBody, req);
   const updates: Partial<typeof googleDriveFolderConfig.$inferInsert> & { updatedAt: string } = {
     updatedAt: new Date().toISOString(),
   };
@@ -206,9 +239,8 @@ router.put('/folders/:id', uiOnlyAuth, (req, res) => {
 
 // ── DELETE /gdrive/folders/:id — remove a folder from the whitelist ───────────
 
-router.delete('/folders/:id', uiOnlyAuth, (req, res) => {
-  const id = parseFolderId(req.params['id'] as string);
-  if (id === null) return res.status(400).json({ error: 'Invalid folder ID' });
+router.delete('/folders/:folderId', uiOnlyAuth, validateParams(FolderIdParam), (req, res) => {
+  const { folderId: id } = paramsOf(FolderIdParam, req);
 
   const db = getDb();
   const row = db.select().from(googleDriveFolderConfig).where(eq(googleDriveFolderConfig.id, id)).get();
@@ -226,9 +258,8 @@ router.delete('/folders/:id', uiOnlyAuth, (req, res) => {
 
 // ── POST /gdrive/folders/:id/test — verify access ────────────────────────────
 
-router.post('/folders/:id/test', uiOnlyAuth, async (req, res) => {
-  const id = parseFolderId(req.params['id'] as string);
-  if (id === null) return res.status(400).json({ error: 'Invalid folder ID' });
+router.post('/folders/:folderId/test', uiOnlyAuth, validateParams(FolderIdParam), async (req, res) => {
+  const { folderId: id } = paramsOf(FolderIdParam, req);
 
   const db = getDb();
   const row = db.select().from(googleDriveFolderConfig).where(eq(googleDriveFolderConfig.id, id)).get();
@@ -255,9 +286,8 @@ router.post('/folders/:id/test', uiOnlyAuth, async (req, res) => {
 
 // ── POST /gdrive/folders/:id/sync — trigger manual cache refresh ──────────────
 
-router.post('/folders/:id/sync', optionalAuth, requireRead('gdrive'), async (req, res) => {
-  const id = parseFolderId(req.params['id'] as string);
-  if (id === null) return res.status(400).json({ error: 'Invalid folder ID' });
+router.post('/folders/:folderId/sync', optionalAuth, requireRead('gdrive'), validateParams(FolderIdParam), async (req, res) => {
+  const { folderId: id } = paramsOf(FolderIdParam, req);
 
   const db = getDb();
   const row = db.select().from(googleDriveFolderConfig).where(eq(googleDriveFolderConfig.id, id)).get();
@@ -278,9 +308,8 @@ router.post('/folders/:id/sync', optionalAuth, requireRead('gdrive'), async (req
 
 // ── GET /gdrive/folders/:id/files — get file tree ─────────────────────────────
 
-router.get('/folders/:id/files', optionalAuth, requireRead('gdrive'), async (req, res) => {
-  const id = parseFolderId(req.params['id'] as string);
-  if (id === null) return res.status(400).json({ error: 'Invalid folder ID' });
+router.get('/folders/:folderId/files', optionalAuth, requireRead('gdrive'), validateParams(FolderIdParam), validateQuery(FileTreeQuery), async (req, res) => {
+  const { folderId: id } = paramsOf(FolderIdParam, req);
 
   if (!canReadFolder(id, (req as AuthedRequest).apiKey?.id)) {
     return res.status(403).json({ error: 'Read access to this folder is not permitted for this API key' });
@@ -294,7 +323,7 @@ router.get('/folders/:id/files', optionalAuth, requireRead('gdrive'), async (req
   const gdrive = manager.getGdrive(row.email);
   if (!gdrive) return res.status(503).json({ error: `No active Drive connection for ${row.email}` });
 
-  const forceRefresh = req.query['refresh'] === 'true';
+  const forceRefresh = queryOf(FileTreeQuery, req).refresh;
 
   try {
     const files = await gdrive.getFileTree(id, !forceRefresh);
@@ -306,11 +335,10 @@ router.get('/folders/:id/files', optionalAuth, requireRead('gdrive'), async (req
 
 // ── GET /gdrive/folders/:id/download/* — download raw file as browser blob ─────
 
-router.get('/folders/:id/download/*path', optionalAuth, requireRead('gdrive'), async (req, res) => {
-  const id = parseFolderId(req.params['id'] as string);
-  if (id === null) return res.status(400).json({ error: 'Invalid folder ID' });
+router.get('/folders/:folderId/download/*fileId', optionalAuth, requireRead('gdrive'), validateParams(FolderFileParams), async (req, res) => {
+  const { folderId: id } = paramsOf(FolderIdParam, req);
 
-  const fileId = (req.params as Record<string, string>)['path'] ?? '';
+  const fileId = paramsOf(FolderFileParams, req).fileId;
   if (!fileId) return res.status(400).json({ error: 'File ID is required' });
 
   const db = getDb();
@@ -375,9 +403,8 @@ router.get('/folders/:id/download/*path', optionalAuth, requireRead('gdrive'), a
 
 // ── POST /gdrive/folders/:id/upload — upload a file to the folder ──────────────
 
-router.post('/folders/:id/upload', uiOnlyAuth, upload.single('file'), async (req, res) => {
-  const id = parseFolderId(req.params['id'] as string);
-  if (id === null) return res.status(400).json({ error: 'Invalid folder ID' });
+router.post('/folders/:folderId/upload', uiOnlyAuth, upload.single('file'), validateParams(FolderIdParam), validateBody(UploadBody), async (req, res) => {
+  const { folderId: id } = paramsOf(FolderIdParam, req);
 
   const file = req.file;
   if (!file) return res.status(400).json({ error: 'No file provided' });
@@ -391,7 +418,7 @@ router.post('/folders/:id/upload', uiOnlyAuth, upload.single('file'), async (req
   if (!gdrive) return res.status(503).json({ error: `No active Drive connection for ${row.email}` });
 
   // Optional: target subfolder within the configured folder
-  const parentFolderId = (req.body as { parentFolderId?: string }).parentFolderId || row.folderId;
+  const parentFolderId = bodyOf(UploadBody, req).parentFolderId || row.folderId;
 
   try {
     // Access the drive API directly on the manager's instance
@@ -430,12 +457,10 @@ router.post('/folders/:id/upload', uiOnlyAuth, upload.single('file'), async (req
 
 // ── GET /gdrive/folders/:id/files/* — read file contents ──────────────────────
 
-router.get('/folders/:id/files/*path', optionalAuth, requireRead('gdrive'), async (req, res) => {
-  const id = parseFolderId(req.params['id'] as string);
-  if (id === null) return res.status(400).json({ error: 'Invalid folder ID' });
+router.get('/folders/:folderId/files/*fileId', optionalAuth, requireRead('gdrive'), validateParams(FolderFileParams), async (req, res) => {
+  const { folderId: id } = paramsOf(FolderIdParam, req);
 
-  // The path parameter holds the Google Drive file ID (after the /files/ prefix)
-  const fileId = (req.params as Record<string, string>)['path'] ?? '';
+  const fileId = paramsOf(FolderFileParams, req).fileId;
   if (!fileId) return res.status(400).json({ error: 'File ID is required' });
 
   const db = getDb();

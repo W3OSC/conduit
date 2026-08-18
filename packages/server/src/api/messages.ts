@@ -12,6 +12,68 @@ import {
   isReadPermitted, filterEnabledSources,
 } from './permissions-utils.js';
 import type { DiscordFineGrained } from '../db/schema.js';
+import {
+  z, booleanFlag, isoDateTime, limitSchema, messageSourceSchema, optionalMessageSource,
+  requiredString, MESSAGE_SOURCES, bodyOf, paramsOf, queryOf, validateBody, validateParams, validateQuery,
+} from './validate.js';
+import { documentRoute } from './openapi-registry.js';
+
+// ── Request schemas ───────────────────────────────────────────────────────────
+
+const MessagesQuery = z.object({
+  source: optionalMessageSource,
+  chat_id: z.string().optional().openapi({ description: 'Restrict to a single conversation/channel/thread.' }),
+  limit: limitSchema(50, 500),
+  before: isoDateTime.optional().openapi({ description: 'Only messages at or before this instant.' }),
+  after: isoDateTime.optional().openapi({ description: 'Only messages at or after this instant.' }),
+  around: isoDateTime.optional().openapi({ description: 'Centre the window on this instant (half before, half after).' }),
+  include_meta: booleanFlag.openapi({ description: 'Include conversationMeta (requires chat_id and source).' }),
+});
+
+const SearchQuery = z.object({
+  q: requiredString('q')
+    .openapi({ description: 'Substring to search message content for.' }),
+  source: optionalMessageSource,
+  limit: limitSchema(50, 200),
+});
+
+/**
+ * `sources` stays permissive on purpose: unknown entries are dropped rather
+ * than rejected, exactly as `filterEnabledSources` did before.
+ */
+const ActivityQuery = z.object({
+  since: isoDateTime.optional().openapi({ description: 'Start of the window (default: 24 hours ago).' }),
+  until: isoDateTime.optional().openapi({ description: 'End of the window (default: now).' }),
+  limit: limitSchema(50, 200),
+  sources: z.string().optional()
+    .transform((v) => (v === undefined ? undefined : v.split(',').map((s) => s.trim()).filter(Boolean)))
+    .openapi({ type: 'string', description: `Comma-separated subset of ${MESSAGE_SOURCES.join(', ')}. Unknown entries are ignored.` }),
+});
+
+const ChatReadParams = z.object({
+  source: messageSourceSchema,
+  chatId: z.string().min(1),
+});
+
+const ChatReadBody = z.object({
+  at: isoDateTime.optional().openapi({ description: 'Read cursor to set (default: now).' }),
+});
+
+const ReadAllBody = z.object({
+  source: messageSourceSchema.optional().openapi({ description: 'Limit the sweep to one source (default: all chat sources).' }),
+});
+
+documentRoute({ method: 'get', path: '/messages', query: MessagesQuery });
+documentRoute({ method: 'get', path: '/search', query: SearchQuery });
+documentRoute({ method: 'get', path: '/activity', query: ActivityQuery });
+documentRoute({
+  method: 'post',
+  path: '/chats/{source}/{chatId}/read',
+  params: ChatReadParams,
+  body: ChatReadBody,
+  bodyRequired: false,
+});
+documentRoute({ method: 'post', path: '/chats/read-all', body: ReadAllBody, bodyRequired: false });
 
 // ── Contact enrichment cache (per request) ────────────────────────────────────
 // Build a map of (source + platformId) → { displayName, avatarUrl } from the
@@ -819,11 +881,10 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
   res.json(result);
 });
 
-router.get('/messages', optionalAuth, trackAiCall, (req, res) => {
+router.get('/messages', optionalAuth, trackAiCall, validateQuery(MessagesQuery), (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
-  const { source, chat_id, limit = '50', before, after, around, include_meta } = req.query as Record<string, string>;
-  const lim = Math.min(parseInt(limit) || 50, 500);
+  const { source, chat_id, limit: lim, before, after, around, include_meta } = queryOf(MessagesQuery, req);
   const half = Math.floor(lim / 2);
   const apiKeyId = authedReq.apiKey?.id ?? null;
 
@@ -992,7 +1053,7 @@ router.get('/messages', optionalAuth, trackAiCall, (req, res) => {
 
   // Optional conversationMeta — only when include_meta=true and a specific chat is requested
   let conversationMeta: ReturnType<typeof buildConversationMeta> | undefined;
-  if (include_meta === 'true' && chat_id && source) {
+  if (include_meta && chat_id && source) {
     conversationMeta = buildConversationMeta(
       db, source, chat_id,
       page as Array<{ senderName: string; senderAvatarUrl: string | null; isMe: boolean; senderId?: unknown }>,
@@ -1007,13 +1068,14 @@ router.get('/messages', optionalAuth, trackAiCall, (req, res) => {
 // ── Read-state (unread model) ─────────────────────────────────────────────────
 
 // POST /chats/:source/:chatId/read — set the chat's read cursor (default: now).
-router.post('/chats/:source/:chatId/read', uiOnlyAuth, (req, res) => {
-  const { source, chatId } = req.params as { source: string; chatId: string };
-  if (!(MSG_SOURCES as readonly string[]).includes(source)) {
-    res.status(400).json({ error: `Unknown source: ${source}` });
-    return;
-  }
-  const at = (req.body as { at?: string } | undefined)?.at || new Date().toISOString();
+router.post(
+  '/chats/:source/:chatId/read',
+  uiOnlyAuth,
+  validateParams(ChatReadParams),
+  validateBody(ChatReadBody),
+  (req, res) => {
+  const { source, chatId } = paramsOf(ChatReadParams, req);
+  const at = bodyOf(ChatReadBody, req).at || new Date().toISOString();
   const db = getDb();
   const now = new Date().toISOString();
   db.insert(chatReadState)
@@ -1027,8 +1089,8 @@ router.post('/chats/:source/:chatId/read', uiOnlyAuth, (req, res) => {
 });
 
 // POST /chats/read-all — mark every known chat read (optionally one source).
-router.post('/chats/read-all', uiOnlyAuth, (req, res) => {
-  const { source } = (req.body ?? {}) as { source?: string };
+router.post('/chats/read-all', uiOnlyAuth, validateBody(ReadAllBody), (req, res) => {
+  const { source } = bodyOf(ReadAllBody, req);
   const chatSources = source ? [source] : ['telegram', 'discord', 'slack', 'twitter'];
   const db = getDb();
   const now = new Date().toISOString();
@@ -1060,13 +1122,11 @@ router.post('/chats/read-all', uiOnlyAuth, (req, res) => {
   res.json({ success: true, marked });
 });
 
-router.get('/search', optionalAuth, trackAiCall, (req, res) => {
+router.get('/search', optionalAuth, trackAiCall, validateQuery(SearchQuery), (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
-  const { q, source, limit = '50' } = req.query as Record<string, string>;
-  if (!q) { res.status(400).json({ error: 'q is required' }); return; }
+  const { q, source, limit: lim } = queryOf(SearchQuery, req);
 
-  const lim = Math.min(parseInt(limit) || 50, 200);
   const results: unknown[] = [];
   const apiKeyId = authedReq.apiKey?.id ?? null;
 
@@ -1145,27 +1205,22 @@ router.get('/search', optionalAuth, trackAiCall, (req, res) => {
 //   sources — comma-separated filter, e.g. "slack,discord,gmail"
 //             (default: all; gmail produces 'email' type items)
 
-router.get('/activity', optionalAuth, trackAiCall, (req, res) => {
+router.get('/activity', optionalAuth, trackAiCall, validateQuery(ActivityQuery), (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
   const now = new Date();
   const defaultSince = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
 
-  const {
-    since = defaultSince,
-    until = now.toISOString(),
-    limit = '50',
-    sources: sourcesParam,
-  } = req.query as Record<string, string>;
+  const query = queryOf(ActivityQuery, req);
+  const since = query.since ?? defaultSince;
+  const until = query.until ?? now.toISOString();
+  const lim = query.limit;
 
-  const lim = Math.min(parseInt(limit) || 50, 200);
   const apiKeyId = authedReq.apiKey?.id ?? null;
   // Enforce the same service toggles + per-chat allowlists as /messages —
   // the activity feed must not be a side door around scoped keys.
   const requestedSources = filterEnabledSources(
-    sourcesParam
-      ? sourcesParam.split(',').map((s) => s.trim())
-      : ['telegram', 'discord', 'slack', 'twitter', 'gmail'],
+    query.sources ?? ['telegram', 'discord', 'slack', 'twitter', 'gmail'],
     apiKeyId,
   );
 

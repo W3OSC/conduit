@@ -17,9 +17,76 @@ import { getConnectionManager } from '../connections/manager.js';
 import { broadcast } from '../websocket/hub.js';
 import type { TwitterAction, TwitterCreds } from '../sync/twitter.js';
 import { parseFgConfig, requireRead, resolveTwitterReadPerms, isSendEnabled, isApprovalRequired } from './permissions-utils.js';
+import {
+  z, boundedInt, limitSchema, offsetSchema, requiredString, trimmedString, UNBOUNDED,
+  bodyOf, paramsOf, queryOf, validateBody, validateParams, validateQuery,
+} from './validate.js';
+import { documentRoute } from './openapi-registry.js';
 
 const router = Router();
 const CREDS_KEY = 'credentials.twitter';
+
+// ── Request schemas ───────────────────────────────────────────────────────────
+
+/** `count` on the live-API routes was never capped; only the NaN case changes. */
+const countSchema = (fallback: number) =>
+  boundedInt({ default: fallback, max: UNBOUNDED, description: `How many items to fetch (default ${fallback}).` });
+
+const FeedQuery = z.object({
+  count: countSchema(20),
+  reset: z.unknown().optional().transform((v) => v === true || v === 'true')
+    .openapi({ type: 'boolean', default: false, description: 'Discard the cached cursor and start from the top.' }),
+});
+
+const SearchQuery = z.object({
+  q: requiredString('q').openapi({ description: 'Search query.' }),
+  count: countSchema(20),
+  mode: z.enum(['Latest', 'Top', 'People']).default('Latest')
+    .openapi({ description: 'Latest/Top search tweets; People searches profiles.' }),
+});
+
+const CountQuery = z.object({ count: countSchema(20) });
+const FollowCountQuery = z.object({ count: countSchema(50) });
+
+const TweetIdParam = z.object({ id: z.string().min(1) });
+const HandleParam = z.object({ handle: z.string().min(1) });
+const ConversationParam = z.object({ conversationId: z.string().min(1) });
+
+const DmsQuery = z.object({ limit: limitSchema(50, 100), offset: offsetSchema() });
+const DmThreadQuery = z.object({
+  limit: boundedInt({ default: 100, max: UNBOUNDED, description: 'How many of the newest messages to return (default 100).' }),
+});
+
+/** Twitter actions are a union owned by `sync/twitter.ts`; only the
+ *  discriminant is validated, the rest passes through untouched. */
+const ActionBody = z.looseObject({
+  action: requiredString('action').openapi({ description: 'tweet, reply, quote, dm, like, retweet, follow …' }),
+});
+
+const TweetBody = z.object({
+  text: trimmedString('text').openapi({ description: 'Tweet body.' }),
+  replyToId: z.string().optional().openapi({ description: 'Tweet id to reply to (turns this into a reply).' }),
+});
+
+documentRoute({ method: 'get', path: '/twitter/feed', query: FeedQuery });
+documentRoute({ method: 'get', path: '/twitter/search', query: SearchQuery });
+documentRoute({ method: 'get', path: '/twitter/tweet/{id}', params: TweetIdParam });
+documentRoute({ method: 'get', path: '/twitter/tweet/{id}/thread', params: TweetIdParam });
+documentRoute({ method: 'get', path: '/twitter/user/{handle}', params: HandleParam });
+documentRoute({ method: 'get', path: '/twitter/user/{handle}/tweets', params: HandleParam, query: CountQuery });
+documentRoute({ method: 'get', path: '/twitter/user/{handle}/followers', params: HandleParam, query: FollowCountQuery });
+documentRoute({ method: 'get', path: '/twitter/user/{handle}/following', params: HandleParam, query: FollowCountQuery });
+documentRoute({ method: 'get', path: '/twitter/notifications/mentions', query: CountQuery });
+documentRoute({ method: 'get', path: '/twitter/dms', query: DmsQuery });
+documentRoute({ method: 'get', path: '/twitter/dms/{conversationId}', params: ConversationParam, query: DmThreadQuery });
+documentRoute({ method: 'post', path: '/twitter/actions', body: ActionBody });
+documentRoute({
+  method: 'post',
+  path: '/twitter/tweet',
+  body: TweetBody,
+  summary: 'Post a tweet or threaded reply through the outbox',
+  description: 'Convenience wrapper around POST /twitter/actions. Respects the allowTweets fine-grained permission and the global requireApproval setting.',
+});
 
 function getTwitterCreds(): TwitterCreds | null {
   const db = getDb();
@@ -91,26 +158,25 @@ router.post('/auth/refresh', uiOnlyAuth, async (req, res) => {
 
 // ── Feed / Explore ────────────────────────────────────────────────────────────
 
-router.get('/feed', optionalAuth, requireRead('twitter'), async (req, res) => {
+router.get('/feed', optionalAuth, requireRead('twitter'), validateQuery(FeedQuery), async (req, res) => {
   if (!resolveTwitterReadPerms((req as AuthedRequest).apiKey?.id).readTimeline) {
     return res.status(403).json({ error: 'Timeline access is not permitted for this API key' });
   }
-  const { count = '20', reset = 'false' } = req.query as Record<string, string>;
+  const { count, reset } = queryOf(FeedQuery, req);
   const manager = getConnectionManager();
   const twitter = manager.getTwitter();
   if (!twitter) return res.status(503).json({ error: 'Twitter not connected' });
 
   try {
-    const tweets = await twitter.getHomeFeed(parseInt(count), reset === 'true');
+    const tweets = await twitter.getHomeFeed(count, reset);
     res.json({ tweets });
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   }
 });
 
-router.get('/search', optionalAuth, requireRead('twitter'), async (req, res) => {
-  const { q = '', count = '20', mode = 'Latest' } = req.query as Record<string, string>;
-  if (!q) return res.status(400).json({ error: 'q is required' });
+router.get('/search', optionalAuth, requireRead('twitter'), validateQuery(SearchQuery), async (req, res) => {
+  const { q, count, mode } = queryOf(SearchQuery, req);
 
   const manager = getConnectionManager();
   const twitter = manager.getTwitter();
@@ -118,10 +184,10 @@ router.get('/search', optionalAuth, requireRead('twitter'), async (req, res) => 
 
   try {
     if (mode === 'People') {
-      const profiles = await twitter.searchPeople(q, parseInt(count));
+      const profiles = await twitter.searchPeople(q, count);
       return res.json({ profiles });
     }
-    const tweets = await twitter.searchTweets(q, parseInt(count), mode as 'Latest' | 'Top');
+    const tweets = await twitter.searchTweets(q, count, mode);
     res.json({ tweets });
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
@@ -141,13 +207,13 @@ router.get('/trends', optionalAuth, requireRead('twitter'), async (req, res) => 
   }
 });
 
-router.get('/tweet/:id', optionalAuth, requireRead('twitter'), async (req, res) => {
+router.get('/tweet/:id', optionalAuth, requireRead('twitter'), validateParams(TweetIdParam), async (req, res) => {
   const manager = getConnectionManager();
   const twitter = manager.getTwitter();
   if (!twitter) return res.status(503).json({ error: 'Twitter not connected' });
 
   try {
-    const tweet = await twitter.getTweet(req.params['id'] as string);
+    const tweet = await twitter.getTweet(paramsOf(TweetIdParam, req).id);
     if (!tweet) return res.status(404).json({ error: 'Tweet not found' });
     res.json(tweet);
   } catch (e) {
@@ -155,26 +221,26 @@ router.get('/tweet/:id', optionalAuth, requireRead('twitter'), async (req, res) 
   }
 });
 
-router.get('/tweet/:id/thread', optionalAuth, requireRead('twitter'), async (req, res) => {
+router.get('/tweet/:id/thread', optionalAuth, requireRead('twitter'), validateParams(TweetIdParam), async (req, res) => {
   const manager = getConnectionManager();
   const twitter = manager.getTwitter();
   if (!twitter) return res.status(503).json({ error: 'Twitter not connected' });
 
   try {
-    const tweets = await twitter.getTweetThread(req.params['id'] as string);
+    const tweets = await twitter.getTweetThread(paramsOf(TweetIdParam, req).id);
     res.json({ tweets });
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   }
 });
 
-router.get('/user/:handle', optionalAuth, requireRead('twitter'), async (req, res) => {
+router.get('/user/:handle', optionalAuth, requireRead('twitter'), validateParams(HandleParam), async (req, res) => {
   const manager = getConnectionManager();
   const twitter = manager.getTwitter();
   if (!twitter) return res.status(503).json({ error: 'Twitter not connected' });
 
   try {
-    const profile = await twitter.getUserProfile(req.params['handle'] as string);
+    const profile = await twitter.getUserProfile(paramsOf(HandleParam, req).handle);
     if (!profile) return res.status(404).json({ error: 'User not found' });
     res.json(profile);
   } catch (e) {
@@ -182,42 +248,42 @@ router.get('/user/:handle', optionalAuth, requireRead('twitter'), async (req, re
   }
 });
 
-router.get('/user/:handle/tweets', optionalAuth, requireRead('twitter'), async (req, res) => {
-  const { count = '20' } = req.query as Record<string, string>;
+router.get('/user/:handle/tweets', optionalAuth, requireRead('twitter'), validateParams(HandleParam), validateQuery(CountQuery), async (req, res) => {
+  const { count } = queryOf(CountQuery, req);
   const manager = getConnectionManager();
   const twitter = manager.getTwitter();
   if (!twitter) return res.status(503).json({ error: 'Twitter not connected' });
 
   try {
-    const tweets = await twitter.getUserTweets(req.params['handle'] as string, parseInt(count));
+    const tweets = await twitter.getUserTweets(paramsOf(HandleParam, req).handle, count);
     res.json({ tweets });
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   }
 });
 
-router.get('/user/:handle/followers', optionalAuth, requireRead('twitter'), async (req, res) => {
-  const { count = '50' } = req.query as Record<string, string>;
+router.get('/user/:handle/followers', optionalAuth, requireRead('twitter'), validateParams(HandleParam), validateQuery(FollowCountQuery), async (req, res) => {
+  const { count } = queryOf(FollowCountQuery, req);
   const manager = getConnectionManager();
   const twitter = manager.getTwitter();
   if (!twitter) return res.status(503).json({ error: 'Twitter not connected' });
 
   try {
-    const profiles = await twitter.getUserFollowers(req.params['handle'] as string, parseInt(count));
+    const profiles = await twitter.getUserFollowers(paramsOf(HandleParam, req).handle, count);
     res.json({ profiles });
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   }
 });
 
-router.get('/user/:handle/following', optionalAuth, requireRead('twitter'), async (req, res) => {
-  const { count = '50' } = req.query as Record<string, string>;
+router.get('/user/:handle/following', optionalAuth, requireRead('twitter'), validateParams(HandleParam), validateQuery(FollowCountQuery), async (req, res) => {
+  const { count } = queryOf(FollowCountQuery, req);
   const manager = getConnectionManager();
   const twitter = manager.getTwitter();
   if (!twitter) return res.status(503).json({ error: 'Twitter not connected' });
 
   try {
-    const profiles = await twitter.getUserFollowing(req.params['handle'] as string, parseInt(count));
+    const profiles = await twitter.getUserFollowing(paramsOf(HandleParam, req).handle, count);
     res.json({ profiles });
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
@@ -239,17 +305,17 @@ router.get('/me', optionalAuth, requireRead('twitter'), async (req, res) => {
   }
 });
 
-router.get('/notifications/mentions', optionalAuth, requireRead('twitter'), async (req, res) => {
+router.get('/notifications/mentions', optionalAuth, requireRead('twitter'), validateQuery(CountQuery), async (req, res) => {
   if (!resolveTwitterReadPerms((req as AuthedRequest).apiKey?.id).readTimeline) {
     return res.status(403).json({ error: 'Timeline access is not permitted for this API key' });
   }
-  const { count = '20' } = req.query as Record<string, string>;
+  const { count } = queryOf(CountQuery, req);
   const manager = getConnectionManager();
   const twitter = manager.getTwitter();
   if (!twitter) return res.status(503).json({ error: 'Twitter not connected' });
 
   try {
-    const tweets = await twitter.getMentions(parseInt(count));
+    const tweets = await twitter.getMentions(count);
     res.json({ tweets });
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
@@ -258,11 +324,11 @@ router.get('/notifications/mentions', optionalAuth, requireRead('twitter'), asyn
 
 // ── DM routes (stored data) ───────────────────────────────────────────────────
 
-router.get('/dms', optionalAuth, requireRead('twitter'), (req, res) => {
+router.get('/dms', optionalAuth, requireRead('twitter'), validateQuery(DmsQuery), (req, res) => {
   if (!resolveTwitterReadPerms((req as AuthedRequest).apiKey?.id).readDms) {
     return res.status(403).json({ error: 'DM access is not permitted for this API key' });
   }
-  const { limit = '50', offset = '0' } = req.query as Record<string, string>;
+  const { limit: lim, offset: off } = queryOf(DmsQuery, req);
   const db = getDb();
   const creds = getTwitterCreds();
   const myUserIdFromCreds = creds?.userId ? String(creds.userId) : null;
@@ -384,23 +450,21 @@ router.get('/dms', optionalAuth, requireRead('twitter'), (req, res) => {
     };
   });
 
-  const lim = Math.min(parseInt(limit), 100);
-  const off = parseInt(offset);
   res.json({ conversations: conversations.slice(off, off + lim), total: conversations.length });
 });
 
-router.get('/dms/:conversationId', optionalAuth, requireRead('twitter'), (req, res) => {
+router.get('/dms/:conversationId', optionalAuth, requireRead('twitter'), validateParams(ConversationParam), validateQuery(DmThreadQuery), (req, res) => {
   if (!resolveTwitterReadPerms((req as AuthedRequest).apiKey?.id).readDms) {
     return res.status(403).json({ error: 'DM access is not permitted for this API key' });
   }
-  const { limit = '100' } = req.query as Record<string, string>;
+  const { conversationId } = paramsOf(ConversationParam, req);
+  const { limit: lim } = queryOf(DmThreadQuery, req);
   const db = getDb();
-  const lim = Math.max(parseInt(limit) || 100, 1);
 
   // Fetch the NEWEST `lim` messages in SQL, then reverse to ascending order —
   // the UI depends on ascending chronological order.
   const messages = db.select().from(twitterDms)
-    .where(eq(twitterDms.conversationId, req.params['conversationId'] as string))
+    .where(eq(twitterDms.conversationId, conversationId))
     .orderBy(desc(twitterDms.createdAt))
     .limit(lim)
     .all()
@@ -422,7 +486,7 @@ router.get('/dms/:conversationId', optionalAuth, requireRead('twitter'), (req, r
     senderAvatarUrl: avatarBySender.get(m.senderId) ?? null,
   }));
 
-  res.json({ messages: enriched, conversationId: req.params['conversationId'] });
+  res.json({ messages: enriched, conversationId });
 });
 
 // ── Analytics ─────────────────────────────────────────────────────────────────
@@ -597,11 +661,9 @@ function queueTwitterAction(
   return { outboxId, status };
 }
 
-router.post('/actions', optionalAuth, (req, res) => {
+router.post('/actions', optionalAuth, validateBody(ActionBody), (req, res) => {
   const authedReq = req as AuthedRequest;
-  const action = req.body as TwitterAction;
-
-  if (!action?.action) return res.status(400).json({ error: 'action is required' });
+  const action = bodyOf(ActionBody, req) as unknown as TwitterAction;
 
   try {
     const { outboxId, status } = queueTwitterAction(action, authedReq);
@@ -620,17 +682,13 @@ router.post('/actions', optionalAuth, (req, res) => {
  * Respects the `allowTweets` fine-grained permission for API key actors.
  * Obeys the global `requireApproval` setting (goes to outbox pending state when true).
  */
-router.post('/tweet', optionalAuth, (req, res) => {
+router.post('/tweet', optionalAuth, validateBody(TweetBody), (req, res) => {
   const authedReq = req as AuthedRequest;
-  const { text, replyToId } = req.body as { text?: string; replyToId?: string };
-
-  if (!text?.trim()) {
-    return res.status(400).json({ error: 'text is required' });
-  }
+  const { text, replyToId } = bodyOf(TweetBody, req);
 
   const action: TwitterAction = {
     action: replyToId ? 'reply' : 'tweet',
-    text: text.trim(),
+    text,
     ...(replyToId ? { replyToId } : {}),
   };
 

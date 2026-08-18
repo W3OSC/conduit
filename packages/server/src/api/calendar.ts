@@ -17,8 +17,35 @@ import {
 import { getConnectionManager } from '../connections/manager.js';
 import { broadcast } from '../websocket/hub.js';
 import type { CalendarAction } from '../sync/google-calendar.js';
+import {
+  z, isoDateTime, limitSchema, requiredString,
+  bodyOf, paramsOf, queryOf, validateBody, validateParams, validateQuery,
+} from './validate.js';
+import { documentRoute } from './openapi-registry.js';
 
 const router = Router();
+
+// ── Request schemas ───────────────────────────────────────────────────────────
+
+const EventsQuery = z.object({
+  from: isoDateTime.optional().openapi({ description: 'Window start (default: 7 days ago).' }),
+  to: isoDateTime.optional().openapi({ description: 'Window end (default: 30 days ahead).' }),
+  calendarId: z.string().optional(),
+  limit: limitSchema(200, 500),
+});
+
+const EventIdParam = z.object({ id: z.string().min(1) });
+
+/** Calendar actions are a union owned by `sync/google-calendar.ts`; only the
+ *  two fields the route itself reads are validated, the rest passes through. */
+const ActionBody = z.looseObject({
+  action: requiredString('action').openapi({ description: 'create_event, update_event, delete_event, respond …' }),
+  calendarId: requiredString('calendarId'),
+});
+
+documentRoute({ method: 'get', path: '/calendar/events', query: EventsQuery });
+documentRoute({ method: 'get', path: '/calendar/events/{id}', params: EventIdParam });
+documentRoute({ method: 'post', path: '/calendar/actions', body: ActionBody });
 
 /** Per-key calendar allowlist; null = unrestricted. */
 function calendarAllowlist(apiKeyId: number | null | undefined): string[] | null {
@@ -60,8 +87,8 @@ router.get('/calendars', optionalAuth, requireRead('calendar'), trackAiCall, asy
 });
 
 // GET /api/calendar/events
-router.get('/events', optionalAuth, requireRead('calendar'), trackAiCall, (req, res) => {
-  const { from, to, calendarId, limit = '200' } = req.query as Record<string, string>;
+router.get('/events', optionalAuth, requireRead('calendar'), trackAiCall, validateQuery(EventsQuery), (req, res) => {
+  const { from, to, calendarId, limit: lim } = queryOf(EventsQuery, req);
   const db = getDb();
   const apiKeyId = (req as AuthedRequest).apiKey?.id ?? null;
 
@@ -85,7 +112,6 @@ router.get('/events', optionalAuth, requireRead('calendar'), trackAiCall, (req, 
   }
 
   const where = and(...conds);
-  const lim = Math.min(parseInt(limit) || 200, 500);
 
   const events = db.select().from(calendarEvents)
     .where(where)
@@ -98,10 +124,10 @@ router.get('/events', optionalAuth, requireRead('calendar'), trackAiCall, (req, 
 });
 
 // GET /api/calendar/events/:id
-router.get('/events/:id', optionalAuth, requireRead('calendar'), trackAiCall, (req, res) => {
+router.get('/events/:id', optionalAuth, requireRead('calendar'), trackAiCall, validateParams(EventIdParam), (req, res) => {
   const db = getDb();
   const event = db.select().from(calendarEvents)
-    .where(eq(calendarEvents.eventId, req.params['id'] as string))
+    .where(eq(calendarEvents.eventId, paramsOf(EventIdParam, req).id))
     .get();
   if (!event) return res.status(404).json({ error: 'Event not found' });
 
@@ -113,12 +139,9 @@ router.get('/events/:id', optionalAuth, requireRead('calendar'), trackAiCall, (r
 });
 
 // POST /api/calendar/actions
-router.post('/actions', optionalAuth, (req, res) => {
+router.post('/actions', optionalAuth, validateBody(ActionBody), (req, res) => {
   const authedReq = req as AuthedRequest;
-  const action = req.body as CalendarAction;
-
-  if (!action?.action) return res.status(400).json({ error: 'action is required' });
-  if (!action.calendarId) return res.status(400).json({ error: 'calendarId is required' });
+  const action = bodyOf(ActionBody, req) as unknown as CalendarAction;
 
   const db = getDb();
   const apiKeyId = authedReq.apiKey?.id ?? null;

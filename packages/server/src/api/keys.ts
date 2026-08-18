@@ -4,8 +4,16 @@ import { getDb } from '../db/client.js';
 import { apiKeys } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { uiOnlyAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
+import {
+  z, intParam, requiredString, bodyOf, paramsOf, validateBody, validateParams,
+} from './validate.js';
 
 const router = Router();
+
+// Admin-only routes: validated, but deliberately NOT added to the public
+// OpenAPI document (see the header of openapi.ts — agent-relevant routes only).
+const CreateKeyBody = z.object({ name: requiredString('name') });
+const KeyIdParam = z.object({ id: intParam('api key') });
 
 router.get('/', uiOnlyAuth, (req, res) => {
   const db = getDb();
@@ -20,11 +28,10 @@ router.get('/', uiOnlyAuth, (req, res) => {
   res.json(keys);
 });
 
-router.post('/', uiOnlyAuth, (req, res) => {
+router.post('/', uiOnlyAuth, validateBody(CreateKeyBody), (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
-  const { name } = req.body as { name: string };
-  if (!name) { res.status(400).json({ error: 'name is required' }); return; }
+  const { name } = bodyOf(CreateKeyBody, req);
 
   const rawKey = `sk-arb-${randomBytes(24).toString('hex')}`;
   const hash = createHash('sha256').update(rawKey).digest('hex');
@@ -46,10 +53,10 @@ router.post('/', uiOnlyAuth, (req, res) => {
   res.json({ id: key.id, name: key.name, keyPrefix: prefix, key: rawKey, createdAt: key.createdAt });
 });
 
-router.delete('/:id', uiOnlyAuth, (req, res) => {
+router.delete('/:id', uiOnlyAuth, validateParams(KeyIdParam), (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
-  const id = parseInt(req.params['id'] as string);
+  const { id } = paramsOf(KeyIdParam, req);
   const key = db.select().from(apiKeys).where(eq(apiKeys.id, id)).get();
   if (!key) { res.status(404).json({ error: 'Not found' }); return; }
 

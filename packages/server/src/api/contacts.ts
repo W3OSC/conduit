@@ -27,6 +27,11 @@ import { optionalAuth, writeAuditLog, trackAiCall, type AuthedRequest } from '..
 import { isReadEnabled } from './permissions-utils.js';
 import { getContactCriteria, setContactCriteria, syncGmailContactsFromDb, syncCalendarContactsFromDb, rebuildContactsFromMessages, type ContactCriteria } from '../sync/contacts.js';
 import { getConnectionManager } from '../connections/manager.js';
+import {
+  z, isoDateTime, limitSchema, optionalEnum, paginationSchema, trimmedString,
+  bodyOf, paramsOf, queryOf, validateBody, validateParams, validateQuery,
+} from './validate.js';
+import { documentRoute } from './openapi-registry.js';
 
 const router = Router();
 
@@ -285,17 +290,75 @@ function computeActivityScores(db: ReturnType<typeof getDb>): Map<string, Activi
   return scores;
 }
 
+// ─── Request schemas ──────────────────────────────────────────────────────────
+
+/** Contacts are derived from these services (calendar/gmail contribute too). */
+const CONTACT_SOURCES = ['slack', 'discord', 'telegram', 'twitter', 'gmail', 'calendar'] as const;
+
+const ListQuery = z.object({
+  source: optionalEnum(CONTACT_SOURCES, { description: 'Restrict to contacts from one platform.' }),
+  q: z.string().optional().openapi({ description: 'Substring match on display name, username, first/last name.' }),
+  // Deliberately NOT an enum: an unrecognised value has always fallen through
+  // the switch below as "no filter", and tightening it would reject requests
+  // that used to work.
+  criteria: z.string().optional().openapi({
+    description: 'Optional flag filter — one of dm, owned, small, native. Unknown values are ignored.',
+  }),
+  ...paginationSchema(50, 500),
+});
+
+const RebuildQuery = z.object({
+  source: optionalEnum(CONTACT_SOURCES, { description: 'Rebuild only this platform (default: all).' }),
+});
+
+/** `source` stays an open string here: it is a lookup key against stored rows. */
+const ContactParams = z.object({
+  source: z.string().min(1),
+  platformId: z.string().min(1),
+});
+
+const HistoryQuery = z.object({
+  limit: limitSchema(100, 500),
+  before: isoDateTime.optional(),
+  after: isoDateTime.optional(),
+});
+
+const ServiceParam = z.object({ service: z.string().min(1) });
+
+const CriteriaBody = z.object({
+  enabled: z.boolean().optional(),
+  hasDm: z.boolean().optional(),
+  ownedGroup: z.boolean().optional(),
+  smallGroup: z.boolean().optional(),
+  nativeContacts: z.boolean().optional(),
+  smallGroupThreshold: z.number().int().positive().optional(),
+});
+
+const MessageBody = z.object({
+  content: trimmedString('content').openapi({ description: 'Message text to send or queue.' }),
+});
+
+documentRoute({ method: 'get', path: '/contacts', query: ListQuery });
+documentRoute({ method: 'get', path: '/contacts/{source}/{platformId}', params: ContactParams });
+documentRoute({
+  method: 'get',
+  path: '/contacts/{source}/{platformId}/history',
+  params: ContactParams,
+  query: HistoryQuery,
+});
+documentRoute({
+  method: 'post',
+  path: '/contacts/{source}/{platformId}/message',
+  params: ContactParams,
+  body: MessageBody,
+});
+
 // ─── GET /api/contacts ────────────────────────────────────────────────────────
 
-router.get('/', optionalAuth, trackAiCall, (req, res) => {
-  const {
-    source, q, criteria: criteriaFilter,
-    limit = '50', offset = '0',
-  } = req.query as Record<string, string>;
+router.get('/', optionalAuth, trackAiCall, validateQuery(ListQuery), (req, res) => {
+  const { source, q, criteria: criteriaFilter, limit: lim, offset: off } = queryOf(ListQuery, req);
 
   const db = getDb();
-  const lim = Math.min(parseInt(limit) || 50, 500);
-  const off = parseInt(offset) || 0;
 
   // Compute activity scores once for all contacts
   const activityScores = computeActivityScores(db);
@@ -369,14 +432,14 @@ router.get('/', optionalAuth, trackAiCall, (req, res) => {
 
 // ─── Criteria routes ──────────────────────────────────────────────────────────
 
-router.get('/criteria/:service', optionalAuth, (req, res) => {
-  const service = req.params['service'] as string;
+router.get('/criteria/:service', optionalAuth, validateParams(ServiceParam), (req, res) => {
+  const { service } = paramsOf(ServiceParam, req);
   res.json(getContactCriteria(service));
 });
 
-router.put('/criteria/:service', optionalAuth, (req, res) => {
-  const service = req.params['service'] as string;
-  const updates = req.body as Partial<ContactCriteria>;
+router.put('/criteria/:service', optionalAuth, validateParams(ServiceParam), validateBody(CriteriaBody), (req, res) => {
+  const { service } = paramsOf(ServiceParam, req);
+  const updates = bodyOf(CriteriaBody, req) as Partial<ContactCriteria>;
   setContactCriteria(service, updates);
   res.json(getContactCriteria(service));
 });
@@ -386,9 +449,9 @@ router.put('/criteria/:service', optionalAuth, (req, res) => {
 // POST /api/contacts/rebuild
 // Re-scans existing message DB and upserts contacts based on current criteria.
 // Does NOT call any platform APIs — applies criteria changes in real-time from stored data.
-router.post('/rebuild', optionalAuth, async (req, res) => {
-  const { source } = req.query as Record<string, string>;
-  const sources = source ? [source] : ['slack', 'discord', 'telegram', 'twitter', 'gmail', 'calendar'];
+router.post('/rebuild', optionalAuth, validateQuery(RebuildQuery), async (req, res) => {
+  const { source } = queryOf(RebuildQuery, req);
+  const sources: string[] = source ? [source] : [...CONTACT_SOURCES];
 
   const db = getDb();
   let total = 0;
@@ -557,8 +620,8 @@ router.post('/rebuild', optionalAuth, async (req, res) => {
   res.json({ success: true, upserted: total, sources });
 });
 
-router.get('/:source/:platformId', optionalAuth, trackAiCall, (req, res) => {
-  const { source, platformId } = req.params as { source: string; platformId: string };
+router.get('/:source/:platformId', optionalAuth, trackAiCall, validateParams(ContactParams), (req, res) => {
+  const { source, platformId } = paramsOf(ContactParams, req);
   const keyId = (req as AuthedRequest).apiKey?.id;
   if (keyId && !isReadEnabled(source, keyId)) {
     return res.status(403).json({ error: `Read access to ${source} is not permitted for this API key` });
@@ -573,14 +636,13 @@ router.get('/:source/:platformId', optionalAuth, trackAiCall, (req, res) => {
 
 // ─── GET /api/contacts/:source/:platformId/history ────────────────────────────
 
-router.get('/:source/:platformId/history', optionalAuth, trackAiCall, (req, res) => {
-  const { source, platformId } = req.params as { source: string; platformId: string };
+router.get('/:source/:platformId/history', optionalAuth, trackAiCall, validateParams(ContactParams), validateQuery(HistoryQuery), (req, res) => {
+  const { source, platformId } = paramsOf(ContactParams, req);
   const keyId = (req as AuthedRequest).apiKey?.id;
   if (keyId && !isReadEnabled(source, keyId)) {
     return res.status(403).json({ error: `Read access to ${source} is not permitted for this API key` });
   }
-  const { limit = '100', before, after } = req.query as Record<string, string>;
-  const lim = Math.min(parseInt(limit) || 100, 500);
+  const { limit: lim, before, after } = queryOf(HistoryQuery, req);
   const db = getDb();
 
   type HistoryMessage = {
@@ -726,8 +788,8 @@ router.get('/:source/:platformId/history', optionalAuth, trackAiCall, (req, res)
 
 // ─── GET /api/contacts/:source/:platformId/dm-channel ─────────────────────────
 
-router.get('/:source/:platformId/dm-channel', optionalAuth, async (req, res) => {
-  const { source, platformId } = req.params as { source: string; platformId: string };
+router.get('/:source/:platformId/dm-channel', optionalAuth, validateParams(ContactParams), async (req, res) => {
+  const { source, platformId } = paramsOf(ContactParams, req);
   const manager = getConnectionManager();
 
   try {
@@ -765,10 +827,9 @@ router.get('/:source/:platformId/dm-channel', optionalAuth, async (req, res) => 
 
 // ─── POST /api/contacts/:source/:platformId/message ───────────────────────────
 
-router.post('/:source/:platformId/message', optionalAuth, async (req, res) => {
-  const { source, platformId } = req.params as { source: string; platformId: string };
-  const { content } = req.body as { content?: string };
-  if (!content?.trim()) return res.status(400).json({ error: 'content is required' });
+router.post('/:source/:platformId/message', optionalAuth, validateParams(ContactParams), validateBody(MessageBody), async (req, res) => {
+  const { source, platformId } = paramsOf(ContactParams, req);
+  const { content } = bodyOf(MessageBody, req);
 
   const db = getDb();
   const perm = db.select().from(permissions).where(eq(permissions.service, source)).get();
@@ -818,8 +879,8 @@ router.post('/:source/:platformId/message', optionalAuth, async (req, res) => {
 
 // ─── POST /api/contacts/:source/:platformId/sync ──────────────────────────────
 
-router.post('/:source/:platformId/sync', optionalAuth, async (req, res) => {
-  const { source, platformId } = req.params as { source: string; platformId: string };
+router.post('/:source/:platformId/sync', optionalAuth, validateParams(ContactParams), async (req, res) => {
+  const { source } = paramsOf(ContactParams, req);
   // Triggers a full contact sync for the service — not a targeted per-contact lookup.
   const manager = getConnectionManager();
   manager.triggerSync(source as 'slack' | 'discord' | 'telegram').catch(console.error);
@@ -828,8 +889,8 @@ router.post('/:source/:platformId/sync', optionalAuth, async (req, res) => {
 
 // ─── DELETE /api/contacts/:source/:platformId ─────────────────────────────────
 
-router.delete('/:source/:platformId', optionalAuth, (req, res) => {
-  const { source, platformId } = req.params as { source: string; platformId: string };
+router.delete('/:source/:platformId', optionalAuth, validateParams(ContactParams), (req, res) => {
+  const { source, platformId } = paramsOf(ContactParams, req);
   const db = getDb();
   const result = db.delete(contacts)
     .where(and(eq(contacts.source, source), eq(contacts.platformId, platformId)))

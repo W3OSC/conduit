@@ -29,8 +29,27 @@ import {
   filterEnabledSources, filterReadIds, resolveTwitterReadPerms,
   resolveEffectiveFineGrained, isReadEnabled,
 } from './permissions-utils.js';
+import { z, boundedInt, isoDateTime, queryOf, validateQuery } from './validate.js';
+import { documentRoute } from './openapi-registry.js';
 
 const router = Router();
+
+const DigestQuery = z.object({
+  since: isoDateTime.optional().openapi({
+    description: 'Only chats with activity after this instant are considered for needsReply. Defaults to 24 hours ago.',
+  }),
+  meetings_days: boundedInt({
+    default: 14,
+    max: 60,
+    description: 'How many days back to include meeting notes for (default 14, max 60).',
+  }),
+});
+
+documentRoute({
+  method: 'get',
+  path: '/digest',
+  query: DigestQuery,
+});
 
 const EXCERPT_LEN = 200;
 
@@ -118,22 +137,24 @@ function needsReplyForSource(
   }));
 }
 
-router.get('/', optionalAuth, trackAiCall, (req, res) => {
+router.get('/', optionalAuth, trackAiCall, validateQuery(DigestQuery), (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
   const apiKeyId = authedReq.apiKey?.id ?? null;
   const now = new Date();
+  const query = queryOf(DigestQuery, req);
 
-  // `since` feeds sql.raw below — parse + re-serialise so only a clean ISO
-  // string ever reaches SQL, never the raw query param.
-  const sinceParam = req.query['since'] as string | undefined;
-  const sinceMs = sinceParam ? Date.parse(sinceParam) : now.getTime() - 24 * 60 * 60 * 1000;
+  // `since` feeds sql.raw below. validateQuery has already rejected anything
+  // unparseable, but this re-parse + re-serialise is kept deliberately: it
+  // guarantees only a canonical ISO string can ever reach raw SQL, whatever
+  // upstream does.
+  const sinceMs = query.since ? Date.parse(query.since) : now.getTime() - 24 * 60 * 60 * 1000;
   if (!Number.isFinite(sinceMs)) {
     res.status(400).json({ error: 'since must be an ISO-8601 timestamp' });
     return;
   }
   const since = new Date(sinceMs).toISOString();
-  const meetingsDays = Math.min(parseInt(req.query['meetings_days'] as string) || 14, 60);
+  const meetingsDays = query.meetings_days ?? 14;
 
   const epochRow = db.select().from(settings).where(eq(settings.key, 'chat.unreadEpoch')).get();
   const unreadEpoch = epochRow?.value ?? now.toISOString();

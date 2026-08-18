@@ -35,8 +35,68 @@ import type { ObsidianFineGrained } from '../db/schema.js';
 import { getConnectionManager } from '../connections/manager.js';
 import { ObsidianVaultSync, type VaultFileEntry } from '../sync/obsidian.js';
 import { validateGitRemoteUrl } from '../auth/ssrf.js';
+import {
+  z, intParam, requiredString, wildcardPath,
+  bodyOf, paramsOf, validateBody, validateParams,
+} from './validate.js';
+import { documentRoute } from './openapi-registry.js';
 
 const router = Router();
+
+// ── Request schemas ───────────────────────────────────────────────────────────
+
+const VaultIdParam = z.object({ id: intParam('vault') });
+
+const VaultFileParams = z.object({
+  id: intParam('vault'),
+  path: wildcardPath.openapi({ description: 'Vault-relative file path.' }),
+});
+
+const CreateVaultBody = z.object({
+  name: requiredString('name'),
+  remote_url: requiredString('remote_url').openapi({ description: 'git remote (https or ssh).' }),
+  auth_type: z.enum(['https', 'ssh']).default('https'),
+  https_token: z.string().optional(),
+  ssh_private_key: z.string().optional(),
+  ssh_public_key: z.string().optional(),
+  branch: z.string().default('main'),
+});
+
+const UpdateVaultBody = z.object({
+  name: z.string().optional(),
+  remote_url: z.string().optional(),
+  auth_type: z.enum(['https', 'ssh']).optional(),
+  https_token: z.string().optional(),
+  ssh_private_key: z.string().optional(),
+  ssh_public_key: z.string().optional(),
+  branch: z.string().optional(),
+});
+
+const DeleteVaultBody = z.object({
+  delete_local: z.boolean().default(false)
+    .openapi({ description: 'Also remove the local clone from disk.' }),
+});
+
+for (const specPath of [
+  '/obsidian/vaults/{id}',
+  '/obsidian/vaults/{id}/ssh-key',
+  '/obsidian/vaults/{id}/sync-status',
+  '/obsidian/vaults/{id}/files',
+] as const) {
+  documentRoute({ method: 'get', path: specPath, params: VaultIdParam });
+}
+for (const specPath of [
+  '/obsidian/vaults/{id}/test',
+  '/obsidian/vaults/{id}/generate-ssh-key',
+  '/obsidian/vaults/{id}/clone',
+  '/obsidian/vaults/{id}/sync',
+] as const) {
+  documentRoute({ method: 'post', path: specPath, params: VaultIdParam });
+}
+documentRoute({ method: 'get', path: '/obsidian/vaults/{id}/files/{path}', params: VaultFileParams });
+documentRoute({ method: 'post', path: '/obsidian/vaults', body: CreateVaultBody });
+documentRoute({ method: 'put', path: '/obsidian/vaults/{id}', params: VaultIdParam, body: UpdateVaultBody });
+documentRoute({ method: 'delete', path: '/obsidian/vaults/{id}', params: VaultIdParam, body: DeleteVaultBody, bodyRequired: false });
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -61,11 +121,6 @@ function stripSecrets(row: VaultRow) {
   };
 }
 
-function parseVaultId(raw: string): number | null {
-  const id = parseInt(raw, 10);
-  return isNaN(id) ? null : id;
-}
-
 // ── GET /obsidian/vaults — list all vaults ─────────────────────────────────
 
 router.get('/vaults', optionalAuth, (_req, res) => {
@@ -81,30 +136,11 @@ router.get('/vaults', optionalAuth, (_req, res) => {
 
 // ── POST /obsidian/vaults — create a new vault ─────────────────────────────
 
-router.post('/vaults', uiOnlyAuth, async (req, res) => {
+router.post('/vaults', uiOnlyAuth, validateBody(CreateVaultBody), async (req, res) => {
   const db = getDb();
   const {
-    name,
-    remote_url,
-    auth_type = 'https',
-    https_token,
-    ssh_private_key,
-    ssh_public_key,
-    branch = 'main',
-  } = req.body as {
-    name: string;
-    remote_url: string;
-    auth_type?: 'https' | 'ssh';
-    https_token?: string;
-    ssh_private_key?: string;
-    ssh_public_key?: string;
-    branch?: string;
-  };
-
-  if (!name || !remote_url) {
-    res.status(400).json({ error: 'name and remote_url are required' });
-    return;
-  }
+    name, remote_url, auth_type, https_token, ssh_private_key, ssh_public_key, branch,
+  } = bodyOf(CreateVaultBody, req);
 
   const ssrfCheck = validateGitRemoteUrl(remote_url);
   if (!ssrfCheck.ok) {
@@ -136,9 +172,8 @@ router.post('/vaults', uiOnlyAuth, async (req, res) => {
 
 // ── GET /obsidian/vaults/:id — get a single vault ─────────────────────────
 
-router.get('/vaults/:id', optionalAuth, (req, res) => {
-  const id = parseVaultId(req.params['id'] as string);
-  if (id === null) { res.status(400).json({ error: 'Invalid vault id' }); return; }
+router.get('/vaults/:id', optionalAuth, validateParams(VaultIdParam), (req, res) => {
+  const { id } = paramsOf(VaultIdParam, req);
 
   const db = getDb();
   const manager = getConnectionManager();
@@ -151,31 +186,16 @@ router.get('/vaults/:id', optionalAuth, (req, res) => {
 
 // ── PUT /obsidian/vaults/:id — update a vault ─────────────────────────────
 
-router.put('/vaults/:id', uiOnlyAuth, async (req, res) => {
-  const id = parseVaultId(req.params['id'] as string);
-  if (id === null) { res.status(400).json({ error: 'Invalid vault id' }); return; }
+router.put('/vaults/:id', uiOnlyAuth, validateParams(VaultIdParam), validateBody(UpdateVaultBody), async (req, res) => {
+  const { id } = paramsOf(VaultIdParam, req);
 
   const db = getDb();
   const existing = db.select().from(obsidianVaultConfig).where(eq(obsidianVaultConfig.id, id)).get();
   if (!existing) { res.status(404).json({ error: 'Vault not found' }); return; }
 
   const {
-    name,
-    remote_url,
-    auth_type,
-    https_token,
-    ssh_private_key,
-    ssh_public_key,
-    branch,
-  } = req.body as {
-    name?: string;
-    remote_url?: string;
-    auth_type?: 'https' | 'ssh';
-    https_token?: string;
-    ssh_private_key?: string;
-    ssh_public_key?: string;
-    branch?: string;
-  };
+    name, remote_url, auth_type, https_token, ssh_private_key, ssh_public_key, branch,
+  } = bodyOf(UpdateVaultBody, req);
 
   if (remote_url) {
     const ssrfCheck = validateGitRemoteUrl(remote_url);
@@ -198,9 +218,8 @@ router.put('/vaults/:id', uiOnlyAuth, async (req, res) => {
 
 // ── DELETE /obsidian/vaults/:id — remove a vault ──────────────────────────
 
-router.delete('/vaults/:id', uiOnlyAuth, async (req, res) => {
-  const id = parseVaultId(req.params['id'] as string);
-  if (id === null) { res.status(400).json({ error: 'Invalid vault id' }); return; }
+router.delete('/vaults/:id', uiOnlyAuth, validateParams(VaultIdParam), validateBody(DeleteVaultBody), async (req, res) => {
+  const { id } = paramsOf(VaultIdParam, req);
 
   const db = getDb();
   const row = db.select().from(obsidianVaultConfig).where(eq(obsidianVaultConfig.id, id)).get();
@@ -209,7 +228,7 @@ router.delete('/vaults/:id', uiOnlyAuth, async (req, res) => {
   const manager = getConnectionManager();
   manager.disconnectObsidianVault(id);
 
-  const { delete_local = false } = req.body as { delete_local?: boolean };
+  const { delete_local } = bodyOf(DeleteVaultBody, req);
   if (delete_local && row.localPath && fs.existsSync(row.localPath)) {
     fs.rmSync(row.localPath, { recursive: true, force: true });
   }
@@ -220,9 +239,8 @@ router.delete('/vaults/:id', uiOnlyAuth, async (req, res) => {
 
 // ── POST /obsidian/vaults/:id/test ────────────────────────────────────────
 
-router.post('/vaults/:id/test', uiOnlyAuth, async (req, res) => {
-  const id = parseVaultId(req.params['id'] as string);
-  if (id === null) { res.status(400).json({ error: 'Invalid vault id' }); return; }
+router.post('/vaults/:id/test', uiOnlyAuth, validateParams(VaultIdParam), async (req, res) => {
+  const { id } = paramsOf(VaultIdParam, req);
 
   const db = getDb();
   const row = db.select().from(obsidianVaultConfig).where(eq(obsidianVaultConfig.id, id)).get();
@@ -243,9 +261,8 @@ router.post('/vaults/:id/test', uiOnlyAuth, async (req, res) => {
 
 // ── POST /obsidian/vaults/:id/generate-ssh-key ────────────────────────────
 
-router.post('/vaults/:id/generate-ssh-key', uiOnlyAuth, async (req, res) => {
-  const id = parseVaultId(req.params['id'] as string);
-  if (id === null) { res.status(400).json({ error: 'Invalid vault id' }); return; }
+router.post('/vaults/:id/generate-ssh-key', uiOnlyAuth, validateParams(VaultIdParam), async (req, res) => {
+  const { id } = paramsOf(VaultIdParam, req);
 
   const db = getDb();
   const row = db.select().from(obsidianVaultConfig).where(eq(obsidianVaultConfig.id, id)).get();
@@ -268,9 +285,8 @@ router.post('/vaults/:id/generate-ssh-key', uiOnlyAuth, async (req, res) => {
 
 // ── GET /obsidian/vaults/:id/ssh-key ──────────────────────────────────────
 
-router.get('/vaults/:id/ssh-key', optionalAuth, (req, res) => {
-  const id = parseVaultId(req.params['id'] as string);
-  if (id === null) { res.status(400).json({ error: 'Invalid vault id' }); return; }
+router.get('/vaults/:id/ssh-key', optionalAuth, validateParams(VaultIdParam), (req, res) => {
+  const { id } = paramsOf(VaultIdParam, req);
 
   const db = getDb();
   const row = db.select().from(obsidianVaultConfig).where(eq(obsidianVaultConfig.id, id)).get();
@@ -283,9 +299,8 @@ router.get('/vaults/:id/ssh-key', optionalAuth, (req, res) => {
 
 // ── GET /obsidian/vaults/:id/ssh-fingerprint ──────────────────────────────
 
-router.get('/vaults/:id/ssh-fingerprint', optionalAuth, async (req, res) => {
-  const id = parseVaultId(req.params['id'] as string);
-  if (id === null) { res.status(400).json({ error: 'Invalid vault id' }); return; }
+router.get('/vaults/:id/ssh-fingerprint', optionalAuth, validateParams(VaultIdParam), async (req, res) => {
+  const { id } = paramsOf(VaultIdParam, req);
 
   const db = getDb();
   const row = db.select().from(obsidianVaultConfig).where(eq(obsidianVaultConfig.id, id)).get();
@@ -299,9 +314,8 @@ router.get('/vaults/:id/ssh-fingerprint', optionalAuth, async (req, res) => {
 
 // ── POST /obsidian/vaults/:id/clone ───────────────────────────────────────
 
-router.post('/vaults/:id/clone', uiOnlyAuth, async (req, res) => {
-  const id = parseVaultId(req.params['id'] as string);
-  if (id === null) { res.status(400).json({ error: 'Invalid vault id' }); return; }
+router.post('/vaults/:id/clone', uiOnlyAuth, validateParams(VaultIdParam), async (req, res) => {
+  const { id } = paramsOf(VaultIdParam, req);
 
   const db = getDb();
   const row = db.select().from(obsidianVaultConfig).where(eq(obsidianVaultConfig.id, id)).get();
@@ -321,9 +335,8 @@ router.post('/vaults/:id/clone', uiOnlyAuth, async (req, res) => {
 
 // ── GET /obsidian/vaults/:id/sync-status ──────────────────────────────────
 
-router.get('/vaults/:id/sync-status', optionalAuth, (req, res) => {
-  const id = parseVaultId(req.params['id'] as string);
-  if (id === null) { res.status(400).json({ error: 'Invalid vault id' }); return; }
+router.get('/vaults/:id/sync-status', optionalAuth, validateParams(VaultIdParam), (req, res) => {
+  const { id } = paramsOf(VaultIdParam, req);
 
   const db = getDb();
   const row = db.select().from(obsidianVaultConfig).where(eq(obsidianVaultConfig.id, id)).get();
@@ -340,9 +353,8 @@ router.get('/vaults/:id/sync-status', optionalAuth, (req, res) => {
 
 // ── POST /obsidian/vaults/:id/sync ────────────────────────────────────────
 
-router.post('/vaults/:id/sync', optionalAuth, async (req, res) => {
-  const id = parseVaultId(req.params['id'] as string);
-  if (id === null) { res.status(400).json({ error: 'Invalid vault id' }); return; }
+router.post('/vaults/:id/sync', optionalAuth, validateParams(VaultIdParam), async (req, res) => {
+  const { id } = paramsOf(VaultIdParam, req);
 
   const manager = getConnectionManager();
   let sync = manager.getObsidian(id);
@@ -407,9 +419,8 @@ function filterVaultTree(entries: VaultFileEntry[], allowlist: string[]): VaultF
   return out;
 }
 
-router.get('/vaults/:id/files', optionalAuth, requireRead('obsidian'), trackAiCall, async (req, res) => {
-  const id = parseVaultId(req.params['id'] as string);
-  if (id === null) { res.status(400).json({ error: 'Invalid vault id' }); return; }
+router.get('/vaults/:id/files', optionalAuth, requireRead('obsidian'), trackAiCall, validateParams(VaultIdParam), async (req, res) => {
+  const { id } = paramsOf(VaultIdParam, req);
 
   const manager = getConnectionManager();
   const sync = manager.getObsidian(id);
@@ -431,9 +442,8 @@ router.get('/vaults/:id/files', optionalAuth, requireRead('obsidian'), trackAiCa
 
 // ── GET /obsidian/vaults/:id/files/* ─────────────────────────────────────
 
-router.get('/vaults/:id/files/*path', optionalAuth, requireRead('obsidian'), trackAiCall, async (req, res) => {
-  const id = parseVaultId(req.params['id'] as string);
-  if (id === null) { res.status(400).json({ error: 'Invalid vault id' }); return; }
+router.get('/vaults/:id/files/*path', optionalAuth, requireRead('obsidian'), trackAiCall, validateParams(VaultFileParams), async (req, res) => {
+  const { id, path: rawPath } = paramsOf(VaultFileParams, req);
 
   const manager = getConnectionManager();
   const sync = manager.getObsidian(id);
@@ -443,7 +453,6 @@ router.get('/vaults/:id/files/*path', optionalAuth, requireRead('obsidian'), tra
     return;
   }
 
-  const rawPath = (req.params as Record<string, string>)['path'] || '';
   const filePath = decodeURIComponent(rawPath);
 
   if (!filePath) {

@@ -33,6 +33,11 @@ import { requireRead, resolveSmbPathPermission, resolveEffectiveFineGrained } fr
 import type { SmbFineGrained } from '../db/schema.js';
 import { getConnectionManager } from '../connections/manager.js';
 import { SmbSync } from '../sync/smb.js';
+import {
+  z, intParam, requiredString, trimmedString, wildcardPath,
+  bodyOf, paramsOf, queryOf, validateBody, validateParams, validateQuery,
+} from './validate.js';
+import { documentRoute } from './openapi-registry.js';
 
 // Multer: store uploads in memory (max 100 MB per file)
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
@@ -50,10 +55,59 @@ function stripSecrets(row: ShareRow) {
   return { ...safe, hasPassword: true };
 }
 
-function parseShareId(raw: string): number | null {
-  const id = parseInt(raw, 10);
-  return isNaN(id) ? null : id;
-}
+// ── Request schemas ───────────────────────────────────────────────────────────
+
+const ShareIdParam = z.object({ id: intParam('share') });
+
+const ShareFileParams = z.object({
+  id: intParam('share'),
+  path: wildcardPath.openapi({ description: 'Share-relative file path.' }),
+});
+
+const CreateShareBody = z.object({
+  name: trimmedString('name'),
+  host: trimmedString('host'),
+  share: trimmedString('share'),
+  domain: z.string().optional(),
+  username: trimmedString('username'),
+  // NOT trimmed: a password may legitimately begin or end with whitespace.
+  password: requiredString('password'),
+});
+
+const UpdateShareBody = z.object({
+  name: z.string().optional(),
+  host: z.string().optional(),
+  share: z.string().optional(),
+  domain: z.string().nullable().optional(),
+  username: z.string().optional(),
+  password: z.string().optional(),
+});
+
+const DirQuery = z.object({
+  path: z.string().default('').openapi({ description: 'Directory within the share (default: root).' }),
+});
+
+documentRoute({ method: 'get', path: '/smb/shares/{id}', params: ShareIdParam });
+documentRoute({ method: 'get', path: '/smb/shares/{id}/status', params: ShareIdParam });
+documentRoute({ method: 'get', path: '/smb/shares/{id}/files', params: ShareIdParam, query: DirQuery });
+documentRoute({ method: 'get', path: '/smb/shares/{id}/files/{path}', params: ShareFileParams });
+documentRoute({
+  method: 'get',
+  path: '/smb/shares/{id}/download/{path}',
+  params: ShareFileParams,
+  summary: 'Download the raw bytes of a file on an SMB share',
+  description: 'Returns the file as a binary attachment with a guessed Content-Type. Use GET /smb/shares/{id}/files/{path} to read text content instead.',
+  responses: {
+    200: { description: 'Raw file bytes', content: { 'application/octet-stream': { schema: { type: 'string', format: 'binary' } } } },
+    403: { description: 'Reading this path is not permitted for this API key' },
+    404: { description: 'File not found on the share' },
+    503: { description: 'Share not connected' },
+  },
+});
+documentRoute({ method: 'post', path: '/smb/shares/{id}/test', params: ShareIdParam });
+documentRoute({ method: 'post', path: '/smb/shares/{id}/connect', params: ShareIdParam });
+documentRoute({ method: 'post', path: '/smb/shares/{id}/disconnect', params: ShareIdParam });
+documentRoute({ method: 'post', path: '/smb/shares', body: CreateShareBody });
 
 // ── GET /smb/shares — list all shares ─────────────────────────────────────────
 
@@ -70,28 +124,17 @@ router.get('/shares', optionalAuth, (_req, res) => {
 
 // ── POST /smb/shares — create a new share ─────────────────────────────────────
 
-router.post('/shares', uiOnlyAuth, (req, res) => {
+router.post('/shares', uiOnlyAuth, validateBody(CreateShareBody), (req, res) => {
   const db = getDb();
-  const { name, host, share, domain, username, password } = req.body as {
-    name?: string;
-    host?: string;
-    share?: string;
-    domain?: string;
-    username?: string;
-    password?: string;
-  };
-
-  if (!name || !host || !share || !username || !password) {
-    return res.status(400).json({ error: 'name, host, share, username, and password are required' });
-  }
+  const { name, host, share, domain, username, password } = bodyOf(CreateShareBody, req);
 
   const result = db.insert(smbShareConfig)
     .values({
-      name: name.trim(),
-      host: host.trim(),
-      share: share.trim(),
+      name,
+      host,
+      share,
       domain: domain?.trim() || null,
-      username: username.trim(),
+      username,
       password,
     })
     .returning()
@@ -102,9 +145,8 @@ router.post('/shares', uiOnlyAuth, (req, res) => {
 
 // ── GET /smb/shares/:id — get a single share ──────────────────────────────────
 
-router.get('/shares/:id', optionalAuth, (req, res) => {
-  const id = parseShareId(req.params['id'] as string);
-  if (id === null) return res.status(400).json({ error: 'Invalid share ID' });
+router.get('/shares/:id', optionalAuth, validateParams(ShareIdParam), (req, res) => {
+  const { id } = paramsOf(ShareIdParam, req);
 
   const db = getDb();
   const manager = getConnectionManager();
@@ -117,18 +159,14 @@ router.get('/shares/:id', optionalAuth, (req, res) => {
 
 // ── PUT /smb/shares/:id — update a share ──────────────────────────────────────
 
-router.put('/shares/:id', uiOnlyAuth, (req, res) => {
-  const id = parseShareId(req.params['id'] as string);
-  if (id === null) return res.status(400).json({ error: 'Invalid share ID' });
+router.put('/shares/:id', uiOnlyAuth, validateParams(ShareIdParam), validateBody(UpdateShareBody), (req, res) => {
+  const { id } = paramsOf(ShareIdParam, req);
 
   const db = getDb();
   const row = db.select().from(smbShareConfig).where(eq(smbShareConfig.id, id)).get();
   if (!row) return res.status(404).json({ error: 'Share not found' });
 
-  const { name, host, share, domain, username, password } = req.body as Partial<{
-    name: string; host: string; share: string; domain: string | null;
-    username: string; password: string;
-  }>;
+  const { name, host, share, domain, username, password } = bodyOf(UpdateShareBody, req);
 
   const updates: Partial<typeof smbShareConfig.$inferInsert> & { updatedAt: string } = {
     updatedAt: new Date().toISOString(),
@@ -151,9 +189,8 @@ router.put('/shares/:id', uiOnlyAuth, (req, res) => {
 
 // ── DELETE /smb/shares/:id — remove a share ───────────────────────────────────
 
-router.delete('/shares/:id', uiOnlyAuth, (req, res) => {
-  const id = parseShareId(req.params['id'] as string);
-  if (id === null) return res.status(400).json({ error: 'Invalid share ID' });
+router.delete('/shares/:id', uiOnlyAuth, validateParams(ShareIdParam), (req, res) => {
+  const { id } = paramsOf(ShareIdParam, req);
 
   const db = getDb();
   const row = db.select().from(smbShareConfig).where(eq(smbShareConfig.id, id)).get();
@@ -169,9 +206,8 @@ router.delete('/shares/:id', uiOnlyAuth, (req, res) => {
 
 // ── POST /smb/shares/:id/test — test connection ───────────────────────────────
 
-router.post('/shares/:id/test', optionalAuth, async (req, res) => {
-  const id = parseShareId(req.params['id'] as string);
-  if (id === null) return res.status(400).json({ error: 'Invalid share ID' });
+router.post('/shares/:id/test', optionalAuth, validateParams(ShareIdParam), async (req, res) => {
+  const { id } = paramsOf(ShareIdParam, req);
 
   const db = getDb();
   const row = db.select().from(smbShareConfig).where(eq(smbShareConfig.id, id)).get();
@@ -193,9 +229,8 @@ router.post('/shares/:id/test', optionalAuth, async (req, res) => {
 
 // ── POST /smb/shares/:id/connect — connect a share ───────────────────────────
 
-router.post('/shares/:id/connect', optionalAuth, async (req, res) => {
-  const id = parseShareId(req.params['id'] as string);
-  if (id === null) return res.status(400).json({ error: 'Invalid share ID' });
+router.post('/shares/:id/connect', optionalAuth, validateParams(ShareIdParam), async (req, res) => {
+  const { id } = paramsOf(ShareIdParam, req);
 
   const db = getDb();
   const row = db.select().from(smbShareConfig).where(eq(smbShareConfig.id, id)).get();
@@ -212,9 +247,8 @@ router.post('/shares/:id/connect', optionalAuth, async (req, res) => {
 
 // ── POST /smb/shares/:id/disconnect — disconnect a share ──────────────────────
 
-router.post('/shares/:id/disconnect', optionalAuth, (req, res) => {
-  const id = parseShareId(req.params['id'] as string);
-  if (id === null) return res.status(400).json({ error: 'Invalid share ID' });
+router.post('/shares/:id/disconnect', optionalAuth, validateParams(ShareIdParam), (req, res) => {
+  const { id } = paramsOf(ShareIdParam, req);
 
   const manager = getConnectionManager();
   manager.disconnectSmbShare(id);
@@ -223,9 +257,8 @@ router.post('/shares/:id/disconnect', optionalAuth, (req, res) => {
 
 // ── GET /smb/shares/:id/status — connection status ────────────────────────────
 
-router.get('/shares/:id/status', optionalAuth, (req, res) => {
-  const id = parseShareId(req.params['id'] as string);
-  if (id === null) return res.status(400).json({ error: 'Invalid share ID' });
+router.get('/shares/:id/status', optionalAuth, validateParams(ShareIdParam), (req, res) => {
+  const { id } = paramsOf(ShareIdParam, req);
 
   const manager = getConnectionManager();
   res.json(manager.getSmbShareStatus(id));
@@ -233,15 +266,14 @@ router.get('/shares/:id/status', optionalAuth, (req, res) => {
 
 // ── GET /smb/shares/:id/files — list directory ────────────────────────────────
 
-router.get('/shares/:id/files', optionalAuth, requireRead('smb'), async (req, res) => {
-  const id = parseShareId(req.params['id'] as string);
-  if (id === null) return res.status(400).json({ error: 'Invalid share ID' });
+router.get('/shares/:id/files', optionalAuth, requireRead('smb'), validateParams(ShareIdParam), validateQuery(DirQuery), async (req, res) => {
+  const { id } = paramsOf(ShareIdParam, req);
 
   const manager = getConnectionManager();
   const sync = manager.getSmbShare(id);
   if (!sync) return res.status(503).json({ error: 'Share not connected' });
 
-  const dirPath = (req.query['path'] as string | undefined) ?? '';
+  const dirPath = queryOf(DirQuery, req).path;
 
   try {
     let entries = await sync.listDirectory(dirPath);
@@ -270,11 +302,10 @@ router.get('/shares/:id/files', optionalAuth, requireRead('smb'), async (req, re
 
 // ── GET /smb/shares/:id/files/* — read file contents ─────────────────────────
 
-router.get('/shares/:id/files/*path', optionalAuth, requireRead('smb'), async (req, res) => {
-  const id = parseShareId(req.params['id'] as string);
-  if (id === null) return res.status(400).json({ error: 'Invalid share ID' });
+router.get('/shares/:id/files/*path', optionalAuth, requireRead('smb'), validateParams(ShareFileParams), async (req, res) => {
+  const { id } = paramsOf(ShareIdParam, req);
 
-  const filePath = (req.params as Record<string, string>)['path'] ?? '';
+  const filePath = paramsOf(ShareFileParams, req).path;
   if (!filePath) return res.status(400).json({ error: 'File path is required' });
 
   if (!resolveSmbPathPermission(filePath, 'read', (req as AuthedRequest).apiKey?.id)) {
@@ -308,11 +339,10 @@ router.get('/shares/:id/files/*path', optionalAuth, requireRead('smb'), async (r
 
 // ── GET /smb/shares/:id/download/* — download raw file as browser blob ────────
 
-router.get('/shares/:id/download/*path', optionalAuth, requireRead('smb'), async (req, res) => {
-  const id = parseShareId(req.params['id'] as string);
-  if (id === null) return res.status(400).json({ error: 'Invalid share ID' });
+router.get('/shares/:id/download/*path', optionalAuth, requireRead('smb'), validateParams(ShareFileParams), async (req, res) => {
+  const { id } = paramsOf(ShareIdParam, req);
 
-  const filePath = (req.params as Record<string, string>)['path'] ?? '';
+  const filePath = paramsOf(ShareFileParams, req).path;
   if (!filePath) return res.status(400).json({ error: 'File path is required' });
 
   if (!resolveSmbPathPermission(filePath, 'read', (req as AuthedRequest).apiKey?.id)) {
@@ -353,9 +383,8 @@ router.get('/shares/:id/download/*path', optionalAuth, requireRead('smb'), async
 
 // ── POST /smb/shares/:id/upload — upload a file to the share ─────────────────
 
-router.post('/shares/:id/upload', uiOnlyAuth, upload.single('file'), async (req, res) => {
-  const id = parseShareId(req.params['id'] as string);
-  if (id === null) return res.status(400).json({ error: 'Invalid share ID' });
+router.post('/shares/:id/upload', uiOnlyAuth, upload.single('file'), validateParams(ShareIdParam), validateQuery(DirQuery), async (req, res) => {
+  const { id } = paramsOf(ShareIdParam, req);
 
   const file = req.file;
   if (!file) return res.status(400).json({ error: 'No file provided' });
@@ -365,7 +394,7 @@ router.post('/shares/:id/upload', uiOnlyAuth, upload.single('file'), async (req,
   if (!sync) return res.status(503).json({ error: 'Share not connected' });
 
   // Target directory path within the share (default: root)
-  const dirPath = ((req.query['path'] as string | undefined) ?? '').replace(/\\/g, '/').replace(/^\/*/, '');
+  const dirPath = queryOf(DirQuery, req).path.replace(/\\/g, '/').replace(/^\/*/, '');
   const targetPath = dirPath ? `${dirPath}/${file.originalname}` : file.originalname;
 
   try {

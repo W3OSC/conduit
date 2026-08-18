@@ -5,11 +5,44 @@ import type { ServiceFineGrained } from '../db/schema.js';
 import { eq, and } from 'drizzle-orm';
 import { optionalAuth } from '../auth/middleware.js';
 import { getConnectionManager } from '../connections/manager.js';
+import {
+  z, intParam, serviceSourceSchema, SERVICE_SOURCES,
+  bodyOf, paramsOf, validateBody, validateParams,
+} from './validate.js';
 
 const router = Router();
 
-export const ALL_SERVICES = ['slack', 'discord', 'telegram', 'gmail', 'calendar', 'twitter', 'notion', 'obsidian', 'smb', 'gdrive'] as const;
+export const ALL_SERVICES = SERVICE_SOURCES;
 export type AllService = typeof ALL_SERVICES[number];
+
+// Admin-only routes: validated, but deliberately NOT added to the public
+// OpenAPI document (see the header of openapi.ts — agent-relevant routes only).
+
+const ServiceParam = z.object({ service: serviceSourceSchema });
+const KeyIdParam = z.object({ keyId: intParam('api key') });
+const KeyServiceParam = z.object({ keyId: intParam('api key'), service: serviceSourceSchema });
+
+/**
+ * `looseObject` + `z.unknown()` for `fineGrainedConfig`: the per-service
+ * fine-grained shapes live in `db/schema.ts` and are stored verbatim as JSON,
+ * so nothing here may strip or rewrite them. The `'fineGrainedConfig' in body`
+ * "explicitly cleared vs. not supplied" distinction is preserved because zod
+ * only emits keys that were present in the input.
+ */
+const GlobalPermissionBody = z.looseObject({
+  readEnabled: z.boolean().optional(),
+  sendEnabled: z.boolean().optional(),
+  requireApproval: z.boolean().optional(),
+  directSendFromUi: z.boolean().optional(),
+  fineGrainedConfig: z.unknown().optional(),
+});
+
+const KeyPermissionBody = z.looseObject({
+  readEnabled: z.boolean().nullable().optional(),
+  sendEnabled: z.boolean().nullable().optional(),
+  requireApproval: z.boolean().nullable().optional(),
+  fineGrainedConfig: z.unknown().optional(),
+});
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -30,17 +63,14 @@ router.get('/', optionalAuth, (_req, res) => {
   res.json(result);
 });
 
-router.put('/:service', optionalAuth, (req, res) => {
+router.put('/:service', optionalAuth, validateParams(ServiceParam), validateBody(GlobalPermissionBody), (req, res) => {
   const db = getDb();
-  const service = req.params['service'] as string;
+  const { service } = paramsOf(ServiceParam, req);
+  const body = bodyOf(GlobalPermissionBody, req);
   const {
     readEnabled, sendEnabled, requireApproval, directSendFromUi,
-    fineGrainedConfig,
-  } = req.body as {
-    readEnabled?: boolean; sendEnabled?: boolean;
-    requireApproval?: boolean; directSendFromUi?: boolean;
-    fineGrainedConfig?: ServiceFineGrained | null;
-  };
+  } = body;
+  const fineGrainedConfig = body.fineGrainedConfig as ServiceFineGrained | null | undefined;
 
   const existing = db.select().from(permissions).where(eq(permissions.service, service)).get();
   if (!existing) { res.status(404).json({ error: `Service ${service} not found` }); return; }
@@ -50,7 +80,7 @@ router.put('/:service', optionalAuth, (req, res) => {
   if (sendEnabled       !== undefined) updates.sendEnabled       = sendEnabled;
   if (requireApproval   !== undefined) updates.requireApproval   = requireApproval;
   if (directSendFromUi  !== undefined) updates.directSendFromUi  = directSendFromUi;
-  if ('fineGrainedConfig' in req.body) {
+  if ('fineGrainedConfig' in body) {
     updates.fineGrainedConfig = fineGrainedConfig != null ? JSON.stringify(fineGrainedConfig) : null;
   }
 
@@ -87,9 +117,9 @@ router.put('/:service', optionalAuth, (req, res) => {
 //   Body: { readEnabled?: boolean|null, sendEnabled?: boolean|null, requireApproval?: boolean|null, fineGrainedConfig?: object|null }
 //   null = revert to inheriting from global.
 
-router.get('/keys/:keyId', optionalAuth, (req, res) => {
+router.get('/keys/:keyId', optionalAuth, validateParams(KeyIdParam), (req, res) => {
   const db = getDb();
-  const keyId = parseInt(req.params['keyId'] as string);
+  const { keyId } = paramsOf(KeyIdParam, req);
 
   const key = db.select().from(apiKeys).where(eq(apiKeys.id, keyId)).get();
   if (!key || key.revokedAt) return res.status(404).json({ error: 'Key not found' });
@@ -128,20 +158,14 @@ router.get('/keys/:keyId', optionalAuth, (req, res) => {
   res.json({ keyId, keyName: key.name, keyPrefix: key.keyPrefix, permissions: result });
 });
 
-router.put('/keys/:keyId/:service', optionalAuth, (req, res) => {
+router.put('/keys/:keyId/:service', optionalAuth, validateParams(KeyServiceParam), validateBody(KeyPermissionBody), (req, res) => {
   const db = getDb();
-  const keyId  = parseInt(req.params['keyId']  as string);
-  const service = req.params['service'] as string;
+  const { keyId, service } = paramsOf(KeyServiceParam, req);
 
   const key = db.select().from(apiKeys).where(eq(apiKeys.id, keyId)).get();
   if (!key || key.revokedAt) return res.status(404).json({ error: 'Key not found' });
 
-  const body = req.body as {
-    readEnabled?:       boolean | null;
-    sendEnabled?:       boolean | null;
-    requireApproval?:   boolean | null;
-    fineGrainedConfig?: ServiceFineGrained | null;
-  };
+  const body = bodyOf(KeyPermissionBody, req);
 
   // Upsert override row
   db.insert(apiKeyPermissions)
@@ -154,7 +178,8 @@ router.put('/keys/:keyId/:service', optionalAuth, (req, res) => {
   if ('sendEnabled'       in body) updates.sendEnabled       = body.sendEnabled       ?? null;
   if ('requireApproval'   in body) updates.requireApproval   = body.requireApproval   ?? null;
   if ('fineGrainedConfig' in body) {
-    updates.fineGrainedConfig = body.fineGrainedConfig != null ? JSON.stringify(body.fineGrainedConfig) : null;
+    const fg = body.fineGrainedConfig as ServiceFineGrained | null | undefined;
+    updates.fineGrainedConfig = fg != null ? JSON.stringify(fg) : null;
   }
 
   db.update(apiKeyPermissions)
