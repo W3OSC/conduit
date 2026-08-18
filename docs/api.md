@@ -28,9 +28,19 @@ http://localhost:3101/api
 
 ## Outbox / Approval Flow
 
-Write actions (send message, reply to email, RSVP, tweet, etc.) do **not** execute immediately. They create an **outbox item** with `status=pending`. A human approves or rejects it in the UI before anything is sent.
+Most write actions (send message, reply to email, RSVP, tweet, etc.) do **not** execute immediately. They create an **outbox item** with `status=pending`. A human approves or rejects it in the UI before anything is sent. (If the service's `requireApproval` permission is switched off for the actor, the item is created pre-approved and dispatched immediately.)
 
 After submitting a write action, poll `GET /outbox/{id}` or `GET /outbox?status=pending` to check status.
+
+**Exception:** the Notion direct write endpoints — `PATCH /notion/pages/{pageId}` and `POST /notion/pages` — execute immediately against the Notion API with no outbox item (see the Notion section).
+
+---
+
+## Response Conventions
+
+- **`rawJson` is never returned.** List endpoints strip the raw serialised platform payload from every row. API-key actors additionally do not receive `attachments`/`embeds` on message rows.
+- **`GET /messages` returns a real `total`** — the true count of matching rows across all queried sources, suitable for pagination.
+- **Per-chat unread counts** appear as an `unread` field on each chat entry in `GET /chats`.
 
 ---
 
@@ -163,6 +173,78 @@ GET /api/activity?since=2026-04-01T00:00:00Z&limit=100
 
 ---
 
+#### `GET /digest`
+
+The one-call agent briefing: answers "what needs my attention?" in a single bounded response instead of many raw-list round trips. Fine-grained permissions apply — API keys only see sources, chats, and labels their key can read.
+
+**Query parameters**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `since` | datetime | ISO 8601. Bounds the `needsReply` window. Default: 24 hours ago. |
+| `meetings_days` | integer | How many days back to include in `recentMeetings`. Default 14, max 60. |
+
+**Response**
+
+```json
+{
+  "generatedAt": "2026-04-06T12:00:00Z",
+  "window": { "since": "2026-04-05T12:00:00Z", "until": "2026-04-06T12:00:00Z" },
+  "needsReply": [
+    {
+      "source": "slack",
+      "chatId": "D04XYZ",
+      "chatName": "Alice",
+      "lastMessage": { "senderName": "Alice", "excerpt": "Any update on…", "timestamp": "2026-04-06T11:00:00Z" },
+      "unread": 3
+    }
+  ],
+  "unreadEmail": {
+    "count": 12,
+    "topSenders": [ { "name": "Alice", "count": 4 } ],
+    "latest": [
+      { "gmailId": "18f3a...", "threadId": "18f3a...", "from": "Alice", "subject": "Project update", "receivedAt": "2026-04-06T09:00:00Z" }
+    ]
+  },
+  "upcomingEvents": [
+    { "eventId": "abc123", "title": "Team standup", "startTime": "2026-04-07T09:00:00Z", "endTime": "2026-04-07T09:30:00Z", "meetLink": null, "attendeeCount": 4 }
+  ],
+  "recentMeetings": [
+    { "id": 12, "title": "Planning sync", "meetingDate": "2026-04-03T15:00:00Z", "excerpt": "Discussed Q2 roadmap…" }
+  ],
+  "pendingOutbox": {
+    "count": 2,
+    "items": [ { "id": 42, "source": "slack", "recipientName": "Alice", "preview": "Sounds good…", "createdAt": "2026-04-06T10:30:00Z" } ]
+  },
+  "unreadBySource": { "slack": 5, "telegram": 2, "gmail": 12 }
+}
+```
+
+| Section | Contents |
+|---|---|
+| `needsReply` | Chats whose latest message is from someone else and newer than the chat's read cursor (max 15). |
+| `unreadEmail` | Unread count + top 5 senders + latest 5 unread subjects. `null` when Gmail read access is not permitted. |
+| `upcomingEvents` | Events in the next 7 days (max 10). |
+| `recentMeetings` | Meet notes within `meetings_days`, excerpted (max 10). |
+| `pendingOutbox` | Outbox items awaiting approval (`count` is the full total; `items` max 10). |
+| `unreadBySource` | Per-service unread totals. |
+
+---
+
+#### `GET /context`
+
+Self-description endpoint for agent bootstrap — **no authentication required**. Returns Conduit's version, capabilities with example calls, the live connection state of every configured service (including per-account/vault/share detail), and helpful links (settings, OpenAPI spec, topology). Cached for 1 hour (`ETag` + `Cache-Control`); the cache invalidates automatically when a service connects or disconnects.
+
+**Response**: `{ "conduit": { version, description, baseUrl, authMethod, capabilities: [...] }, "services": [ ... ], "helpfulLinks": { ... } }`
+
+---
+
+#### `GET /skill`
+
+Returns the Conduit agent skill definition (`SKILL.md`) as raw Markdown — **no authentication required**. Response `Content-Type` is `text/markdown`. Returns `404` if the skill file is missing.
+
+---
+
 #### `GET /status`
 
 Returns connection status for all platforms, total message counts in the local database, and information about any currently-running syncs.
@@ -249,6 +331,8 @@ Fetch messages from the local database. Returns a specific conversation (use `ch
 
 `conversationMeta` is only present when `include_meta=true` and `chat_id` is provided.
 
+`total` is the true count of matching rows across all queried sources (not capped at the page size), so it can be used for pagination. Message rows never include `rawJson`; API-key actors additionally do not receive `attachments`/`embeds`.
+
 ---
 
 #### `GET /search`
@@ -288,7 +372,7 @@ Returns a structured tree of all synced conversations grouped by platform and ty
         "label": "Direct Messages",
         "type": "dms",
         "chats": [
-          { "id": "D04XYZ", "name": "Alice", "source": "slack", "messageCount": 120, "lastTs": "2026-04-06T10:00:00Z" }
+          { "id": "D04XYZ", "name": "Alice", "source": "slack", "messageCount": 120, "lastTs": "2026-04-06T10:00:00Z", "unread": 3 }
         ]
       },
       {
@@ -303,23 +387,53 @@ Returns a structured tree of all synced conversations grouped by platform and ty
 }
 ```
 
+Each chat entry includes an `unread` count — the number of messages newer than the chat's read cursor that were not sent by you.
+
 ---
 
-#### `POST /unread/{service}/{chatId}/read`
+#### `POST /chats/{source}/{chatId}/read`
 
-Marks a conversation as read on the platform, clearing the unread badge in the platform app. Use this after an agent has processed a conversation.
+Sets the chat's read cursor, clearing its `unread` count. **UI session only** — this endpoint is not available to API keys.
 
 **Path parameters**
 
 | Parameter | Values |
 |---|---|
-| `service` | `slack`, `discord`, `telegram` |
+| `source` | `telegram`, `discord`, `slack`, `twitter`, `gmail` |
 | `chatId` | Conversation ID from `GET /chats` |
+
+**Request body** (optional)
+
+```json
+{ "at": "2026-04-06T12:00:00Z" }
+```
+
+`at` — ISO timestamp to set the read cursor to. Defaults to now.
 
 **Response**
 
 ```json
-{ "success": true }
+{ "success": true, "source": "slack", "chatId": "D04XYZ", "lastReadAt": "2026-04-06T12:00:00Z" }
+```
+
+---
+
+#### `POST /chats/read-all`
+
+Marks every known chat as read, optionally limited to one source. **UI session only** — not available to API keys.
+
+**Request body** (optional)
+
+```json
+{ "source": "slack" }
+```
+
+Omit `source` to mark all of `telegram`, `discord`, `slack`, and `twitter` read.
+
+**Response**
+
+```json
+{ "success": true, "marked": 42 }
 ```
 
 ---
@@ -460,15 +574,22 @@ Lists messages queued for sending. Filter by `status=pending` to find messages a
 |---|---|---|
 | `status` | string | `pending`, `approved`, `sent`, `rejected`, `failed` |
 | `source` | string | Filter to one platform. |
+| `limit` | integer | Page size. Default 50, max 200. |
+| `offset` | integer | Default 0. |
 
 **Response**
 
 ```json
 {
   "items": [ OutboxItem ],
-  "pendingCount": 3
+  "total": 120,
+  "pendingCount": 3,
+  "limit": 50,
+  "offset": 0
 }
 ```
+
+`total` is the count of items matching the `status`/`source` filters. `pendingCount` is the actor's global pending total, **not** affected by the filters (the UI badge relies on this). API-key actors only ever see their own items.
 
 ---
 
@@ -486,6 +607,12 @@ Queues a message to any platform. The `recipient_id` is the platform-native chan
   "content": "Message text here"
 }
 ```
+
+**Request headers**
+
+| Header | Description |
+|---|---|
+| `Idempotency-Key` | Optional. A retried POST carrying the same key returns the original outbox item (with `"idempotent": true`) instead of queueing a duplicate. Returns `409` if the key was used by a different API key. |
 
 **Response**: `OutboxItem` object.
 
@@ -532,9 +659,23 @@ Approve, reject, or edit a pending outbox item.
 
 ---
 
+#### `POST /outbox/{id}/retry`
+
+Re-dispatches a **failed** outbox item. Returns `409` if the item is not in `failed` status, and `403` if sending is no longer enabled for the item's service.
+
+**Path parameters**
+
+| Parameter | Description |
+|---|---|
+| `id` | Outbox item ID (integer) |
+
+**Response**: `{ "success": true, "status": "sent" }` on success; `500` with the error message (item returns to `failed`) if dispatch fails again.
+
+---
+
 #### `DELETE /outbox/{id}`
 
-Permanently removes an outbox item. This does **not** send the message.
+Permanently removes an outbox item. This does **not** send the message. Items with status `sent` or `approved` cannot be deleted (`409`).
 
 **Response**: `{ "success": true }`
 
@@ -862,6 +1003,57 @@ For `action=create`:
 
 ---
 
+### Meet Notes
+
+Google Meet "Smart Notes" synced from Drive. All Meet Notes endpoints are gated by the **calendar** read permission.
+
+---
+
+#### `GET /meet-notes`
+
+Lists meeting notes, newest first.
+
+**Query parameters**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `limit` | integer | Default 50, max 200. |
+| `offset` | integer | Default 0. |
+| `q` | string | Substring search across note title and summary. |
+| `account_id` | string | Filter to one Google account (email). |
+| `from` | datetime | Only notes with `meetingDate` ≥ this ISO timestamp. |
+| `to` | datetime | Only notes with `meetingDate` ≤ this ISO timestamp. |
+
+**Response**
+
+```json
+{
+  "notes": [
+    {
+      "id": 12,
+      "title": "Planning sync",
+      "meetingDate": "2026-04-03T15:00:00Z",
+      "summary": "Discussed Q2 roadmap...",
+      "accountId": "you@example.com",
+      "driveFileId": "1abc..."
+    }
+  ],
+  "total": 87,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+---
+
+#### `GET /meet-notes/{id}`
+
+Returns a single note in full (including content/transcript fields). Returns `404` if not found.
+
+`POST /meet-notes/sync` triggers an incremental sync from Drive for all connected Google accounts.
+
+---
+
 ### Twitter / X
 
 ---
@@ -1105,13 +1297,14 @@ Returns tweets that @mention the authenticated user.
 
 #### `GET /twitter/dms`
 
-Returns all synced Twitter DM conversations with participant info and last message.
+Returns synced Twitter DM conversations grouped by `conversationId`, sorted by most recent message. Requires DM read permission for the API key.
 
 **Query parameters**
 
 | Parameter | Type | Description |
 |---|---|---|
-| `limit` | integer | Default 50. |
+| `limit` | integer | Default 50, max 100. |
+| `offset` | integer | Default 0. |
 
 **Response**
 
@@ -1119,26 +1312,34 @@ Returns all synced Twitter DM conversations with participant info and last messa
 {
   "conversations": [
     {
-      "conversationId": "...",
-      "participants": [
-        { "userId": "123", "displayName": "Alice", "handle": "alice", "avatarUrl": "...", "isMe": false }
-      ],
+      "conversationId": "123456-789012",
+      "participantIds": ["123456", "789012"],
+      "otherName": "Alice",
+      "otherHandle": "alice",
+      "otherAvatarUrl": "https://...",
       "lastMessage": {
+        "conversationId": "123456-789012",
+        "messageId": "...",
+        "senderId": "123456",
+        "senderHandle": "alice",
+        "senderName": "Alice",
         "text": "Sounds good!",
-        "timestamp": "2026-04-06T11:00:00Z",
-        "senderId": "123"
+        "createdAt": "2026-04-06T11:00:00Z"
       },
-      "unreadCount": 2
+      "messageCount": 24
     }
-  ]
+  ],
+  "total": 12
 }
 ```
+
+`otherName` / `otherHandle` / `otherAvatarUrl` describe the participant who is not the authenticated user. `lastMessage` is the stored DM row. `total` is the total number of conversations (before `limit`/`offset` are applied).
 
 ---
 
 #### `GET /twitter/dms/{conversationId}`
 
-Returns all stored messages in a specific DM conversation.
+Returns all stored messages in a specific DM conversation, oldest first. Requires DM read permission for the API key.
 
 **Query parameters**
 
@@ -1150,19 +1351,19 @@ Returns all stored messages in a specific DM conversation.
 
 ```json
 {
-  "conversationId": "...",
+  "conversationId": "123456-789012",
   "messages": [
     {
-      "id": "...",
-      "text": "Hey!",
-      "senderId": "123",
+      "conversationId": "123456-789012",
+      "messageId": "...",
+      "senderId": "123456",
       "senderHandle": "alice",
       "senderName": "Alice",
-      "isMe": false,
-      "timestamp": "2026-04-06T11:00:00Z"
+      "senderAvatarUrl": "https://...",
+      "text": "Hey!",
+      "createdAt": "2026-04-06T11:00:00Z"
     }
-  ],
-  "total": 24
+  ]
 }
 ```
 
@@ -1241,440 +1442,11 @@ Returns engagement metrics for the authenticated user's recent tweets, aggregate
 
 ### Notion
 
-Notion endpoints are read-only passthroughs to the Notion API. Write operations (`create_page`, `update_page`, `append_blocks`, `archive_page`) go through `POST /outbox` and require human approval.
-
-All Notion endpoints require the `readEnabled` permission to be set for the `notion` service.
-
----
-
-#### `GET /notion/pages/{pageId}`
-
-Retrieves a Notion page by its ID. Returns raw Notion API page object including all properties.
-
-**Path parameters**
-
-| Parameter | Description |
-|---|---|
-| `pageId` | Notion page UUID (dashes optional) |
-
-**Response**: Raw Notion API page object.
-
-```json
-{
-  "id": "page-uuid",
-  "object": "page",
-  "properties": { ... },
-  "url": "https://www.notion.so/page-uuid"
-}
-```
-
-Use `GET /notion/blocks/{pageId}/children` to read the page body.
-
----
-
-#### `GET /notion/databases`
-
-Lists all Notion databases accessible to the configured integration token.
-
-**Response**: Raw Notion API list response.
-
-```json
-{
-  "results": [
-    {
-      "id": "db-uuid",
-      "object": "database",
-      "title": [ { "plain_text": "Tasks" } ],
-      "properties": { ... }
-    }
-  ],
-  "has_more": false
-}
-```
-
----
-
-#### `POST /notion/databases/{databaseId}/query`
-
-Queries a Notion database. Supports Notion filter and sort syntax.
-
-**Path parameters**
-
-| Parameter | Description |
-|---|---|
-| `databaseId` | Notion database UUID |
-
-**Request body**
-
-```json
-{
-  "filter": {
-    "property": "Status",
-    "select": { "equals": "In Progress" }
-  },
-  "sorts": [
-    { "property": "Due Date", "direction": "ascending" }
-  ],
-  "page_size": 50
-}
-```
-
-All fields are optional. Use `start_cursor` from a previous response for pagination.
-
-**Response**: Raw Notion API paginated results.
-
-```json
-{
-  "results": [ NotionPage ],
-  "has_more": true,
-  "next_cursor": "..."
-}
-```
-
----
-
-#### `POST /notion/search`
-
-Searches across all pages and databases in the Notion workspace accessible to the integration.
-
-**Request body**
-
-```json
-{
-  "query": "project roadmap",
-  "filter": { "value": "page", "property": "object" },
-  "sort": { "direction": "descending", "timestamp": "last_edited_time" },
-  "page_size": 20
-}
-```
-
-All fields optional. Omit `query` to list all accessible objects.
-
-**Response**: Raw Notion API search results.
-
----
-
-#### `GET /notion/blocks/{blockId}`
-
-Retrieves a single Notion block by its ID.
-
-**Path parameters**
-
-| Parameter | Description |
-|---|---|
-| `blockId` | Notion block UUID |
-
-**Response**: Raw Notion block object.
-
----
-
-#### `GET /notion/blocks/{blockId}/children`
-
-Retrieves all child blocks of a given block. For pages, pass the page ID as `blockId` — this returns the full page body.
-
-**Path parameters**
-
-| Parameter | Description |
-|---|---|
-| `blockId` | Block ID (use page ID to get page content) |
-
-**Query parameters**
-
-| Parameter | Type | Description |
-|---|---|---|
-| `page_size` | integer | Max children per page. Default/max 100. |
-| `start_cursor` | string | Pagination cursor from a previous response. |
-
-**Response**: Raw Notion block list with pagination.
-
-```json
-{
-  "results": [
-    { "id": "block-uuid", "type": "paragraph", "paragraph": { "rich_text": [ ... ] } }
-  ],
-  "has_more": false
-}
-```
-
----
-
-### Obsidian Vault
-
-The Obsidian vault integration syncs a git-hosted vault to the server and exposes full file read and write operations. **File writes are fully supported** — `create_file`, `patch_file`, `write_file`, `rename_file`, and `delete_file` all go through `POST /outbox` for human approval.
-
-File reads bypass the outbox and execute immediately. The vault auto-syncs every 5 minutes via `git pull`.
-
-**Setup sequence**: save config → test connection → generate SSH key (if using SSH) → clone → read files.
-
-#### Writing and editing vault files
-
-All Obsidian file write operations use `POST /outbox` with `source: "obsidian"`. The `content` field must be a **JSON string** encoding the action payload. Set `recipient_id` to the vault file path.
-
-**`patch_file` — Targeted edit of an existing file (preferred for editing)**
-
-Finds an exact anchor string and applies an operation around it. The `search` value must match exactly once in the file. Three modes via `position`:
-- `replace` (default) — replaces the matched text with `replace`
-- `after` — inserts `content` immediately after the anchor (anchor unchanged)
-- `before` — inserts `content` immediately before the anchor (anchor unchanged)
-
-Multiple edits are applied in sequence:
-
-```json
-POST /api/outbox
-{
-  "source":         "obsidian",
-  "recipient_id":   "Daily Notes/2026-04-13.md",
-  "recipient_name": "Update daily note",
-  "content": "{\"action\":\"patch_file\",\"path\":\"Daily Notes/2026-04-13.md\",\"edits\":[{\"search\":\"## Tasks\",\"position\":\"after\",\"content\":\"\\n- [ ] Review PR #42\"},{\"search\":\"status: draft\",\"replace\":\"status: published\"}]}"
-}
-```
-
-**`create_file` — Create a new file (fails if already exists)**
-
-```json
-{
-  "source":         "obsidian",
-  "recipient_id":   "Notes/new-note.md",
-  "recipient_name": "Create new-note.md",
-  "content": "{\"action\":\"create_file\",\"path\":\"Notes/new-note.md\",\"content\":\"# New Note\\n\\nContent here.\"}"
-}
-```
-
-**`write_file` — Overwrite an entire file (or create if absent)**
-
-Only use when replacing all content is intentional. For targeted edits to existing files, use `patch_file` instead.
-
-```json
-{ "action": "write_file", "path": "Notes/existing.md", "content": "# Fully replaced\n\nAll new content." }
-```
-
-**`rename_file` — Move or rename a file**
-
-```json
-{ "action": "rename_file", "oldPath": "Notes/old.md", "newPath": "Notes/new.md" }
-```
-
-**`delete_file` — Delete a file**
-
-```json
-{ "action": "delete_file", "path": "Notes/to-delete.md" }
-```
-
-All Obsidian write operations require `sendEnabled` permission for the `obsidian` service.
-
----
-
-#### `GET /obsidian/config`
-
-Returns the current vault configuration. Secrets (tokens, private keys) are excluded.
-
-**Response**
-
-```json
-{
-  "configured": true,
-  "vault": {
-    "id": 1,
-    "name": "my-vault",
-    "remoteUrl": "git@github.com:user/vault.git",
-    "authType": "ssh",
-    "branch": "main",
-    "localPath": "/data/vault/my-vault",
-    "syncStatus": "idle",
-    "lastSyncedAt": "2026-04-13T10:00:00Z",
-    "lastCommitHash": "abc1234",
-    "syncError": null,
-    "hasHttpsToken": false,
-    "hasSshPrivateKey": true
-  }
-}
-```
-
-When no vault is configured: `{ "configured": false }`.
-
----
-
-#### `POST /obsidian/config`
-
-Creates or updates the vault configuration. Does not clone — call `POST /obsidian/config/clone` after saving.
-
-**Request body**
-
-```json
-{
-  "name": "my-vault",
-  "remote_url": "git@github.com:user/vault.git",
-  "auth_type": "ssh",
-  "branch": "main"
-}
-```
-
-| Field | Required | Description |
-|---|---|---|
-| `name` | yes | Vault name (alphanumeric and hyphens, used as directory name) |
-| `remote_url` | yes | Git remote URL (HTTPS or SSH) |
-| `auth_type` | no | `https` or `ssh`. Default `https`. |
-| `https_token` | no | Personal access token (for HTTPS auth) |
-| `ssh_private_key` | no | SSH private key (omit to use a generated key) |
-| `branch` | no | Branch to track. Default `main`. |
-
----
-
-#### `DELETE /obsidian/config`
-
-Removes the vault configuration and disconnects the sync. Optionally deletes the local clone.
-
-**Request body**
-
-```json
-{ "delete_local": true }
-```
-
----
-
-#### `POST /obsidian/config/test`
-
-Verifies git remote access by running `git ls-remote` without cloning. Call this after saving config to confirm credentials work before cloning.
-
-**Response**
-
-```json
-{ "success": true, "error": null }
-```
-
----
-
-#### `POST /obsidian/config/generate-ssh-key`
-
-Generates a new ed25519 SSH key pair and stores it in the vault config. Add the returned public key as a **read-only deploy key** in your git hosting provider (GitHub → Settings → Deploy keys).
-
-**Response**
-
-```json
-{
-  "publicKey": "ssh-ed25519 AAAA... conduit-obsidian",
-  "fingerprint": "SHA256:abc..."
-}
-```
-
----
-
-#### `GET /obsidian/config/ssh-key`
-
-Returns the SSH public key that was previously generated.
-
-**Response**
-
-```json
-{ "publicKey": "ssh-ed25519 AAAA... conduit-obsidian" }
-```
-
-Returns `404` if no key has been generated.
-
----
-
-#### `POST /obsidian/config/clone`
-
-Triggers an initial `git clone` of the configured remote. This is a one-time setup step. The clone runs **asynchronously** — monitor progress with `GET /obsidian/sync/status`.
-
-**Response**
-
-```json
-{ "success": true, "message": "Clone started" }
-```
-
----
-
-#### `GET /obsidian/sync/status`
-
-Returns the current sync state.
-
-**Response**
-
-```json
-{
-  "configured": true,
-  "syncStatus": "idle",
-  "lastSyncedAt": "2026-04-13T10:00:00Z",
-  "lastCommitHash": "abc1234",
-  "error": null
-}
-```
-
-`syncStatus` values: `idle`, `syncing`, `error`.
-
----
-
-#### `POST /obsidian/sync`
-
-Triggers a manual `git fetch` + `git pull --ff-only`. Runs asynchronously.
-
-**Response**
-
-```json
-{ "success": true, "message": "Sync started" }
-```
-
----
-
-#### `GET /obsidian/files`
-
-Returns the full file tree of the vault. Hidden directories (`.git`, `.obsidian`, `.trash`) are excluded.
-
-**Response**
-
-```json
-{
-  "files": [
-    {
-      "name": "Daily Notes",
-      "path": "Daily Notes",
-      "type": "directory",
-      "children": [
-        { "name": "2026-04-13.md", "path": "Daily Notes/2026-04-13.md", "type": "file" }
-      ]
-    },
-    { "name": "README.md", "path": "README.md", "type": "file" }
-  ]
-}
-```
-
----
-
-#### `GET /obsidian/files/{path}`
-
-Reads the raw content of a file in the vault. The vault is auto-synced before reading if the last sync was more than 4 minutes ago.
-
-**Path parameters**
-
-| Parameter | Description |
-|---|---|
-| `path` | Relative path from the vault root (URL-encode special characters and spaces) |
-
-**Example**
-
-```
-GET /api/obsidian/files/Daily%20Notes%2F2026-04-13.md
-```
-
-**Response**
-
-```json
-{
-  "path": "Daily Notes/2026-04-13.md",
-  "content": "# April 13\n\n- Reviewed PR #42\n- Called Alice\n"
-}
-```
-
-Returns `404` if the file does not exist.
-
----
-
-## Common Patterns
-
-Notion endpoints are direct passthroughs to the Notion API. Read endpoints are gated by the `readEnabled` permission; direct write endpoints (`PATCH /notion/pages/:id`, `POST /notion/pages`) are gated by the `sendEnabled` permission and execute immediately with no outbox or approval step.
-
-Outbox-based write operations (`append_blocks`, `archive_page`, and batch workflows) still go through `POST /outbox`.
+Notion endpoints are direct passthroughs to the Notion API:
+
+- **Read endpoints** are gated by the `readEnabled` permission for the `notion` service and execute immediately (no outbox). All reads are written to the audit log.
+- **Direct write endpoints** — `PATCH /notion/pages/{pageId}` and `POST /notion/pages` — are gated by the `sendEnabled` permission and also execute **immediately**, with no outbox item and no approval step.
+- **Other write operations** (`append_blocks`, `archive_page`, and batch workflows) go through `POST /outbox` (or `POST /outbox/batch/multi`) with `source: "notion"` and follow the normal approval flow.
 
 ---
 
@@ -1705,7 +1477,7 @@ Use `GET /notion/blocks/{pageId}/children` to read the page body.
 
 #### `PATCH /notion/pages/{pageId}`
 
-Updates an existing Notion page. The request body is passed through as-is to the Notion `PATCH /v1/pages/:id` API. Requires the `sendEnabled` permission for the `notion` service.
+Updates an existing Notion page — a **direct write** that executes immediately with no outbox or approval step. The request body is passed through as-is to the Notion `PATCH /v1/pages/:id` API. Requires the `sendEnabled` permission for the `notion` service.
 
 **Path parameters**
 
@@ -1727,20 +1499,11 @@ Only include properties you want to change. Set `in_trash: true` to move the pag
 
 **Response**: Raw Notion API updated page object.
 
-```json
-{
-  "id": "page-uuid",
-  "object": "page",
-  "properties": { ... },
-  "in_trash": false
-}
-```
-
 ---
 
 #### `POST /notion/pages`
 
-Creates a new Notion page. The request body is passed through as-is to the Notion `POST /v1/pages` API. Requires the `sendEnabled` permission for the `notion` service.
+Creates a new Notion page — a **direct write** that executes immediately with no outbox or approval step. The request body is passed through as-is to the Notion `POST /v1/pages` API. Requires the `sendEnabled` permission for the `notion` service.
 
 **Request body**
 
@@ -1754,18 +1517,9 @@ Creates a new Notion page. The request body is passed through as-is to the Notio
 }
 ```
 
-Use `database_id` to create a database row, or `page_id` to create a sub-page. `children` (array of block objects) is optional.
+Use `parent.database_id` to create a database row, or `parent.page_id` to create a sub-page. `children` (array of block objects) is optional.
 
 **Response**: `201 Created` with the raw Notion API page object.
-
-```json
-{
-  "id": "new-page-uuid",
-  "object": "page",
-  "url": "https://www.notion.so/new-page-uuid",
-  "properties": { ... }
-}
-```
 
 ---
 
@@ -1897,15 +1651,23 @@ Retrieves all child blocks of a given block. For pages, pass the page ID as `blo
 
 ### Obsidian Vault
 
-The Obsidian vault integration syncs a git-hosted vault to the server and exposes full file read and write operations. **File writes are fully supported** — `create_file`, `patch_file`, `write_file`, `rename_file`, and `delete_file` all go through `POST /outbox` for human approval.
+The Obsidian integration syncs one or more git-hosted vaults to the server and exposes full file read and write operations. Vaults are addressed by numeric ID under `/obsidian/vaults/{id}`.
 
-File reads bypass the outbox and execute immediately. The vault auto-syncs every 5 minutes via `git pull`.
+- **Reads** (`.../files`, `.../files/{path}`) execute immediately and are gated by the `readEnabled` permission for the `obsidian` service. API keys can be restricted to path prefixes.
+- **Writes are fully supported** — `patch_file`, `create_file`, `write_file`, `rename_file`, and `delete_file` all go through `POST /outbox` with `source: "obsidian"` for human approval.
+- **Vault management** (create/update/delete a vault, test connection, generate SSH key, clone) is UI-session only — not available to API keys.
 
-**Setup sequence**: save config → test connection → generate SSH key (if using SSH) → clone → read files.
+Vaults auto-sync every 5 minutes via `git pull`.
+
+**Setup sequence** (in the UI): save vault config → test connection → generate SSH key (if using SSH) → clone → read files.
 
 #### Writing and editing vault files
 
 All Obsidian file write operations use `POST /outbox` with `source: "obsidian"`. The `content` field must be a **JSON string** encoding the action payload. Set `recipient_id` to the vault file path.
+
+The payload may include an optional `vaultId` (integer). When omitted, the first connected vault is used and the server injects the resolved `vaultId` into the stored item.
+
+For `patch_file`, every `search` string is validated against the current file content when the outbox item is **created** (not at approval time). A search string that does not match exactly falls back to fuzzy matching (≥90% similarity, must be unique in the file); on a fuzzy hit the stored search string is rewritten to the exact matched text. A search string that matches nothing or matches more than once fails the request with `400`.
 
 **`patch_file` — Targeted edit of an existing file (preferred for editing)**
 
@@ -1961,136 +1723,70 @@ All Obsidian write operations require `sendEnabled` permission for the `obsidian
 
 ---
 
-#### `GET /obsidian/config`
+#### `GET /obsidian/vaults`
 
-Returns the current vault configuration. Secrets (tokens, private keys) are excluded.
-
-**Response**
-
-```json
-{
-  "configured": true,
-  "vault": {
-    "id": 1,
-    "name": "my-vault",
-    "remoteUrl": "git@github.com:user/vault.git",
-    "authType": "ssh",
-    "branch": "main",
-    "localPath": "/data/vault/my-vault",
-    "syncStatus": "idle",
-    "lastSyncedAt": "2026-04-13T10:00:00Z",
-    "lastCommitHash": "abc1234",
-    "syncError": null,
-    "hasHttpsToken": false,
-    "hasSshPrivateKey": true
-  }
-}
-```
-
-When no vault is configured: `{ "configured": false }`.
-
----
-
-#### `POST /obsidian/config`
-
-Creates or updates the vault configuration. Does not clone — call `POST /obsidian/config/clone` after saving.
-
-**Request body**
-
-```json
-{
-  "name": "my-vault",
-  "remote_url": "git@github.com:user/vault.git",
-  "auth_type": "ssh",
-  "branch": "main"
-}
-```
-
-| Field | Required | Description |
-|---|---|---|
-| `name` | yes | Vault name (alphanumeric and hyphens, used as directory name) |
-| `remote_url` | yes | Git remote URL (HTTPS or SSH) |
-| `auth_type` | no | `https` or `ssh`. Default `https`. |
-| `https_token` | no | Personal access token (for HTTPS auth) |
-| `ssh_private_key` | no | SSH private key (omit to use a generated key) |
-| `branch` | no | Branch to track. Default `main`. |
-
----
-
-#### `DELETE /obsidian/config`
-
-Removes the vault configuration and disconnects the sync. Optionally deletes the local clone.
-
-**Request body**
-
-```json
-{ "delete_local": true }
-```
-
----
-
-#### `POST /obsidian/config/test`
-
-Verifies git remote access by running `git ls-remote` without cloning. Call this after saving config to confirm credentials work before cloning.
-
-**Response**
-
-```json
-{ "success": true, "error": null }
-```
-
----
-
-#### `POST /obsidian/config/generate-ssh-key`
-
-Generates a new ed25519 SSH key pair and stores it in the vault config. Add the returned public key as a **read-only deploy key** in your git hosting provider (GitHub → Settings → Deploy keys).
+Lists all configured vaults. Secrets (tokens, private keys) are excluded.
 
 **Response**
 
 ```json
 {
-  "publicKey": "ssh-ed25519 AAAA... conduit-obsidian",
-  "fingerprint": "SHA256:abc..."
+  "vaults": [
+    {
+      "id": 1,
+      "name": "my-vault",
+      "remoteUrl": "git@github.com:user/vault.git",
+      "authType": "ssh",
+      "branch": "main",
+      "localPath": "/data/vault/1",
+      "syncStatus": "idle",
+      "lastSyncedAt": "2026-04-13T10:00:00Z",
+      "lastCommitHash": "abc1234",
+      "syncError": null,
+      "hasHttpsToken": false,
+      "hasSshPrivateKey": true,
+      "connectionStatus": { "status": "connected" }
+    }
+  ]
 }
 ```
 
 ---
 
-#### `GET /obsidian/config/ssh-key`
+#### `GET /obsidian/vaults/{id}`
 
-Returns the SSH public key that was previously generated.
+Returns a single vault config (same shape as the list entries, no secrets).
 
-**Response**
-
-```json
-{ "publicKey": "ssh-ed25519 AAAA... conduit-obsidian" }
-```
-
-Returns `404` if no key has been generated.
+**Response**: `{ "vault": { ... } }`. Returns `404` if the vault does not exist.
 
 ---
 
-#### `POST /obsidian/config/clone`
+#### Vault management (UI session only)
 
-Triggers an initial `git clone` of the configured remote. This is a one-time setup step. The clone runs **asynchronously** — monitor progress with `GET /obsidian/sync/status`.
+These endpoints require a UI login session and return an auth error for API keys:
 
-**Response**
+| Endpoint | Description |
+|---|---|
+| `POST /obsidian/vaults` | Create a vault config. Body: `name` (required), `remote_url` (required), `auth_type` (`https` \| `ssh`, default `https`), `https_token`, `ssh_private_key`, `ssh_public_key`, `branch` (default `main`). Returns `201` with `{ "vault": { ... } }`. |
+| `PUT /obsidian/vaults/{id}` | Update a vault config (same fields, all optional). |
+| `DELETE /obsidian/vaults/{id}` | Remove a vault config. Body: `{ "delete_local": true }` also deletes the local clone. |
+| `POST /obsidian/vaults/{id}/test` | Test git remote connectivity (`git ls-remote`) without cloning. |
+| `POST /obsidian/vaults/{id}/generate-ssh-key` | Generate an ed25519 key pair; returns `{ "publicKey", "fingerprint" }`. Add the public key as a deploy key in your git host. |
+| `POST /obsidian/vaults/{id}/clone` | Trigger the initial `git clone` (asynchronous — poll `GET /obsidian/vaults/{id}/sync-status`). |
 
-```json
-{ "success": true, "message": "Clone started" }
-```
+`GET /obsidian/vaults/{id}/ssh-key` and `GET /obsidian/vaults/{id}/ssh-fingerprint` return the generated public key / its SHA256 fingerprint and are readable with an API key.
 
 ---
 
-#### `GET /obsidian/sync/status`
+#### `GET /obsidian/vaults/{id}/sync-status`
 
-Returns the current sync state.
+Returns the current sync state for a vault.
 
 **Response**
 
 ```json
 {
-  "configured": true,
+  "vaultId": 1,
   "syncStatus": "idle",
   "lastSyncedAt": "2026-04-13T10:00:00Z",
   "lastCommitHash": "abc1234",
@@ -2102,9 +1798,9 @@ Returns the current sync state.
 
 ---
 
-#### `POST /obsidian/sync`
+#### `POST /obsidian/vaults/{id}/sync`
 
-Triggers a manual `git fetch` + `git pull --ff-only`. Runs asynchronously.
+Triggers a manual `git fetch` + `git pull`. Runs asynchronously.
 
 **Response**
 
@@ -2112,11 +1808,13 @@ Triggers a manual `git fetch` + `git pull --ff-only`. Runs asynchronously.
 { "success": true, "message": "Sync started" }
 ```
 
+Returns `503` if the vault is not connected (clone it first) and `404` if it does not exist.
+
 ---
 
-#### `GET /obsidian/files`
+#### `GET /obsidian/vaults/{id}/files`
 
-Returns the full file tree of the vault. Hidden directories (`.git`, `.obsidian`, `.trash`) are excluded.
+Returns the full file tree of the vault. Requires the `obsidian` read permission; API keys with a path allowlist receive a filtered tree.
 
 **Response**
 
@@ -2136,22 +1834,25 @@ Returns the full file tree of the vault. Hidden directories (`.git`, `.obsidian`
 }
 ```
 
+Returns `503` if the vault is not connected.
+
 ---
 
-#### `GET /obsidian/files/{path}`
+#### `GET /obsidian/vaults/{id}/files/{path}`
 
-Reads the raw content of a file in the vault. The vault is auto-synced before reading if the last sync was more than 4 minutes ago.
+Reads the raw content of a file in the vault.
 
 **Path parameters**
 
 | Parameter | Description |
 |---|---|
+| `id` | Vault ID |
 | `path` | Relative path from the vault root (URL-encode special characters and spaces) |
 
 **Example**
 
 ```
-GET /api/obsidian/files/Daily%20Notes%2F2026-04-13.md
+GET /api/obsidian/vaults/1/files/Daily%20Notes/2026-04-13.md
 ```
 
 **Response**
@@ -2163,9 +1864,63 @@ GET /api/obsidian/files/Daily%20Notes%2F2026-04-13.md
 }
 ```
 
-Returns `404` if the file does not exist.
+Returns `404` if the file does not exist and `403` if the path is outside the API key's read allowlist.
 
 ---
+
+### Google Drive
+
+Whitelisted Google Drive folders synced per Google account. All read endpoints are gated by the `gdrive` read permission; folder-level fine-grained permissions may further restrict API keys.
+
+| Endpoint | Description |
+|---|---|
+| `GET /gdrive/accounts` | Lists Google accounts with an active Drive connection. Response: `{ "accounts": [...] }`. |
+| `GET /gdrive/folders` | Lists whitelisted folder configs with connection status. Response: `{ "folders": [...] }`. |
+| `GET /gdrive/folders/{id}` | Single folder config. |
+| `GET /gdrive/folders/{id}/files` | Full file tree for a folder. |
+| `GET /gdrive/folders/{id}/files/{path}` | Read file contents (supports `?format=markdown\|text\|html` for Google Docs). |
+| `GET /gdrive/folders/{id}/download/{path}` | Download the raw file. |
+| `POST /gdrive/folders/{id}/sync` | Trigger a folder sync. |
+
+Folder management (`POST`/`PUT`/`DELETE /gdrive/folders...`, `GET /gdrive/available-folders`, `POST /gdrive/folders/{id}/upload`, `POST /gdrive/folders/{id}/test`) is UI-session only.
+
+Drive writes go through `POST /outbox` with `source: "gdrive"` and a JSON `content` payload (actions: `create_file`, `write_file`, `patch_file`, `rename_file`, `delete_file`; include `folderId` and `fileId` where applicable). `patch_file` search strings are validated against current file content at creation time for plain-text files.
+
+---
+
+### SMB Network Shares
+
+SMB/CIFS shares mounted by config. File reads are gated by the `smb` read permission (with optional path allowlists per API key).
+
+| Endpoint | Description |
+|---|---|
+| `GET /smb/shares` | Lists configured shares (no credentials). |
+| `GET /smb/shares/{id}` | Single share config. |
+| `GET /smb/shares/{id}/status` | Connection status for a share. |
+| `POST /smb/shares/{id}/connect` / `POST /smb/shares/{id}/disconnect` | Open / close the connection. |
+| `POST /smb/shares/{id}/test` | Test connectivity. |
+| `GET /smb/shares/{id}/files` | List files in the share root. |
+| `GET /smb/shares/{id}/files/{path}` | List a directory / read file metadata and content. |
+| `GET /smb/shares/{id}/download/{path}` | Download the raw file. |
+
+Share management (`POST /smb/shares`, `PUT`/`DELETE /smb/shares/{id}`, `POST /smb/shares/{id}/upload`) is UI-session only. SMB writes go through `POST /outbox` with `source: "smb"` and a JSON `content` payload.
+
+---
+
+### Topology
+
+#### `GET /topology`
+
+Returns a compact, hierarchical map of everything Conduit can see — one call to discover all workspaces/channels, accounts/labels, calendars, vaults, folders, and shares. Responses are cached briefly and support `ETag`/`If-None-Match`.
+
+**Response**: `{ "services": [ { "id": "slack", "connected": true, ... }, ... ] }` — one entry per service (`slack`, `discord`, `telegram`, `twitter`, `gmail`, `calendar`, `gdrive`, `obsidian`, `smb`), each with service-specific structure (e.g. channels for Slack, labels for Gmail, file trees for Obsidian/Drive).
+
+#### `GET /topology/{service}`
+
+Returns the topology for a single service. `404` for unknown service IDs.
+
+---
+
 
 ## Common Patterns
 
@@ -2218,21 +1973,23 @@ Returns `404` if the file does not exist.
 ### Read today's Obsidian daily note
 
 ```
-1. GET  /obsidian/sync/status                           — confirm vault is connected
-2. GET  /obsidian/files                                 — find the file path in the tree
-3. GET  /obsidian/files/Daily%20Notes%2F2026-04-13.md  — read the note
+1. GET  /obsidian/vaults                                         — list vaults, note the vault id
+2. GET  /obsidian/vaults/1/sync-status                           — confirm the vault is synced
+3. GET  /obsidian/vaults/1/files                                 — find the file path in the tree
+4. GET  /obsidian/vaults/1/files/Daily%20Notes/2026-04-13.md    — read the note
 ```
 
 ### Edit an Obsidian file (append to a section)
 
 ```
-1. GET  /obsidian/files                                 — find the file path
-2. GET  /obsidian/files/Notes%2Fmy-note.md             — read current content
-3. POST /outbox  {                                      — queue a targeted edit
+1. GET  /obsidian/vaults/1/files                                 — find the file path
+2. GET  /obsidian/vaults/1/files/Notes%2Fmy-note.md             — read current content
+3. POST /outbox  {                                               — queue a targeted edit
      source: "obsidian",
      recipient_id: "Notes/my-note.md",
      content: JSON.stringify({
        action: "patch_file",
+       vaultId: 1,
        path: "Notes/my-note.md",
        edits: [{ search: "## Section Heading", position: "after", content: "\n- New item" }]
      })
