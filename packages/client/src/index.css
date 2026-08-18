@@ -82,18 +82,8 @@
   --animate-pulse-soft: pulse 2.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   --animate-shimmer:    shimmer 1.4s ease-in-out infinite;
 
-  @keyframes fadeIn {
-    from { opacity: 0; }
-    to   { opacity: 1; }
-  }
-  @keyframes slideUp {
-    from { opacity: 0; transform: translateY(10px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
-  @keyframes shimmer {
-    0%   { background-position: -400px 0; }
-    100% { background-position:  400px 0; }
-  }
+  /* Keyframes are defined once at top level below — the @theme block only
+     declares the --animate-* variables that reference them. */
 }
 
 @layer base {
@@ -260,6 +250,16 @@
   }
 
   /* Primary button */
+  /* Shared keyboard focus ring for every button class — the app previously
+     had no :focus-visible styling anywhere. */
+  .btn-primary:focus-visible,
+  .btn-secondary:focus-visible,
+  .btn-ghost:focus-visible,
+  .btn-danger:focus-visible {
+    outline: 2px solid hsl(var(--primary) / 0.6);
+    outline-offset: 1px;
+  }
+
   .btn-primary {
     @apply inline-flex items-center justify-center gap-2 rounded-xl text-sm font-semibold
            transition-all duration-150 select-none

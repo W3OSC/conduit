@@ -170,8 +170,20 @@ function ComposeModal({ mode, original, onClose }: ComposeModalProps) {
 
   const titles = { compose: 'New Message', reply: 'Reply', reply_all: 'Reply All', forward: 'Forward' };
 
+  // Escape closes — modals were previously mouse-only.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   return (
-    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-end sm:items-center justify-center z-50 p-4">
+    <div
+      className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-end sm:items-center justify-center z-50 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={titles[mode]}
+    >
       <motion.div
         initial={{ opacity: 0, y: 20, scale: 0.97 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
