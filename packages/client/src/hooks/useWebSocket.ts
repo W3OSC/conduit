@@ -148,6 +148,7 @@ export function useWebSocket() {
           // A finished sync means new data — refresh the trees that show it.
           if (d.status === 'success') {
             throttledInvalidate(queryClient, ['chats']);
+            throttledInvalidate(queryClient, ['digest']);
             throttledInvalidate(queryClient, ['status']);
           }
           break;
@@ -156,6 +157,7 @@ export function useWebSocket() {
         case 'outbox:new':
         case 'outbox:updated': {
           throttledInvalidate(queryClient, ['outbox']);
+          throttledInvalidate(queryClient, ['digest']);
           if (event.type === 'outbox:updated') {
             const d = event.data as { id: number; status: string; recipientName?: string };
             if (d.status === 'sent') {
@@ -173,8 +175,9 @@ export function useWebSocket() {
         case 'message:new': {
           const msg = event.data as Message;
           useMessageStreamStore.getState().addMessage(msg);
-          // Chat tree ordering + unread badges change with every message.
+          // Chat tree ordering + unread badges + attention strip all change.
           throttledInvalidate(queryClient, ['chats']);
+          throttledInvalidate(queryClient, ['digest']);
 
           const src = msg.source;
           const msgData = msg as unknown as Record<string, unknown>;
@@ -197,6 +200,7 @@ export function useWebSocket() {
         case 'chat:read': {
           // Read cursor moved (this tab or another) — unread badges are stale.
           throttledInvalidate(queryClient, ['chats']);
+          throttledInvalidate(queryClient, ['digest']);
           break;
         }
 

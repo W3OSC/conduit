@@ -728,6 +728,72 @@ function InboxTwitterSection() {
   );
 }
 
+// ─── Attention strip — digest-powered needs-reply + pending approvals ─────────
+
+function InboxAttentionSection() {
+  const navigate = useNavigate();
+  const { data, isLoading } = useQuery({
+    queryKey: ['digest'],
+    queryFn: () => api.digest(),
+    staleTime: 60_000,
+    refetchInterval: 5 * 60_000,
+  });
+
+  const needsReply = data?.needsReply ?? [];
+  const pending = data?.pendingOutbox;
+  const pendingCount = pending?.count ?? 0;
+
+  // Nothing demanding attention → give the space back to the grid.
+  if (!isLoading && needsReply.length === 0 && pendingCount === 0) return null;
+
+  return (
+    <motion.section {...fade(0)} className="card-warm px-4 py-3 flex items-center gap-3 overflow-hidden" aria-label="Needs attention">
+      <div className="flex items-center gap-2 flex-shrink-0">
+        <span className="w-2 h-2 rounded-full bg-primary animate-pulse" aria-hidden />
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Needs attention</h2>
+      </div>
+
+      <div className="flex-1 min-w-0 flex items-center gap-2 overflow-x-auto">
+        {isLoading ? (
+          <>
+            <Skeleton className="h-8 w-56 rounded-xl flex-shrink-0" />
+            <Skeleton className="h-8 w-56 rounded-xl flex-shrink-0" />
+          </>
+        ) : (
+          needsReply.slice(0, 6).map((item) => (
+            <button
+              key={`${item.source}:${item.chatId}`}
+              onClick={() => navigate('/chat', { state: { chatId: item.chatId, source: item.source, name: item.chatName } })}
+              className="flex items-center gap-2 flex-shrink-0 max-w-[280px] pl-2 pr-3 py-1.5 rounded-xl bg-secondary/50 border border-border/50 hover:border-primary/40 hover:bg-secondary transition-colors text-left"
+              title={`${item.lastMessage.senderName}: ${item.lastMessage.excerpt}`}
+            >
+              <ServiceIcon service={item.source} className="w-3.5 h-3.5 flex-shrink-0" />
+              <span className="min-w-0">
+                <span className="block text-xs font-medium truncate">{item.chatName}</span>
+                <span className="block text-[10px] text-muted-foreground truncate">
+                  {item.lastMessage.senderName}: {item.lastMessage.excerpt}
+                </span>
+              </span>
+              <span className="text-[10px] text-muted-foreground/50 flex-shrink-0">{timeAgo(item.lastMessage.timestamp)}</span>
+            </button>
+          ))
+        )}
+      </div>
+
+      {pendingCount > 0 && (
+        <button
+          onClick={() => navigate('/outbox')}
+          className="flex items-center gap-1.5 flex-shrink-0 px-3 py-1.5 rounded-xl bg-primary/10 border border-primary/30 text-primary hover:bg-primary/20 transition-colors"
+        >
+          <Clock className="w-3.5 h-3.5" />
+          <span className="text-xs font-semibold">{pendingCount} awaiting approval</span>
+          <ChevronRight className="w-3 h-3" />
+        </button>
+      )}
+    </motion.section>
+  );
+}
+
 // ─── Main Inbox page ──────────────────────────────────────────────────────────
 
 export default function Inbox() {
@@ -736,14 +802,19 @@ export default function Inbox() {
       className="grid gap-3 p-3 h-full min-h-0"
       style={{
         gridTemplateColumns: '1fr 1fr',
-        gridTemplateRows: '45fr 30fr 25fr',
+        gridTemplateRows: 'auto 45fr 30fr 25fr',
         gridTemplateAreas: `
+          "attention attention"
           "messages email"
           "messages calendar"
           "twitter  twitter"
         `,
       }}
     >
+      <div style={{ gridArea: 'attention' }} className="min-w-0 overflow-hidden">
+        <InboxAttentionSection />
+      </div>
+
       {/* Each grid area wrapper uses overflow-hidden + min-h-0 so content loading
           inside a card can never inflate the grid track height/width */}
       <div style={{ gridArea: 'messages' }} className="min-h-0 min-w-0 overflow-hidden flex flex-col">

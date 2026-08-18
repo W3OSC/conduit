@@ -146,6 +146,12 @@ export const api = {
 
   // Chats
   chats: () => request<ChatTreeMap>('/chats'),
+  digest: (params?: { since?: string; meetings_days?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.since) q.set('since', params.since);
+    if (params?.meetings_days !== undefined) q.set('meetings_days', String(params.meetings_days));
+    return request<Digest>(`/digest?${q}`);
+  },
 
   // Messages
   messages: (params?: MessageParams) => {
@@ -652,6 +658,33 @@ export interface ChatItem {
 }
 
 // New tree structure returned by /chats
+export interface Digest {
+  generatedAt: string;
+  window: { since: string; until: string };
+  needsReply: Array<{
+    source: string;
+    chatId: string;
+    chatName: string;
+    lastMessage: { senderName: string; excerpt: string; timestamp: string };
+    unread: number;
+  }>;
+  unreadEmail: {
+    count: number;
+    topSenders: Array<{ name: string; count: number }>;
+    latest: Array<{ gmailId: string; threadId: string; from: string; subject: string | null; receivedAt: string | null }>;
+  } | null;
+  upcomingEvents: Array<{
+    eventId: string; title: string | null; startTime: string; endTime: string | null;
+    meetLink: string | null; attendeeCount: number;
+  }>;
+  recentMeetings: Array<{ id: number; title: string | null; meetingDate: string | null; excerpt: string }>;
+  pendingOutbox: {
+    count: number;
+    items: Array<{ id: number; source: string; recipientName: string | null; preview: string; createdAt: string | null }>;
+  };
+  unreadBySource: Record<string, number>;
+}
+
 export interface ChatEntry {
   id: string;
   name: string;
