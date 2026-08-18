@@ -247,11 +247,11 @@ function GmailAccountAccordion({
           <p className="text-sm font-medium truncate">{email}</p>
           <div className="flex items-center gap-3 mt-0.5 text-[11px] text-muted-foreground flex-wrap">
             <span className={cn('flex items-center gap-1', gmailStatus === 'connected' ? 'text-emerald-400' : gmailStatus === 'error' ? 'text-red-400' : '')}>
-              <span className={cn('w-1.5 h-1.5 rounded-full', gmailStatus === 'connected' ? 'bg-emerald-400' : gmailStatus === 'error' ? 'bg-red-400' : 'bg-warm-600')} />
+              <span className={cn('w-1.5 h-1.5 rounded-full', gmailStatus === 'connected' ? 'bg-emerald-400' : gmailStatus === 'error' ? 'bg-red-400' : 'bg-muted-foreground/40')} />
               Gmail
             </span>
             <span className={cn('flex items-center gap-1', calStatus === 'connected' ? 'text-emerald-400' : calStatus === 'error' ? 'text-red-400' : '')}>
-              <span className={cn('w-1.5 h-1.5 rounded-full', calStatus === 'connected' ? 'bg-emerald-400' : calStatus === 'error' ? 'bg-red-400' : 'bg-warm-600')} />
+              <span className={cn('w-1.5 h-1.5 rounded-full', calStatus === 'connected' ? 'bg-emerald-400' : calStatus === 'error' ? 'bg-red-400' : 'bg-muted-foreground/40')} />
               Calendar
             </span>
             {!tokenValid && <span className="text-primary">Token expired</span>}
@@ -385,7 +385,7 @@ function GmailAccountAccordion({
                                 <span className="font-semibold text-primary">+{syncProgress!.messagesSaved!.toLocaleString()}</span> messages saved
                               </p>
                             )}
-                            <div className="h-0.5 bg-warm-700/60 rounded-full overflow-hidden ml-6">
+                            <div className="h-0.5 bg-muted-foreground/25 rounded-full overflow-hidden ml-6">
                               <motion.div className="h-full bg-primary rounded-full" animate={{ x: ['-100%', '100%'] }} transition={{ duration: 1.6, repeat: Infinity, ease: 'linear' }} />
                             </div>
                             <div className="flex justify-end">

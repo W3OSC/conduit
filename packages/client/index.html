@@ -5,9 +5,34 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Conduit</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <!--
+      Blocking, pre-paint theme resolution. The `class="dark"` above is the
+      default for a first-time visitor; this script corrects it from the
+      persisted setting before the first frame so light-mode users do not get
+      a dark flash on every load. Must stay in sync with ThemeProvider in
+      src/App.tsx and the `conduit-theme` shape in src/store/theme.ts.
+    -->
+    <script>
+      (function () {
+        try {
+          var s = JSON.parse(localStorage.getItem('conduit-theme') || '{}');
+          var mode = s.colorMode || 'dark';
+          var dark =
+            mode === 'dark' ||
+            (mode === 'system' &&
+              window.matchMedia('(prefers-color-scheme: dark)').matches);
+          var html = document.documentElement;
+          html.classList.toggle('dark', dark);
+          html.classList.toggle('light', !dark);
+          // Applied here too so the root font-size / radius scale does not
+          // reflow the first painted frame.
+          html.setAttribute('data-font-size', s.fontSize || 'md');
+          html.setAttribute('data-radius', s.borderRadius || 'default');
+        } catch (e) {
+          /* private mode / blocked storage — keep the `dark` default */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -307,7 +307,7 @@ export function TwitterAccordion() {
                                 <span className="font-semibold text-primary">+{syncProgress!.messagesSaved!.toLocaleString()}</span> DMs saved
                               </p>
                             )}
-                            <div className="h-0.5 bg-warm-700/60 rounded-full overflow-hidden ml-6">
+                            <div className="h-0.5 bg-muted-foreground/25 rounded-full overflow-hidden ml-6">
                               <motion.div className="h-full bg-primary rounded-full" animate={{ x: ['-100%', '100%'] }} transition={{ duration: 1.6, repeat: Infinity, ease: 'linear' }} />
                             </div>
                             <div className="flex justify-end">

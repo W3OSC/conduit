@@ -118,7 +118,7 @@ function ServiceCard({ service, avgDuration }: { service: typeof SERVICES[number
       </div>
 
       {syncProgress?.status === 'running' && (
-        <div className="h-1 bg-warm-700 rounded-full overflow-hidden flex-shrink-0">
+        <div className="h-1 bg-muted-foreground/25 rounded-full overflow-hidden flex-shrink-0">
           <motion.div
             className="h-full bg-primary rounded-full"
             animate={{ x: ['-100%', '100%'] }}

@@ -670,7 +670,7 @@ function CreateEventModal({ calendars, onClose, defaultStart }: { calendars: Goo
 
   return (
     <div
-      className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+      className="fixed inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
       role="dialog"
       aria-modal="true"
       aria-label="Create event"

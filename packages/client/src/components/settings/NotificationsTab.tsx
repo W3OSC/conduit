@@ -43,7 +43,7 @@ function SoundSelect({ value, onChange, disabled }: { value: SoundStyle; onChang
         onClick={() => playSound(value)}
         disabled={disabled || value === 'none'}
         title={value === 'none' ? 'No sound to preview' : 'Preview sound'}
-        className="flex items-center justify-center w-6 h-6 rounded-md text-muted-foreground hover:text-foreground hover:bg-white/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+        className="flex items-center justify-center w-6 h-6 rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary/80 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
       >
         <Play className="w-3 h-3" />
       </button>
@@ -99,7 +99,7 @@ export function NotificationsTab() {
       {/* Per-type sound selection */}
       <div className="space-y-1">
         {rows.map(({ key, label, desc }) => (
-          <div key={key} className={cn('flex items-center gap-3 py-3 px-4 rounded-xl transition-colors', sounds.enabled ? 'hover:bg-white/[0.02]' : 'opacity-50')}>
+          <div key={key} className={cn('flex items-center gap-3 py-3 px-4 rounded-xl transition-colors', sounds.enabled ? 'hover:bg-secondary/40' : 'opacity-50')}>
             <Bell className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium">{label}</p>

@@ -33,5 +33,5 @@ export const SERVICE_THEME: Record<string, ServiceTheme> = {
 
 export const DEFAULT_SERVICE_THEME: ServiceTheme = {
   label: 'Unknown', letter: '?', hex: '#78716C',
-  bg: 'bg-warm-700/40', text: 'text-warm-300', border: 'border-warm-600/40', dot: 'bg-warm-400',
+  bg: 'bg-secondary', text: 'text-foreground/70', border: 'border-border', dot: 'bg-muted-foreground',
 };

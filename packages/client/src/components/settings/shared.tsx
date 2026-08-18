@@ -15,7 +15,7 @@ export function SectionHeader({ icon: Icon, title, subtitle }: {
 }) {
   return (
     <div className="flex items-start gap-3 mb-5">
-      <div className="w-8 h-8 rounded-lg bg-white/5 border border-white/8 flex items-center justify-center flex-shrink-0 mt-0.5">
+      <div className="w-8 h-8 rounded-lg bg-secondary border border-border flex items-center justify-center flex-shrink-0 mt-0.5">
         <Icon className="w-4 h-4 text-muted-foreground" />
       </div>
       <div>
@@ -91,7 +91,7 @@ export function Toggle({ checked, onChange, label, description }: {
         onClick={() => onChange(!checked)}
         className={cn(
           'relative flex-shrink-0 w-10 h-6 rounded-full transition-all duration-200 focus:outline-none',
-          checked ? 'bg-primary shadow-amber' : 'bg-warm-700',
+          checked ? 'bg-primary shadow-amber' : 'bg-muted-foreground/30',
         )}
       >
         <span className={cn(
@@ -133,7 +133,7 @@ export function MiniToggle({ checked, onChange, disabled }: { checked: boolean; 
       onClick={() => !disabled && onChange(!checked)}
       className={cn(
         'relative w-9 h-5 rounded-full transition-all duration-200 flex-shrink-0',
-        checked ? 'bg-primary shadow-amber' : 'bg-warm-700',
+        checked ? 'bg-primary shadow-amber' : 'bg-muted-foreground/30',
         disabled && 'opacity-40 cursor-not-allowed',
       )}
     >

@@ -33,7 +33,7 @@ function MiniCheckbox({ checked, onChange, disabled }: { checked: boolean; onCha
       onClick={() => !disabled && onChange(!checked)}
       className={cn(
         'relative w-5 h-5 rounded-md transition-all duration-200 flex-shrink-0 flex items-center justify-center',
-        checked ? 'bg-primary shadow-amber' : 'bg-warm-700',
+        checked ? 'bg-primary shadow-amber' : 'bg-muted-foreground/30',
         disabled && 'opacity-40 cursor-not-allowed',
       )}
     >

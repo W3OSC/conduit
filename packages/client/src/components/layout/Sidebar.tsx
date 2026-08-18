@@ -97,7 +97,7 @@ function SidebarVersionFooter() {
       <div className="flex items-center gap-1.5">
         <span className={cn(
           'text-[10px] font-mono tabular-nums',
-          hasUpdate ? 'text-primary' : 'text-warm-600',
+          hasUpdate ? 'text-primary' : 'text-muted-foreground/50',
         )}>
           {version || '…'}
         </span>
@@ -128,7 +128,7 @@ function SidebarVersionFooter() {
               {isDocker ? (
                 /* Docker: one-click pull + instructions */
                 <div className="space-y-1">
-                  <p className="text-[9px] text-warm-500 leading-snug">
+                  <p className="text-[9px] text-muted-foreground/70 leading-snug">
                     Pull changes, then rebuild the image to apply.
                   </p>
                   <button
@@ -153,16 +153,16 @@ function SidebarVersionFooter() {
               ) : (
                 /* Local: show the command with a copy button */
                 <div className="space-y-1">
-                  <p className="text-[9px] text-warm-500 leading-snug">
+                  <p className="text-[9px] text-muted-foreground/70 leading-snug">
                     Run then restart the server:
                   </p>
-                  <div className="flex items-center gap-1 rounded-md bg-black/20 border border-white/5 px-1.5 py-1">
-                    <code className="flex-1 text-[9px] text-warm-400 font-mono truncate">
+                  <div className="flex items-center gap-1 rounded-md bg-muted border border-border px-1.5 py-1">
+                    <code className="flex-1 text-[9px] text-muted-foreground font-mono truncate">
                       {localCommand}
                     </code>
                     <button
                       onClick={copyCommand}
-                      className="flex-shrink-0 text-warm-500 hover:text-warm-300 transition-colors"
+                      className="flex-shrink-0 text-muted-foreground/70 hover:text-foreground transition-colors"
                       title="Copy command"
                     >
                       {copied
@@ -240,7 +240,7 @@ export function Sidebar() {
                   sidebarCompact ? 'justify-center px-2 py-2.5 gap-0' : 'gap-3 px-3 py-2.5',
                   isActive
                     ? 'bg-primary/12 text-primary'
-                    : 'text-sidebar-foreground hover:bg-white/5 hover:text-foreground',
+                    : 'text-sidebar-foreground hover:bg-secondary/60 hover:text-foreground',
                   dimmed && !isActive && 'opacity-40 hover:opacity-80',
                 )}>
                   {isActive && (
@@ -254,7 +254,7 @@ export function Sidebar() {
                     className={cn(
                       'flex-shrink-0 transition-colors',
                       sidebarCompact ? 'w-5 h-5' : 'w-[17px] h-[17px]',
-                      isActive ? 'text-primary' : 'text-warm-500 group-hover:text-foreground',
+                      isActive ? 'text-primary' : 'text-muted-foreground/70 group-hover:text-foreground',
                     )}
                     strokeWidth={isActive ? 2.2 : 1.7}
                   />
@@ -285,7 +285,7 @@ export function Sidebar() {
           <div className="flex items-center justify-between px-2">
             <p className="section-label">Connections</p>
             <span className={cn('text-[10px] font-medium',
-              connectedCount === SERVICES.length ? 'text-emerald-500' : connectedCount > 0 ? 'text-primary' : 'text-warm-600',
+              connectedCount === SERVICES.length ? 'text-emerald-500' : connectedCount > 0 ? 'text-primary' : 'text-muted-foreground/50',
             )}>
               {connectedCount}/{SERVICES.length}
             </span>
@@ -300,22 +300,22 @@ export function Sidebar() {
             const cfg = SERVICE_CONFIG[id];
 
             const iconColor =
-              status === 'connected'    ? cfg?.text ?? 'text-warm-400' :
+              status === 'connected'    ? cfg?.text ?? 'text-muted-foreground' :
               status === 'error'        ? 'text-red-400' :
               status === 'connecting'   ? 'text-primary' :
-              'text-warm-600';
+              'text-muted-foreground/50';
 
             const ringColor =
               status === 'connected'    ? 'ring-emerald-500/50' :
               status === 'error'        ? 'ring-red-500/50' :
               status === 'connecting'   ? 'ring-primary/50' :
-              'ring-warm-700/40';
+              'ring-border';
 
             const bgColor =
-              status === 'connected'    ? (cfg?.bg ?? 'bg-warm-800/40') :
+              status === 'connected'    ? (cfg?.bg ?? 'bg-secondary/50') :
               status === 'error'        ? 'bg-red-500/8' :
               status === 'connecting'   ? 'bg-primary/8' :
-              'bg-warm-800/30';
+              'bg-secondary/40';
 
             const statusLabel =
               status === 'connected'    ? 'Connected' :

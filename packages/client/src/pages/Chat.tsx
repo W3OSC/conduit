@@ -527,7 +527,7 @@ function ChatLeaf({ entry, section, selected, onClick }: {
         'w-full flex items-center gap-2 pl-6 pr-3 py-1.5 text-left transition-all group relative',
         selected
           ? 'bg-primary/10 text-foreground'
-          : 'text-muted-foreground hover:text-foreground hover:bg-white/[0.03]',
+          : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50',
       )}
     >
       {selected && <span className="absolute left-0 inset-y-1 w-0.5 bg-primary rounded-r-full" />}
@@ -573,7 +573,7 @@ function SectionNode({ section, source, selectedId, onSelect, search }: {
     <div>
       <button
         onClick={() => setOpen(!open)}
-        className="w-full flex items-center gap-1.5 px-3 py-1.5 text-left group hover:bg-white/[0.025] transition-colors"
+        className="w-full flex items-center gap-1.5 px-3 py-1.5 text-left group hover:bg-secondary/50 transition-colors"
       >
         <span className={cn('transition-transform duration-150 text-muted-foreground/50', open ? 'rotate-90' : '')}>
           <ChevronRight className="w-3 h-3" />
@@ -629,7 +629,7 @@ function ServiceNode({ tree, selectedId, onSelect, search, collapsed }: {
     <div className="border-b border-border/20 last:border-0">
       <button
         onClick={() => setOpen(!open)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-white/[0.02] transition-colors group"
+        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-secondary/40 transition-colors group"
       >
         <ChevronDown className={cn('w-3.5 h-3.5 text-muted-foreground/50 transition-transform duration-150 flex-shrink-0', !open && '-rotate-90')} />
         <span className={cn('text-xs font-bold tracking-tight flex-1', serviceAccent(source))}>

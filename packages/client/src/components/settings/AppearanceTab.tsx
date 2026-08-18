@@ -82,7 +82,7 @@ function PrimaryColorSelector() {
               'ring-offset-2 ring-offset-background',
               primaryColor === id
                 ? 'ring-2 scale-110'
-                : 'hover:scale-105 hover:ring-1 ring-white/30',
+                : 'hover:scale-105 hover:ring-1 ring-foreground/30',
             )}
             style={{
               backgroundColor: hex,

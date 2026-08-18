@@ -268,7 +268,7 @@ function OverviewSection({ service, testSteps, testRunning, runTest, clearTestSt
           )}
 
           {/* Animated progress bar */}
-          <div className="h-0.5 bg-warm-700/60 rounded-full overflow-hidden ml-6">
+          <div className="h-0.5 bg-muted-foreground/25 rounded-full overflow-hidden ml-6">
             <motion.div
               className="h-full bg-primary rounded-full"
               animate={{ x: ['-100%', '100%'] }}
@@ -578,7 +578,7 @@ function GuildRow({ guild, checked, onToggle }: { guild: DiscordGuildInfo; check
           type="button" onClick={onToggle}
           className={cn(
             'w-4 h-4 rounded flex-shrink-0 border-2 flex items-center justify-center transition-all',
-            checked ? 'bg-primary border-primary' : 'border-warm-600',
+            checked ? 'bg-primary border-primary' : 'border-muted-foreground/40',
           )}
         >
           {checked && <Check className="w-2.5 h-2.5 text-primary-foreground" />}
@@ -600,7 +600,7 @@ function GuildRow({ guild, checked, onToggle }: { guild: DiscordGuildInfo; check
             <div className="px-4 pb-2 space-y-0.5 border-t border-border/50">
               {guild.channels.map((ch) => (
                 <div key={ch.id} className="flex items-center gap-1.5 py-1 text-[11px] text-muted-foreground">
-                  <span className="text-warm-600">#</span> {ch.name}
+                  <span className="text-muted-foreground/50">#</span> {ch.name}
                 </div>
               ))}
             </div>
@@ -1074,7 +1074,7 @@ function ContactsSection({ service }: { service: Service }) {
                 onClick={() => setLocal((p) => p ? { ...p, enabled: !p.enabled } : p)}
                 className={cn(
                   'relative flex-shrink-0 w-10 h-6 rounded-full transition-all duration-200',
-                  local.enabled ? 'bg-primary shadow-amber' : 'bg-warm-700',
+                  local.enabled ? 'bg-primary shadow-amber' : 'bg-muted-foreground/30',
                 )}
               >
                 <span className={cn('absolute top-1 w-4 h-4 rounded-full bg-white shadow-warm-sm transition-all duration-200', local.enabled ? 'left-5' : 'left-1')} />
@@ -1094,7 +1094,7 @@ function ContactsSection({ service }: { service: Service }) {
                   onClick={() => setLocal((p) => p ? { ...p, [key]: !p[key] } : p)}
                   className={cn(
                     'relative flex-shrink-0 w-10 h-6 rounded-full transition-all duration-200',
-                    local[key] ? 'bg-primary shadow-amber' : 'bg-warm-700',
+                    local[key] ? 'bg-primary shadow-amber' : 'bg-muted-foreground/30',
                   )}
                 >
                   <span className={cn('absolute top-1 w-4 h-4 rounded-full bg-white shadow-warm-sm transition-all duration-200', local[key] ? 'left-5' : 'left-1')} />

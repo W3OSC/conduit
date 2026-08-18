@@ -179,7 +179,7 @@ function ComposeModal({ mode, original, onClose }: ComposeModalProps) {
 
   return (
     <div
-      className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-end sm:items-center justify-center z-50 p-4"
+      className="fixed inset-0 bg-background/80 backdrop-blur-sm flex items-end sm:items-center justify-center z-50 p-4"
       role="dialog"
       aria-modal="true"
       aria-label={titles[mode]}
@@ -372,7 +372,7 @@ function MessageItem({ message, selected, onClick }: { message: GmailMessage; se
     <button
       onClick={onClick}
       className={cn(
-        'w-full text-left flex items-start gap-3 px-4 py-3 border-b border-border/60 transition-colors hover:bg-white/[0.025]',
+        'w-full text-left flex items-start gap-3 px-4 py-3 border-b border-border/60 transition-colors hover:bg-secondary/50',
         selected && 'bg-primary/8 border-l-2 border-l-primary',
         !selected && 'border-l-2 border-l-transparent',
       )}
@@ -423,7 +423,7 @@ function LabelSidebar({ activeLabel, onSelect }: { activeLabel: string; onSelect
               'w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors mx-2',
               activeLabel === id
                 ? 'bg-primary/12 text-primary'
-                : 'text-muted-foreground hover:text-foreground hover:bg-white/5',
+                : 'text-muted-foreground hover:text-foreground hover:bg-secondary/60',
             )}
             style={{ width: 'calc(100% - 16px)' }}
           >
@@ -445,7 +445,7 @@ function LabelSidebar({ activeLabel, onSelect }: { activeLabel: string; onSelect
                   'w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors mx-2',
                   activeLabel === l.id
                     ? 'bg-primary/12 text-primary'
-                    : 'text-muted-foreground hover:text-foreground hover:bg-white/5',
+                    : 'text-muted-foreground hover:text-foreground hover:bg-secondary/60',
                 )}
                 style={{ width: 'calc(100% - 16px)' }}
               >
