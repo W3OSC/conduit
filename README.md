@@ -27,13 +27,13 @@ A self-hosted personal communications hub. Aggregates Slack, Discord, Telegram, 
 
 ## Features
 
-- **Unified inbox** — everything new across all platforms at a glance
-- **Chat** — message threads with bubble UI, avatars, unread badges, infinite scroll
+- **Unified inbox** — everything new across all platforms at a glance, with a digest-powered "needs attention" strip
+- **Chat** — message threads with bubble UI, avatars, cross-platform unread tracking, infinite scroll
 - **Contacts** — cross-platform contact list with activity scoring and message history
 - **Email** — Gmail inbox with sandboxed HTML rendering and action buttons
-- **Calendar** — weekly view, event detail, RSVP
-- **AI agent API** — full REST + OpenAPI spec, designed for tool use by LLMs; agents authenticate with an API key and a served skill file
-- **Outbox approval** — all AI-generated actions queue for human review before sending
+- **Calendar** — weekly view, event detail, RSVP, Google Meet AI notes
+- **AI agent API** — full REST + OpenAPI spec designed for tool use by LLMs; agents authenticate with an API key, bootstrap from a served skill file, and get a one-call `/api/digest` briefing (needs-reply chats, unread rollups, upcoming events, meeting-note excerpts, pending approvals)
+- **Outbox approval** — all AI-generated actions queue for human review before sending, with keyboard-first triage, idempotent submission, retries, and a provenance view showing exactly which agent asked for what
 - **Audit log** — complete history of all actions by actor and service
 - **Password + TOTP 2FA + passkeys** — optional browser login with WebAuthn, rate limiting, and session management
 - **Multi-account Google** — connect multiple Google accounts simultaneously (Gmail, Calendar, Meet Notes)
@@ -72,11 +72,13 @@ Conduit exposes a complete REST API for AI tool use, accessible at `http://local
 **Setup:**
 1. Go to **Settings → Permissions** and generate an API key
 2. Pass `X-API-Key: <your-key>` on every request
-3. Copy the connection config from **Settings → Install** and paste it into your agent
+3. Install the skill from **Settings → Agents** — it is served live from `GET /api/skill` so it always matches your server version
 
-The full OpenAPI spec is at `/api/openapi.json`. A human-readable version is in [`docs/api.md`](docs/api.md).
+**Efficient access pattern:** agents should start with `GET /api/digest` — one bounded call covering needs-reply chats, unread email, upcoming events, recent meeting notes, and pending approvals — then drill into specific endpoints. The full OpenAPI spec is at `/api/openapi.json`; a human-readable version is in [`docs/api.md`](docs/api.md).
 
-**Outbox flow:** All AI write actions (send message, reply to email, RSVP, tweet, vault write) create an outbox item with `status=pending`. A human approves or rejects it in the UI before anything is sent.
+**Outbox flow:** All AI write actions (send message, reply to email, RSVP, tweet, file write) create an outbox item with `status=pending`. A human approves or rejects it in the UI before anything is sent. Submissions support `Idempotency-Key` headers, failed dispatches can be retried, and every item records which API key produced it.
+
+**Permissions:** per-key read/write toggles and fine-grained allowlists (Slack channels, Gmail labels, calendar IDs, vault/share paths, Drive folders) are enforced server-side on every read and write route.
 
 ---
 
