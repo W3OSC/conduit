@@ -426,15 +426,42 @@ function OutboxCard({ item, nested = false }: OutboxCardProps) {
     return JSON.stringify(merged);
   }
 
+  // Optimistically flip the item's status in every cached ['outbox'…] query so
+  // the card moves instantly; the settled invalidation reconciles with the
+  // server (which may report 'sent' or 'failed' after dispatch).
+  const optimisticStatus = (status: OutboxItem['status']) => {
+    qc.cancelQueries({ queryKey: ['outbox'] });
+    const previous = qc.getQueriesData<{ items: OutboxItem[]; pendingCount: number }>({ queryKey: ['outbox'] });
+    qc.setQueriesData<{ items: OutboxItem[]; pendingCount: number } | undefined>(
+      { queryKey: ['outbox'] },
+      (old) => old && {
+        ...old,
+        items: (old.items ?? []).map((i) => (i.id === item.id ? { ...i, status } : i)),
+        pendingCount: item.status === 'pending' && status !== 'pending'
+          ? Math.max(0, (old.pendingCount ?? 0) - 1)
+          : old.pendingCount,
+      },
+    );
+    return { previous };
+  };
+  const rollback = (ctx?: { previous: Array<[readonly unknown[], unknown]> }) => {
+    for (const [key, data] of ctx?.previous ?? []) qc.setQueryData(key, data);
+  };
+
   const approve = useMutation({
     mutationFn: () => api.updateOutboxItem(item.id, 'approve'),
-    onSuccess: () => { toast({ title: 'Approved & sent', variant: 'success' }); qc.invalidateQueries({ queryKey: ['outbox'] }); },
-    onError: (e: Error) => toast({ title: 'Failed', description: e.message, variant: 'destructive' }),
+    onMutate: () => optimisticStatus('approved'),
+    onSuccess: () => toast({ title: 'Approved & sent', variant: 'success' }),
+    onError: (e: Error, _v, ctx) => { rollback(ctx); toast({ title: 'Failed', description: e.message, variant: 'destructive' }); },
+    onSettled: () => qc.invalidateQueries({ queryKey: ['outbox'] }),
   });
 
   const reject = useMutation({
     mutationFn: () => api.updateOutboxItem(item.id, 'reject'),
-    onSuccess: () => { toast({ title: 'Rejected' }); qc.invalidateQueries({ queryKey: ['outbox'] }); },
+    onMutate: () => optimisticStatus('rejected'),
+    onSuccess: () => toast({ title: 'Rejected' }),
+    onError: (e: Error, _v, ctx) => { rollback(ctx); toast({ title: 'Reject failed', description: e.message, variant: 'destructive' }); },
+    onSettled: () => qc.invalidateQueries({ queryKey: ['outbox'] }),
   });
 
   const save = useMutation({
@@ -445,11 +472,20 @@ function OutboxCard({ item, nested = false }: OutboxCardProps) {
       setEditing(false);
       setEditDraft({});
     },
+    onError: (e: Error) => toast({ title: 'Save failed', description: e.message, variant: 'destructive' }),
   });
 
   const del = useMutation({
     mutationFn: () => api.deleteOutboxItem(item.id),
     onSuccess: () => { toast({ title: 'Deleted' }); qc.invalidateQueries({ queryKey: ['outbox'] }); },
+    onError: (e: Error) => toast({ title: 'Delete failed', description: e.message, variant: 'destructive' }),
+  });
+
+  const retry = useMutation({
+    mutationFn: () => api.retryOutboxItem(item.id),
+    onSuccess: () => toast({ title: 'Retried & sent', variant: 'success' }),
+    onError: (e: Error) => toast({ title: 'Retry failed', description: e.message, variant: 'destructive' }),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['outbox'] }),
   });
 
   const isPending = item.status === 'pending';
@@ -606,12 +642,23 @@ function OutboxCard({ item, nested = false }: OutboxCardProps) {
                   </button>
                 </div>
               ) : (item.status === 'rejected' || item.status === 'failed') ? (
-                <button
-                  onClick={(e) => { e.stopPropagation(); del.mutate(); }}
-                  className="btn-ghost text-xs text-muted-foreground"
-                >
-                  <Trash2 className="w-3.5 h-3.5" /> Delete
-                </button>
+                <div className="flex items-center gap-2">
+                  {item.status === 'failed' && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); retry.mutate(); }}
+                      disabled={retry.isPending}
+                      className="btn-secondary text-xs"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" /> {retry.isPending ? 'Retrying…' : 'Retry'}
+                    </button>
+                  )}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); del.mutate(); }}
+                    className="btn-ghost text-xs text-muted-foreground"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" /> Delete
+                  </button>
+                </div>
               ) : null}
             </div>
           </motion.div>
@@ -848,7 +895,7 @@ export default function Outbox() {
       {/* Filters */}
       <div className="flex items-center gap-3 flex-wrap">
         <FilterBar
-          options={['all', 'pending', 'approved', 'sent', 'rejected'] as FilterStatus[]}
+          options={['all', 'pending', 'approved', 'sent', 'rejected', 'failed'] as FilterStatus[]}
           value={statusFilter}
           onChange={setStatusFilter}
         />
