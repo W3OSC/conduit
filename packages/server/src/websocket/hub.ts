@@ -15,6 +15,7 @@ export interface WsEvent {
     | 'calendar:updated'  // calendar event created/updated
     | 'email:unread'      // Gmail unread count update
     | 'sync:progress'     // sync job progress
+    | 'chat:read'         // chat read-cursor advanced (chatId '*' = whole source)
     | 'outbox:new'        // new outbox item
     | 'outbox:updated'    // outbox item status change
     | 'connection:status' // service connection state change

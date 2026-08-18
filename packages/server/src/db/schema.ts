@@ -104,6 +104,26 @@ export const syncState = sqliteTable('sync_state', {
   uniqSourceChatAccount: unique().on(t.source, t.chatId, t.accountId),
 }));
 
+// Per-chat read cursors (source + chat_id → last_read_at). Created by
+// migration 0013 but never wired up until the unread model landed.
+export const chatReadState = sqliteTable('chat_read_state', {
+  source: text('source').notNull(),
+  chatId: text('chat_id').notNull(),
+  lastReadAt: text('last_read_at').notNull(),
+  updatedAt: text('updated_at').default(sql`(datetime('now'))`),
+}, (t) => ({
+  uniqSourceChat: unique().on(t.source, t.chatId),
+}));
+
+export const chatMuteState = sqliteTable('chat_mute_state', {
+  source: text('source').notNull(),
+  chatId: text('chat_id').notNull(),
+  isMuted: integer('is_muted', { mode: 'boolean' }).notNull().default(false),
+  updatedAt: text('updated_at').default(sql`(datetime('now'))`),
+}, (t) => ({
+  uniqSourceChat: unique().on(t.source, t.chatId),
+}));
+
 export const errorLog = sqliteTable('error_log', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   source: text('source').notNull(),
@@ -137,6 +157,9 @@ export const outbox = sqliteTable('outbox', {
    * Shape: Array<{ editIndex: number; searchedFor: string; matchedTo: string; similarity: number }>
    */
   fuzzyMatchInfo: text('fuzzy_match_info'),
+  // Client-supplied dedupe token (Idempotency-Key header). A retried POST
+  // after a timeout returns the existing item instead of double-queueing.
+  idempotencyKey: text('idempotency_key'),
   createdAt: text('created_at').default(sql`(datetime('now'))`),
   approvedAt: text('approved_at'),
   sentAt: text('sent_at'),

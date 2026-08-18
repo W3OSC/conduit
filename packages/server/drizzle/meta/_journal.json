@@ -183,6 +183,13 @@
       "when": 1777834263369,
       "tag": "0025_perf_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1777834263370,
+      "tag": "0026_outbox_idempotency",
+      "breakpoints": true
     }
   ]
 }

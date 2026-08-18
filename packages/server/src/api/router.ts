@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getConnectionManager, type ServiceName } from '../connections/manager.js';
 import { optionalAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
 import messagesRouter from './messages.js';
+import digestRouter from './digest.js';
 import outboxRouter from './outbox.js';
 import permissionsRouter from './permissions.js';
 import auditRouter from './audit.js';
@@ -143,6 +144,7 @@ router.post('/sync/:service/cancel', optionalAuth, (req, res) => {
 });
 
 router.use('/', messagesRouter);
+router.use('/digest', digestRouter);
 router.use('/outbox', outboxRouter);
 router.use('/permissions', permissionsRouter);
 router.use('/audit-log', auditRouter);
