@@ -658,6 +658,7 @@ export interface ChatEntry {
   source: string;
   messageCount: number;
   lastTs?: string;
+  unread?: number;                          // messages newer than the read cursor
   avatarUrl?: string | null;
   guildId?: string | null;                  // Discord server channels only
   lastMessageId?: string | number | null;   // Telegram: for message-level deep links

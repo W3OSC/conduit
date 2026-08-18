@@ -540,12 +540,20 @@ function ChatLeaf({ entry, section, selected, onClick }: {
       {selected && <span className="absolute left-0 inset-y-1 w-0.5 bg-primary rounded-r-full" />}
 
       <EntryAvatar type={section.type} name={entry.name} avatarUrl={entry.avatarUrl} />
-      <span className={cn('flex-1 text-xs truncate', selected && 'font-semibold text-foreground')}>
+      <span className={cn(
+        'flex-1 text-xs truncate',
+        selected && 'font-semibold text-foreground',
+        !selected && (entry.unread ?? 0) > 0 && 'font-semibold text-foreground',
+      )}>
         {entry.name}
       </span>
-      {entry.messageCount > 0 && !selected && (
+      {(entry.unread ?? 0) > 0 && !selected ? (
+        <span className="flex-shrink-0 min-w-[18px] h-[18px] px-1 rounded-full bg-primary text-primary-foreground text-[10px] font-bold flex items-center justify-center">
+          {(entry.unread ?? 0) > 99 ? '99+' : entry.unread}
+        </span>
+      ) : entry.messageCount > 0 && !selected ? (
         <span className="text-[10px] text-muted-foreground/35 flex-shrink-0">{entry.messageCount.toLocaleString()}</span>
-      )}
+      ) : null}
     </button>
   );
 }
@@ -813,6 +821,18 @@ export default function Chat() {
 
   const msgsLoading = msgsPending && !!selected;
 
+  // Keep the read cursor advancing while the user is actively viewing the
+  // chat (focused + pinned to bottom), throttled to one write per 10s.
+  const lastMarkRead = useRef(0);
+  useEffect(() => {
+    if (!selected || !atBottom || messages.length === 0) return;
+    if (!document.hasFocus()) return;
+    const now = Date.now();
+    if (now - lastMarkRead.current < 10_000) return;
+    lastMarkRead.current = now;
+    api.markChatRead(selected.source, selected.id).catch(() => { /* non-fatal */ });
+  }, [messages.length, selected, atBottom]);
+
   // ── Scroll-to-message ─────────────────────────────────────────────────────────
   // Executes once messages are rendered — uses double-rAF to wait for Virtuoso's
   // layout pass before calling scrollToIndex.
@@ -935,7 +955,14 @@ export default function Chat() {
                 key={tree.source}
                 tree={tree}
                 selectedId={selected?.id ?? null}
-                onSelect={(entry) => setSelected(entry)}
+                onSelect={(entry) => {
+                  setSelected(entry);
+                  // Opening a chat marks it read — fire-and-forget; the
+                  // chat:read broadcast refreshes unread badges everywhere.
+                  if ((entry.unread ?? 0) > 0) {
+                    api.markChatRead(entry.source, entry.id).catch(() => { /* non-fatal */ });
+                  }
+                }}
                 search={search}
                 collapsed={filter !== 'all' && filter !== tree.source}
               />
