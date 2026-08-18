@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import {
-  useConnectionStore, useOutboxStore, useSyncStore, useMessageStreamStore,
+  useConnectionStore, useSyncStore, useMessageStreamStore,
   useNotificationStore, useUpdateStore,
 } from '../store';
 import { api } from '../lib/api';
@@ -16,6 +17,7 @@ interface WsEvent {
 let globalWs: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let listeners = new Set<(event: WsEvent) => void>();
+let hadConnection = false;
 
 // ── Exponential backoff ───────────────────────────────────────────────────────
 const BACKOFF_BASE_MS  = 1_000;
@@ -40,6 +42,23 @@ async function syncConnectionStatusFromServer(): Promise<void> {
   } catch { /* ignore — retries on next reconnect */ }
 }
 
+// ── Throttled query invalidation ──────────────────────────────────────────────
+// Realtime events mark query data stale so TanStack Query refetches whatever is
+// currently on screen — but a busy channel or a running sync can fire dozens of
+// events per second, so invalidations are coalesced per key prefix.
+
+const INVALIDATE_THROTTLE_MS = 2_000;
+const pendingInvalidations = new Map<string, ReturnType<typeof setTimeout>>();
+
+function throttledInvalidate(queryClient: QueryClient, keyPrefix: readonly string[]): void {
+  const mapKey = keyPrefix.join('/');
+  if (pendingInvalidations.has(mapKey)) return; // already scheduled
+  pendingInvalidations.set(mapKey, setTimeout(() => {
+    pendingInvalidations.delete(mapKey);
+    queryClient.invalidateQueries({ queryKey: keyPrefix as string[] });
+  }, INVALIDATE_THROTTLE_MS));
+}
+
 function connectGlobal() {
   if (globalWs && globalWs.readyState === WebSocket.OPEN) return;
   if (globalWs && globalWs.readyState === WebSocket.CONNECTING) return;
@@ -57,12 +76,20 @@ function connectGlobal() {
     // Seed connection status — server fires connection:status events at startup,
     // which the browser would miss if it connects after those events fired.
     syncConnectionStatusFromServer();
+
+    // Reconnect after a gap: anything may have changed while events were missed.
+    if (hadConnection) {
+      for (const listener of listeners) listener({ type: 'ws:reconnected', data: null });
+    }
+    hadConnection = true;
   };
 
   globalWs.onmessage = (event) => {
     try {
       const msg = JSON.parse(event.data as string) as WsEvent;
-      for (const listener of listeners) listener(msg);
+      for (const listener of listeners) {
+        try { listener(msg); } catch { /* one bad listener must not block the rest */ }
+      }
     } catch { /* ignore */ }
   };
 
@@ -76,20 +103,32 @@ function connectGlobal() {
 }
 
 export function useWebSocket() {
-  const { setStatus, setAllStatuses } = useConnectionStore();
-  const { setPendingCount, addItem, updateItem } = useOutboxStore();
-  const { setProgress } = useSyncStore();
-  const { addMessage } = useMessageStreamStore();
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     connectGlobal();
 
+    // NOTE: all store writes go through getState() — this hook mounts at the
+    // app root, and store *subscriptions* here would re-render the entire tree
+    // on every event (the old behaviour: a full-tree render storm during sync).
     const handler = (event: WsEvent) => {
       switch (event.type) {
 
+        case 'ws:reconnected': {
+          // Synthetic local event fired after a dropped socket reconnects —
+          // refresh the caches that realtime events normally keep current.
+          queryClient.invalidateQueries({ queryKey: ['chats'] });
+          queryClient.invalidateQueries({ queryKey: ['outbox'] });
+          queryClient.invalidateQueries({ queryKey: ['inbox-gmail'] });
+          queryClient.invalidateQueries({ queryKey: ['gmail-messages'] });
+          queryClient.invalidateQueries({ queryKey: ['calendar-events'] });
+          break;
+        }
+
         case 'connection:status': {
           const d = event.data as { service: string } & ConnectionStatus;
-          setStatus(d.service, d);
+          useConnectionStore.getState().setStatus(d.service, d);
+          throttledInvalidate(queryClient, ['connections']);
           break;
         }
 
@@ -98,7 +137,7 @@ export function useWebSocket() {
             service: string; status: string;
             messagesSaved?: number; chatsVisited?: number; error?: string; type?: string;
           };
-          setProgress(d.service, {
+          useSyncStore.getState().setProgress(d.service, {
             service: d.service,
             status: d.status as 'running' | 'success' | 'error' | 'idle',
             type: d.type,
@@ -106,32 +145,36 @@ export function useWebSocket() {
             chatsVisited: d.chatsVisited,
             error: d.error,
           });
+          // A finished sync means new data — refresh the trees that show it.
+          if (d.status === 'success') {
+            throttledInvalidate(queryClient, ['chats']);
+            throttledInvalidate(queryClient, ['status']);
+          }
           break;
         }
 
-        case 'outbox:new': {
-          const d = event.data as Record<string, unknown>;
-          if (d.id) addItem(d as unknown as import('../lib/api').OutboxItem);
-          break;
-        }
-
+        case 'outbox:new':
         case 'outbox:updated': {
-          const d = event.data as { id: number; status: string; recipientName?: string };
-          updateItem(d.id, { status: d.status as import('../lib/api').OutboxItem['status'] });
-          if (d.status === 'sent') {
-            useNotificationStore.getState().add({
-              type: 'outbox',
-              title: 'Message sent',
-              body: d.recipientName ? `Your message to ${d.recipientName} was sent.` : 'Your message was sent.',
-              timestamp: new Date().toISOString(),
-            });
+          throttledInvalidate(queryClient, ['outbox']);
+          if (event.type === 'outbox:updated') {
+            const d = event.data as { id: number; status: string; recipientName?: string };
+            if (d.status === 'sent') {
+              useNotificationStore.getState().add({
+                type: 'outbox',
+                title: 'Message sent',
+                body: d.recipientName ? `Your message to ${d.recipientName} was sent.` : 'Your message was sent.',
+                timestamp: new Date().toISOString(),
+              });
+            }
           }
           break;
         }
 
         case 'message:new': {
           const msg = event.data as Message;
-          addMessage(msg);
+          useMessageStreamStore.getState().addMessage(msg);
+          // Chat tree ordering + unread badges change with every message.
+          throttledInvalidate(queryClient, ['chats']);
 
           const src = msg.source;
           const msgData = msg as unknown as Record<string, unknown>;
@@ -151,11 +194,22 @@ export function useWebSocket() {
           break;
         }
 
+        case 'chat:read': {
+          // Read cursor moved (this tab or another) — unread badges are stale.
+          throttledInvalidate(queryClient, ['chats']);
+          break;
+        }
+
         case 'email:new': {
           const d = event.data as {
             gmailId?: string; subject?: string; fromName?: string;
             fromAddress?: string; snippet?: string; isUnread?: boolean;
           };
+          // The notification used to fire while the list stayed stale for up
+          // to a minute — now the visible email queries refresh too.
+          throttledInvalidate(queryClient, ['inbox-gmail']);
+          throttledInvalidate(queryClient, ['gmail-messages']);
+          throttledInvalidate(queryClient, ['gmail-status']);
           if (d.isUnread !== false) {
             useNotificationStore.getState().add({
               type: 'email',
@@ -168,8 +222,17 @@ export function useWebSocket() {
           break;
         }
 
+        case 'email:unread': {
+          // Unread counts changed (sync or external read) — refresh badges.
+          throttledInvalidate(queryClient, ['inbox-gmail']);
+          throttledInvalidate(queryClient, ['gmail-status']);
+          break;
+        }
+
         case 'calendar:updated': {
           const d = event.data as { eventId?: string; title?: string };
+          throttledInvalidate(queryClient, ['calendar-events']);
+          throttledInvalidate(queryClient, ['inbox-calendar']);
           useNotificationStore.getState().add({
             type: 'calendar',
             title: 'Calendar update',
@@ -190,11 +253,5 @@ export function useWebSocket() {
 
     listeners.add(handler);
     return () => { listeners.delete(handler); };
-  }, [setStatus, setAllStatuses, setPendingCount, addItem, updateItem, setProgress, addMessage]);
-}
-
-export function sendWsMessage(data: unknown) {
-  if (globalWs?.readyState === WebSocket.OPEN) {
-    globalWs.send(JSON.stringify(data));
-  }
+  }, [queryClient]);
 }

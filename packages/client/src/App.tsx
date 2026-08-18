@@ -94,7 +94,13 @@ function PageLoader() {
 
 const queryClient = new QueryClient({
   defaultOptions: {
-    queries: { staleTime: 30000, retry: 2 },
+    queries: {
+      staleTime: 30000,
+      retry: 2,
+      // Keep showing the previous page while a filter/search change refetches —
+      // no more blank-to-skeleton flicker on every keystroke or tab switch.
+      placeholderData: (previousData: unknown) => previousData,
+    },
   },
 });
 

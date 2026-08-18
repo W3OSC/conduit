@@ -178,12 +178,20 @@ export const api = {
   },
 
   // Outbox
-  outbox: (status?: string, source?: string) => {
+  outbox: (status?: string, source?: string, opts?: { limit?: number; offset?: number }) => {
     const q = new URLSearchParams();
     if (status) q.set('status', status);
     if (source) q.set('source', source);
-    return request<{ items: OutboxItem[]; pendingCount: number }>(`/outbox?${q}`);
+    if (opts?.limit !== undefined) q.set('limit', String(opts.limit));
+    if (opts?.offset !== undefined) q.set('offset', String(opts.offset));
+    return request<{ items: OutboxItem[]; total: number; pendingCount: number; limit: number; offset: number }>(`/outbox?${q}`);
   },
+  retryOutboxItem: (id: number) =>
+    request<{ success: boolean; status: string }>(`/outbox/${id}/retry`, { method: 'POST' }),
+  markChatRead: (source: string, chatId: string) =>
+    request<{ success: boolean }>(`/chats/${source}/${encodeURIComponent(chatId)}/read`, { method: 'POST', body: JSON.stringify({}) }),
+  markAllChatsRead: (source?: string) =>
+    request<{ success: boolean; marked: number }>('/chats/read-all', { method: 'POST', body: JSON.stringify(source ? { source } : {}) }),
   createOutboxItem: (body: CreateOutboxItem) =>
     request<OutboxItem>('/outbox', { method: 'POST', body: JSON.stringify(body) }),
   createBatchOutbox: (body: BatchOutboxItem) =>

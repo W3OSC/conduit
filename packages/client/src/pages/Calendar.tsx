@@ -16,6 +16,7 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { ScheduleXCalendar, useNextCalendarApp } from '@schedule-x/react';
 import { createViewMonthGrid, createViewWeek, createViewDay, createViewMonthAgenda } from '@schedule-x/calendar';
 import '@schedule-x/theme-default/dist/index.css';
@@ -180,9 +181,10 @@ function MeetingNotesSidebar({
   const [search, setSearch] = useState('');
   const [selectedNote, setSelectedNote] = useState<MeetNote | null>(null);
 
+  const debouncedSearch = useDebouncedValue(search);
   const { data, isLoading } = useQuery({
-    queryKey: ['meet-notes', search],
-    queryFn: () => api.meetNotes({ limit: 30, q: search || undefined }),
+    queryKey: ['meet-notes', debouncedSearch],
+    queryFn: () => api.meetNotes({ limit: 30, q: debouncedSearch || undefined }),
     staleTime: 60_000,
     refetchInterval: 5 * 60_000,
   });

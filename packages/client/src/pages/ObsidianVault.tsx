@@ -16,6 +16,7 @@ import {
   useState, useCallback, useRef, useEffect, useMemo, useId,
 } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import {
   ChevronRight, ChevronDown, FileText, Folder, FolderOpen, Search,
   RefreshCw, Loader2, AlertCircle, Edit2, X, Send, BookOpen,
@@ -1207,6 +1208,7 @@ export default function ObsidianVault() {
     setOpenSectionId((prev) => (prev === id ? null : id));
   }, []);
   const [notionFilter, setNotionFilter] = useState('');
+  const debouncedNotionFilter = useDebouncedValue(notionFilter);
   const [notionChildrenCache, setNotionChildrenCache] = useState<Map<string, NotionSearchResult[]>>(new Map());
 
   const notionStatus = useConnectionStore((s) => s.statuses['notion']);
@@ -1243,8 +1245,8 @@ export default function ObsidianVault() {
     error: notionError,
     refetch: refetchNotion,
   } = useQuery({
-    queryKey: ['notion-search', notionFilter],
-    queryFn: () => api.notionSearch({ query: notionFilter || undefined, page_size: 50 }),
+    queryKey: ['notion-search', debouncedNotionFilter],
+    queryFn: () => api.notionSearch({ query: debouncedNotionFilter || undefined, page_size: 50 }),
     staleTime: 60000,
     enabled: notionConnected,
   });

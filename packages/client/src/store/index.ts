@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { ConnectionStatus, OutboxItem, Message, ActiveSyncRun, UpdateStatus } from '../lib/api';
+import type { ConnectionStatus, Message, ActiveSyncRun, UpdateStatus } from '../lib/api';
 
 export { useThemeStore } from './theme';
 export type { ColorMode, PrimaryColor, FontSize, BorderRadius, ThemeSettings } from './theme';
@@ -24,34 +24,9 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
   setAllStatuses: (statuses) => set({ statuses }),
 }));
 
-// ── Outbox Store ──────────────────────────────────────────────────────────────
-
-interface OutboxStore {
-  pendingCount: number;
-  recentItems: OutboxItem[];
-  setPendingCount: (n: number) => void;
-  addItem: (item: OutboxItem) => void;
-  updateItem: (id: number, updates: Partial<OutboxItem>) => void;
-}
-
-export const useOutboxStore = create<OutboxStore>((set) => ({
-  pendingCount: 0,
-  recentItems: [],
-  setPendingCount: (pendingCount) => set({ pendingCount }),
-  addItem: (item) =>
-    set((s) => ({
-      recentItems: [item, ...s.recentItems].slice(0, 20),
-      pendingCount: item.status === 'pending' ? s.pendingCount + 1 : s.pendingCount,
-    })),
-  updateItem: (id, updates) =>
-    set((s) => ({
-      recentItems: s.recentItems.map((i) => (i.id === id ? { ...i, ...updates } : i)),
-      pendingCount:
-        updates.status && updates.status !== 'pending'
-          ? Math.max(0, s.pendingCount - 1)
-          : s.pendingCount,
-    })),
-}));
+// The old OutboxStore (WS-delta pendingCount + recentItems nobody read) is
+// gone: the sidebar badge now reads the server-authoritative pendingCount via
+// the ['outbox','badge'] query, kept fresh by WS-driven invalidation.
 
 // ── Sync Store ─────────────────────────────────────────────────────────────────
 

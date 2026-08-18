@@ -5,6 +5,7 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Search, RefreshCw, Archive, Trash2, Star, StarOff, Mail, MailOpen,
@@ -465,14 +466,16 @@ export default function Email() {
 
   const { data: statusData, isLoading: statusLoading } = useQuery({ queryKey: ['gmail-status'], queryFn: api.gmailStatus, staleTime: 30000, refetchInterval: 30000 });
 
+  const debouncedSearch = useDebouncedValue(search);
   const { data, isLoading } = useQuery({
-    queryKey: ['gmail-messages', activeLabel, search],
+    queryKey: ['gmail-messages', activeLabel, debouncedSearch],
     queryFn: () => api.gmailMessages({
       label: activeLabel,
-      q: search || undefined,
+      q: debouncedSearch || undefined,
       limit: 100,
     }),
-    refetchInterval: 60000,
+    // WS email events invalidate this — the interval is only a fallback.
+    refetchInterval: 5 * 60_000,
   });
 
   const messages = data?.messages || [];

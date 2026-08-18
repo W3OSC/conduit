@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { cn, copyToClipboard } from '@/lib/utils';
-import { useOutboxStore, useConnectionStore, useUpdateStore, useSyncStore, useThemeStore } from '@/store';
+import { useConnectionStore, useUpdateStore, useSyncStore, useThemeStore } from '@/store';
 import { api } from '@/lib/api';
 import { toast } from '@/store';
 import { AppIcon } from '@/components/shared/AppIcon';
@@ -185,7 +185,15 @@ function SidebarVersionFooter() {
 
 export function Sidebar() {
   const location = useLocation();
-  const pendingCount = useOutboxStore((s) => s.pendingCount);
+  // Server-authoritative badge: WS outbox events invalidate ['outbox'], the
+  // interval is only a slow fallback. (The old Zustand counter started at 0 on
+  // every reload and drifted on missed events.)
+  const { data: outboxBadge } = useQuery({
+    queryKey: ['outbox', 'badge'],
+    queryFn: () => api.outbox(undefined, undefined, { limit: 1 }),
+    refetchInterval: 120_000,
+  });
+  const pendingCount = outboxBadge?.pendingCount ?? 0;
   const statuses = useConnectionStore((s) => s.statuses);
   const syncProgress = useSyncStore((s) => s.progress);
   const sidebarCompact = useThemeStore((s) => s.sidebarCompact);

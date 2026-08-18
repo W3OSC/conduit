@@ -824,7 +824,7 @@ export default function Outbox() {
       statusFilter === 'all' ? undefined : statusFilter,
       sourceFilter === 'all' ? undefined : sourceFilter,
     ),
-    refetchInterval: 5000,
+    refetchInterval: 60_000, // WS outbox events invalidate this — interval is only a fallback
   });
 
   const items = data?.items || [];

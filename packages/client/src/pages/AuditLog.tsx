@@ -110,7 +110,7 @@ export default function AuditLog() {
   const { data, isLoading } = useQuery({
     queryKey: ['audit-log', actionFilter, serviceFilter, actorFilter],
     queryFn: () => api.auditLog({ action: actionFilter || undefined, service: serviceFilter || undefined, actor: actorFilter || undefined, limit: 200 }),
-    refetchInterval: 15000,
+    refetchInterval: 60_000,
   });
 
   const items = data?.items || [];
