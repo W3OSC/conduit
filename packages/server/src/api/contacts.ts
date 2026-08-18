@@ -84,15 +84,16 @@ interface ActivityScore {
 function computeActivityScores(db: ReturnType<typeof getDb>): Map<string, ActivityScore> {
   const scores = new Map<string, ActivityScore>();
 
-  const merge = (source: string, platformId: string, delta: number, ts: string | null) => {
+  // Merges an aggregated GROUP BY row: `count` messages at `weight` points each.
+  const merge = (source: string, platformId: string, weight: number, count: number, ts: string | null) => {
     const k = `${source}:${platformId}`;
     const existing = scores.get(k);
     if (existing) {
-      existing.score += delta;
-      existing.messageCount++;
+      existing.score += weight * count;
+      existing.messageCount += count;
       if (ts && (!existing.lastMsgAt || ts > existing.lastMsgAt)) existing.lastMsgAt = ts;
     } else {
-      scores.set(k, { platformId, source, score: delta, messageCount: 1, lastMsgAt: ts });
+      scores.set(k, { platformId, source, score: weight * count, messageCount: count, lastMsgAt: ts });
     }
   };
 
@@ -124,7 +125,7 @@ function computeActivityScores(db: ReturnType<typeof getDb>): Map<string, Activi
 
     for (const row of dcDmGroups) {
       if (!row.authorId) continue;
-      for (let i = 0; i < row.count; i++) merge('discord', row.authorId, 3, row.lastTs);
+      merge('discord', row.authorId, 3, row.count, row.lastTs);
     }
 
     // Shared-channel messages — weight 1 each, only in channels where we also posted
@@ -144,7 +145,7 @@ function computeActivityScores(db: ReturnType<typeof getDb>): Map<string, Activi
 
       for (const row of dcChGroups) {
         if (!row.authorId) continue;
-        for (let i = 0; i < row.count; i++) merge('discord', row.authorId, 1, row.lastTs);
+        merge('discord', row.authorId, 1, row.count, row.lastTs);
       }
     }
   }
@@ -179,7 +180,7 @@ function computeActivityScores(db: ReturnType<typeof getDb>): Map<string, Activi
 
     for (const row of slDmGroups) {
       if (!row.userId) continue;
-      for (let i = 0; i < row.count; i++) merge('slack', row.userId, 3, row.lastTs);
+      merge('slack', row.userId, 3, row.count, row.lastTs);
     }
 
     if (slMyChannels.size > 0) {
@@ -198,7 +199,7 @@ function computeActivityScores(db: ReturnType<typeof getDb>): Map<string, Activi
 
       for (const row of slChGroups) {
         if (!row.userId) continue;
-        for (let i = 0; i < row.count; i++) merge('slack', row.userId, 1, row.lastTs);
+        merge('slack', row.userId, 1, row.count, row.lastTs);
       }
     }
   }
@@ -234,7 +235,7 @@ function computeActivityScores(db: ReturnType<typeof getDb>): Map<string, Activi
 
     for (const row of tgDmGroups) {
       if (!row.senderId) continue;
-      for (let i = 0; i < row.count; i++) merge('telegram', String(row.senderId), 3, row.lastTs);
+      merge('telegram', String(row.senderId), 3, row.count, row.lastTs);
     }
 
     if (tgMyChats.size > 0) {
@@ -253,7 +254,7 @@ function computeActivityScores(db: ReturnType<typeof getDb>): Map<string, Activi
 
       for (const row of tgChGroups) {
         if (!row.senderId) continue;
-        for (let i = 0; i < row.count; i++) merge('telegram', String(row.senderId), 1, row.lastTs);
+        merge('telegram', String(row.senderId), 1, row.count, row.lastTs);
       }
     }
   }
@@ -277,7 +278,7 @@ function computeActivityScores(db: ReturnType<typeof getDb>): Map<string, Activi
 
     for (const row of twGroups) {
       if (!row.senderId) continue;
-      for (let i = 0; i < row.count; i++) merge('twitter', row.senderId, 3, row.lastTs);
+      merge('twitter', row.senderId, 3, row.count, row.lastTs);
     }
   }
 
@@ -299,7 +300,23 @@ router.get('/', optionalAuth, trackAiCall, (req, res) => {
   // Compute activity scores once for all contacts
   const activityScores = computeActivityScores(db);
 
-  let rows = db.select().from(contacts).all();
+  // Push source + text search into SQL; criteria filter, score sort and
+  // pagination stay in JS (they depend on computed activity scores).
+  const sqlConditions = [];
+  if (source) sqlConditions.push(eq(contacts.source, source));
+  if (q) {
+    const term = `%${q}%`;
+    sqlConditions.push(or(
+      like(contacts.displayName, term),
+      like(contacts.username, term),
+      like(contacts.firstName, term),
+      like(contacts.lastName, term),
+    ));
+  }
+
+  let rows = db.select().from(contacts)
+    .where(sqlConditions.length ? and(...sqlConditions) : undefined)
+    .all();
 
   // Read-toggle enforcement for API keys — contacts are derived from message
   // data, so a disabled source must not leak through the contact list.
@@ -313,18 +330,6 @@ router.get('/', optionalAuth, trackAiCall, (req, res) => {
       if (!enabledCache.has(c.source)) enabledCache.set(c.source, isReadEnabled(c.source, apiKeyId));
       return enabledCache.get(c.source);
     });
-  }
-
-  // Filter by source
-  if (source) rows = rows.filter((c) => c.source === source);
-
-  // Text search — display name, username, first name, last name
-  if (q) {
-    const term = q.toLowerCase();
-    rows = rows.filter((c) =>
-      [c.displayName, c.username, c.firstName, c.lastName]
-        .some((f) => f?.toLowerCase().includes(term)),
-    );
   }
 
   // Filter by criteria flag

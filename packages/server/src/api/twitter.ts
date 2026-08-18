@@ -11,7 +11,7 @@ import { Router } from 'express';
 import { getDb } from '../db/client.js';
 import { twitterDms, outbox, permissions, settings, accounts, contacts, apiKeyPermissions } from '../db/schema.js';
 import type { TwitterFineGrained } from '../db/schema.js';
-import { desc, eq, sql, and } from 'drizzle-orm';
+import { desc, eq, sql, and, inArray } from 'drizzle-orm';
 import { optionalAuth, uiOnlyAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
 import { getConnectionManager } from '../connections/manager.js';
 import { broadcast } from '../websocket/hub.js';
@@ -271,80 +271,118 @@ router.get('/dms', optionalAuth, requireRead('twitter'), (req, res) => {
     .from(accounts).where(eq(accounts.source, 'twitter')).all();
   const myUserIds = new Set<string>(myAccountRows.map((a) => a.accountId));
   if (myUserIdFromCreds) myUserIds.add(myUserIdFromCreds);
-  const all = db.select().from(twitterDms).orderBy(desc(twitterDms.createdAt)).all();
 
-  // Group by conversationId
-  type ConvEntry = {
-    conversationId: string;
-    participants: Set<string>;
-    lastMessage: typeof all[0];
-    messageCount: number;
-    // Best known handle/name for the other participant
-    otherHandle: string;
-    otherName: string;
+  // Latest message + total count per conversation via window functions —
+  // avoids pulling every DM row into JS.
+  type LatestRow = {
+    conversation_id: string;
+    message_id: string;
+    sender_id: string;
+    sender_handle: string | null;
+    sender_name: string | null;
+    recipient_id: string | null;
+    text: string | null;
+    created_at: string;
+    msg_count: number;
   };
-  const convMap = new Map<string, ConvEntry>();
-  for (const msg of all) {
-    const c = convMap.get(msg.conversationId);
-    if (!c) {
-      convMap.set(msg.conversationId, {
-        conversationId: msg.conversationId,
-        participants: new Set([msg.senderId, msg.recipientId || ''].filter(Boolean)),
-        lastMessage: msg,
-        messageCount: 1,
-        otherHandle: '',
-        otherName: '',
-      });
-    } else {
-      c.messageCount++;
-      c.participants.add(msg.senderId);
-      if (msg.recipientId) c.participants.add(msg.recipientId);
-    }
+  const latest = db.all<LatestRow>(sql`
+    SELECT conversation_id, message_id, sender_id, sender_handle, sender_name,
+           recipient_id, text, created_at, msg_count
+    FROM (
+      SELECT conversation_id, message_id, sender_id, sender_handle, sender_name,
+             recipient_id, text, created_at,
+             COUNT(*) OVER (PARTITION BY conversation_id) AS msg_count,
+             ROW_NUMBER() OVER (PARTITION BY conversation_id ORDER BY created_at DESC) AS rn
+      FROM twitter_dms
+    )
+    WHERE rn = 1
+    ORDER BY created_at DESC
+  `);
 
-    // Track the best handle/name for the other participant (not the logged-in user).
-    // isFromMe: true if senderId matches any known account ID for the logged-in user.
-    const entry = convMap.get(msg.conversationId)!;
-    const isFromMe = myUserIds.size > 0
-      ? myUserIds.has(String(msg.senderId))
-      : false;
-    if (!isFromMe && msg.senderHandle && !entry.otherHandle) {
-      entry.otherHandle = msg.senderHandle;
-    }
-    if (!isFromMe && msg.senderName && !entry.otherName) {
-      entry.otherName = msg.senderName;
+  // One DISTINCT participants query (senders carry their latest handle/name via
+  // SQLite's bare-column-with-MAX semantics; recipients have no handle info).
+  type ParticipantRow = {
+    conversation_id: string;
+    participant: string;
+    handle: string | null;
+    name: string | null;
+    last_at: string | null;
+  };
+  const participantRows = db.all<ParticipantRow>(sql`
+    SELECT conversation_id, sender_id AS participant, sender_handle AS handle,
+           sender_name AS name, MAX(created_at) AS last_at
+    FROM twitter_dms
+    WHERE sender_id IS NOT NULL AND sender_id != ''
+    GROUP BY conversation_id, sender_id
+    UNION ALL
+    SELECT DISTINCT conversation_id, recipient_id AS participant, NULL, NULL, NULL
+    FROM twitter_dms
+    WHERE recipient_id IS NOT NULL AND recipient_id != ''
+  `);
+
+  // Group participants by conversation in JS
+  type ParticipantInfo = { handle: string | null; name: string | null; lastAt: string };
+  const participantsByConv = new Map<string, Map<string, ParticipantInfo>>();
+  for (const row of participantRows) {
+    let conv = participantsByConv.get(row.conversation_id);
+    if (!conv) { conv = new Map(); participantsByConv.set(row.conversation_id, conv); }
+    const existing = conv.get(row.participant);
+    if (!existing) {
+      conv.set(row.participant, { handle: row.handle, name: row.name, lastAt: row.last_at ?? '' });
+    } else if (row.handle || row.name) {
+      // Sender info wins over the bare recipient entry
+      existing.handle = existing.handle ?? row.handle;
+      existing.name = existing.name ?? row.name;
+      if ((row.last_at ?? '') > existing.lastAt) existing.lastAt = row.last_at ?? '';
     }
   }
 
-  // Look up avatar URLs from the contacts table for all known participants
+  // ONE contacts lookup for all participants' avatars
   const allParticipantIds = new Set<string>();
-  for (const c of convMap.values()) {
-    for (const pid of c.participants) allParticipantIds.add(pid);
+  for (const conv of participantsByConv.values()) {
+    for (const pid of conv.keys()) allParticipantIds.add(pid);
   }
   const avatarByUserId = new Map<string, string | null>();
-  for (const pid of allParticipantIds) {
-    const contact = db.select({ avatarUrl: contacts.avatarUrl })
+  if (allParticipantIds.size > 0) {
+    const contactRows = db.select({ platformId: contacts.platformId, avatarUrl: contacts.avatarUrl })
       .from(contacts)
-      .where(and(eq(contacts.source, 'twitter'), eq(contacts.platformId, pid)))
-      .get();
-    if (contact) avatarByUserId.set(pid, contact.avatarUrl);
+      .where(and(eq(contacts.source, 'twitter'), inArray(contacts.platformId, [...allParticipantIds])))
+      .all();
+    for (const c of contactRows) avatarByUserId.set(c.platformId, c.avatarUrl);
   }
 
-  const conversations = [...convMap.values()].map((c) => {
-    // Find the other participant's user id (not the logged-in user)
-    const otherParticipantIds = [...c.participants].filter((pid) => !myUserIds.has(pid));
-    const otherAvatarUrl = otherParticipantIds.length > 0
-      ? avatarByUserId.get(otherParticipantIds[0]) || null
+  // `latest` is already ordered by created_at DESC — the load-bearing sort.
+  const conversations = latest.map((r) => {
+    const conv = participantsByConv.get(r.conversation_id) ?? new Map<string, ParticipantInfo>();
+    const participantIds = [...conv.keys()];
+    // Other participants (not the logged-in user), most recently active first
+    const others = [...conv.entries()]
+      .filter(([pid]) => !myUserIds.has(pid))
+      .sort((a, b) => b[1].lastAt.localeCompare(a[1].lastAt));
+    const otherHandle = others.find(([, info]) => info.handle)?.[1].handle ?? '';
+    const otherName = others.find(([, info]) => info.name)?.[1].name ?? '';
+    const otherAvatarUrl = others.length > 0
+      ? avatarByUserId.get(others[0][0]) || null
       : null;
     return {
-      conversationId: c.conversationId,
-      participantIds: [...c.participants],
-      lastMessage: c.lastMessage,
-      messageCount: c.messageCount,
-      otherHandle: c.otherHandle,
-      otherName: c.otherName,
+      conversationId: r.conversation_id,
+      participantIds,
+      lastMessage: {
+        conversationId: r.conversation_id,
+        messageId: r.message_id,
+        senderId: r.sender_id,
+        senderHandle: r.sender_handle,
+        senderName: r.sender_name,
+        recipientId: r.recipient_id,
+        text: r.text,
+        createdAt: r.created_at,
+      },
+      messageCount: r.msg_count,
+      otherHandle,
+      otherName,
       otherAvatarUrl,
     };
-  }).sort((a, b) => (b.lastMessage.createdAt || '').localeCompare(a.lastMessage.createdAt || ''));
+  });
 
   const lim = Math.min(parseInt(limit), 100);
   const off = parseInt(offset);
@@ -357,20 +395,26 @@ router.get('/dms/:conversationId', optionalAuth, requireRead('twitter'), (req, r
   }
   const { limit = '100' } = req.query as Record<string, string>;
   const db = getDb();
+  const lim = Math.max(parseInt(limit) || 100, 1);
+
+  // Fetch the NEWEST `lim` messages in SQL, then reverse to ascending order —
+  // the UI depends on ascending chronological order.
   const messages = db.select().from(twitterDms)
     .where(eq(twitterDms.conversationId, req.params['conversationId'] as string))
-    .orderBy(twitterDms.createdAt)
-    .all();
+    .orderBy(desc(twitterDms.createdAt))
+    .limit(lim)
+    .all()
+    .reverse();
 
-  // Attach avatar URLs from the contacts table keyed by senderId
-  const senderIds = new Set(messages.map((m) => m.senderId).filter(Boolean) as string[]);
+  // Attach avatar URLs from the contacts table with ONE batched lookup
+  const senderIds = [...new Set(messages.map((m) => m.senderId).filter(Boolean) as string[])];
   const avatarBySender = new Map<string, string | null>();
-  for (const sid of senderIds) {
-    const contact = db.select({ avatarUrl: contacts.avatarUrl })
+  if (senderIds.length > 0) {
+    const contactRows = db.select({ platformId: contacts.platformId, avatarUrl: contacts.avatarUrl })
       .from(contacts)
-      .where(and(eq(contacts.source, 'twitter'), eq(contacts.platformId, sid)))
-      .get();
-    if (contact) avatarBySender.set(sid, contact.avatarUrl);
+      .where(and(eq(contacts.source, 'twitter'), inArray(contacts.platformId, senderIds)))
+      .all();
+    for (const c of contactRows) avatarBySender.set(c.platformId, c.avatarUrl);
   }
 
   const enriched = messages.map((m) => ({
@@ -378,7 +422,7 @@ router.get('/dms/:conversationId', optionalAuth, requireRead('twitter'), (req, r
     senderAvatarUrl: avatarBySender.get(m.senderId) ?? null,
   }));
 
-  res.json({ messages: enriched.slice(0, parseInt(limit)), conversationId: req.params['conversationId'] });
+  res.json({ messages: enriched, conversationId: req.params['conversationId'] });
 });
 
 // ── Analytics ─────────────────────────────────────────────────────────────────

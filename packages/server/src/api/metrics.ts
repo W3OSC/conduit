@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { getDb } from '../db/client.js';
 import { telegramMessages, discordMessages, slackMessages, twitterDms, gmailMessages, syncRuns, outbox, auditLog, apiKeys } from '../db/schema.js';
-import { and, desc, eq, gte, lte } from 'drizzle-orm';
+import { and, desc, eq, gte, lte, sql } from 'drizzle-orm';
 import { optionalAuth } from '../auth/middleware.js';
 
 const router = Router();
@@ -26,13 +26,21 @@ router.get('/messages-over-time', optionalAuth, (req, res) => {
   const since = daysAgo(daysNum);
   const db = getDb();
 
-  const truncFn = granularity === 'hour' ? truncateToHour : truncateToDay;
-
-  const tgMsgs  = db.select({ timestamp: telegramMessages.timestamp }).from(telegramMessages).where(gte(telegramMessages.timestamp, since)).all();
-  const dcMsgs  = db.select({ timestamp: discordMessages.timestamp }).from(discordMessages).where(gte(discordMessages.timestamp, since)).all();
-  const slMsgs  = db.select({ timestamp: slackMessages.timestamp }).from(slackMessages).where(gte(slackMessages.timestamp, since)).all();
-  const twMsgs  = db.select({ createdAt: twitterDms.createdAt }).from(twitterDms).where(gte(twitterDms.createdAt, since)).all();
-  const gmMsgs  = db.select({ internalDate: gmailMessages.internalDate, syncedAt: gmailMessages.syncedAt }).from(gmailMessages).where(gte(gmailMessages.internalDate, since)).all();
+  // Bucket in SQL with textual truncation (byte-identical to the previous JS
+  // truncateToDay/truncateToHour output for ISO timestamps) — never loads
+  // individual message rows into JS.
+  type CountRow = { bucket: string; c: number };
+  const countsFor = (table: string, col: string): CountRow[] => {
+    const bucketExpr = granularity === 'hour'
+      ? `substr(${col}, 1, 13) || ':00:00'`
+      : `substr(${col}, 1, 10)`;
+    return db.all<CountRow>(sql`
+      SELECT ${sql.raw(bucketExpr)} AS bucket, COUNT(*) AS c
+      FROM ${sql.raw(table)}
+      WHERE ${sql.raw(col)} >= ${since}
+      GROUP BY bucket
+    `);
+  };
 
   type Bucket = { telegram: number; discord: number; slack: number; twitter: number; gmail: number };
   const buckets = new Map<string, Bucket>();
@@ -42,11 +50,16 @@ router.get('/messages-over-time', optionalAuth, (req, res) => {
     return buckets.get(key)!;
   };
 
-  for (const m of tgMsgs) { const key = truncFn(m.timestamp || new Date().toISOString()); ensureBucket(key).telegram++; }
-  for (const m of dcMsgs) { const key = truncFn(m.timestamp || new Date().toISOString()); ensureBucket(key).discord++; }
-  for (const m of slMsgs) { const key = truncFn(m.timestamp || new Date().toISOString()); ensureBucket(key).slack++; }
-  for (const m of twMsgs) { const key = truncFn(m.createdAt || new Date().toISOString()); ensureBucket(key).twitter++; }
-  for (const m of gmMsgs) { const key = truncFn(m.internalDate || m.syncedAt || new Date().toISOString()); ensureBucket(key).gmail++; }
+  const perSource: Array<[keyof Bucket, CountRow[]]> = [
+    ['telegram', countsFor('telegram_messages', 'timestamp')],
+    ['discord',  countsFor('discord_messages', 'timestamp')],
+    ['slack',    countsFor('slack_messages', 'timestamp')],
+    ['twitter',  countsFor('twitter_dms', 'created_at')],
+    ['gmail',    countsFor('gmail_messages', 'internal_date')],
+  ];
+  for (const [key, rows] of perSource) {
+    for (const r of rows) ensureBucket(r.bucket)[key] += r.c;
+  }
 
   const data = Array.from(buckets.entries())
     .map(([date, counts]) => ({ date, ...counts }))
@@ -140,14 +153,16 @@ router.get('/api-usage', optionalAuth, (req, res) => {
 
   const keys = db.select().from(apiKeys).all();
 
-  // Only include active (non-revoked) keys
-  const activeKeys = keys.filter((k) => !k.revokedAt);
+  // Prebuilt id → name map for active (non-revoked) keys — O(1) lookups
+  const labelById = new Map<number, string | null>();
+  for (const k of keys) {
+    if (!k.revokedAt) labelById.set(k.id, k.name || null);
+  }
 
   // Resolve a human-readable label for each log entry's key id — returns null for deleted keys
   const keyLabel = (apiKeyId: number | null): string | null => {
     if (!apiKeyId) return null;
-    const info = activeKeys.find((k) => k.id === apiKeyId);
-    return info?.name || null;
+    return labelById.get(apiKeyId) ?? null;
   };
 
   // Daily breakdown — one column per API key name; skip entries from deleted keys
