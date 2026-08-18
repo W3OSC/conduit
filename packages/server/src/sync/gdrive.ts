@@ -170,6 +170,9 @@ export class GdriveSyncManager {
   private auth: InstanceType<typeof google.auth.OAuth2>;
   private drive: drive_v3.Drive;
   private pollTimers = new Map<number, NodeJS.Timeout>();
+  /** Folder configs with a poll-triggered sync currently in flight (per-folder
+   *  guard — folder timers are independent, so a boolean would block siblings). */
+  private syncInFlight = new Set<number>();
   public connected = false;
   public accountInfo: { email: string } | null = null;
 
@@ -229,8 +232,11 @@ export class GdriveSyncManager {
   startFolderPolling(folderConfigId: number, intervalMs = POLL_INTERVAL_MS): void {
     this.stopFolderPolling(folderConfigId);
     const timer = setInterval(() => {
-      this.syncFolder(folderConfigId).catch((e) =>
-        console.error(`[gdrive:${folderConfigId}] Poll sync failed:`, e));
+      if (this.syncInFlight.has(folderConfigId)) return; // previous cycle still running — skip this tick
+      this.syncInFlight.add(folderConfigId);
+      this.syncFolder(folderConfigId)
+        .catch((e) => console.error(`[gdrive:${folderConfigId}] Poll sync failed:`, e))
+        .finally(() => { this.syncInFlight.delete(folderConfigId); });
     }, intervalMs);
     this.pollTimers.set(folderConfigId, timer);
   }

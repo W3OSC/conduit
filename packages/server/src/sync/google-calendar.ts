@@ -42,6 +42,7 @@ export class CalendarSync {
   private calendar: calendar_v3.Calendar | null = null;
   private _cancelRequested = false;
   private _pollInterval: NodeJS.Timeout | null = null;
+  private syncInFlight = false;
   public connected = false;
   public accountInfo: { email: string } | null = null;
   private syncTokens = new Map<string, string>(); // calendarId → syncToken
@@ -62,8 +63,11 @@ export class CalendarSync {
     this.stopPolling();
     this._pollInterval = setInterval(async () => {
       if (!this.connected) return;
+      if (this.syncInFlight) return; // previous cycle still running — skip this tick
+      this.syncInFlight = true;
       try { await this.incrementalSync(); }
       catch (e) { console.error('[calendar] Poll error:', e); }
+      finally { this.syncInFlight = false; }
     }, intervalMs);
     console.log(`[calendar] Polling started (every ${intervalMs / 1000}s) for ${this.accountInfo?.email}`);
   }
@@ -94,6 +98,17 @@ export class CalendarSync {
         this.syncTokens.set(calId, row.value);
       }
     }
+  }
+
+  /** Drop a calendar's syncToken from memory AND from the persisted settings row,
+   *  so an expired (410) token cannot be restored on the next server restart. */
+  private deleteSyncToken(calId: string): void {
+    this.syncTokens.delete(calId);
+    if (!this.accountInfo?.email) return;
+    const db = getDb();
+    db.delete(settings)
+      .where(eq(settings.key, `calendar.syncToken.${this.accountInfo.email}.${calId}`))
+      .run();
   }
 
   async connect(creds: GmailCreds): Promise<boolean> {
@@ -153,60 +168,12 @@ export class CalendarSync {
 
     broadcast({ type: 'sync:progress', data: { service: 'calendar', status: 'running', type: 'full', messagesSaved: 0 } });
 
-    const timeMin = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
-    const timeMax = new Date(Date.now() + daysForward * 24 * 60 * 60 * 1000).toISOString();
-
     try {
       const calendars = await this.getCalendars();
 
       for (const cal of calendars) {
         if (this._cancelRequested) break;
-        let pageToken: string | undefined;
-        do {
-          if (this._cancelRequested) break;
-          const res = await this.calendar.events.list({
-            calendarId: cal.id,
-            timeMin, timeMax,
-            singleEvents: true,
-            orderBy: 'startTime',
-            maxResults: 250,
-            pageToken,
-          });
-
-          for (const event of res.data.items || []) {
-            if (!event.id) continue;
-            const startTime = event.start?.dateTime || event.start?.date || '';
-            const endTime   = event.end?.dateTime   || event.end?.date   || '';
-            const allDay    = !event.start?.dateTime;
-            const attendees = (event.attendees || []).map((a) => ({
-              email: a.email || '', name: a.displayName || '', responseStatus: a.responseStatus || 'needsAction',
-            }));
-            const meetLink = event.conferenceData?.entryPoints?.find((e) => e.entryPointType === 'video')?.uri;
-
-            const result = db.insert(calendarEvents).values({
-              eventId: event.id, calendarId: cal.id, accountId: this.accountInfo?.email,
-              title: event.summary, description: event.description, location: event.location,
-              startTime, endTime, allDay, status: event.status,
-              attendees: JSON.stringify(attendees),
-              organizerEmail: event.organizer?.email, organizerName: event.organizer?.displayName,
-              recurrence: event.recurrence ? JSON.stringify(event.recurrence) : null,
-              htmlLink: event.htmlLink, meetLink: meetLink || null, colorId: event.colorId,
-              rawJson: JSON.stringify(event), updatedAt: event.updated,
-            }).onConflictDoUpdate({
-              target: [calendarEvents.eventId, calendarEvents.calendarId],
-              set: {
-                title: event.summary, description: event.description, startTime, endTime,
-                status: event.status, attendees: JSON.stringify(attendees),
-                rawJson: JSON.stringify(event), updatedAt: event.updated,
-              },
-            }).run();
-
-            if (result.changes > 0) saved++;
-          }
-
-          if (res.data.nextSyncToken) { this.syncTokens.set(cal.id, res.data.nextSyncToken); this.saveSyncTokens(); }
-          pageToken = res.data.nextPageToken || undefined;
-        } while (pageToken);
+        saved += await this.fullSyncCalendar(cal.id, daysBack, daysForward);
       }
 
       db.update(syncRuns).set({ messagesSaved: saved }).where(eq(syncRuns.id, runId)).run();
@@ -228,6 +195,70 @@ export class CalendarSync {
     }
   }
 
+  /**
+   * Full (time-windowed) sync of a single calendar. Pages through events.list
+   * until exhausted and stores the fresh nextSyncToken Google returns on the
+   * last page. Used by initialFullSync, and by incrementalSync to (re)establish
+   * a syncToken for calendars that have none (first sync or after a 410).
+   */
+  private async fullSyncCalendar(calendarId: string, daysBack = 30, daysForward = 90): Promise<number> {
+    if (!this.calendar) throw new Error('Calendar not connected');
+    const db = getDb();
+    let saved = 0;
+
+    const timeMin = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
+    const timeMax = new Date(Date.now() + daysForward * 24 * 60 * 60 * 1000).toISOString();
+
+    let pageToken: string | undefined;
+    do {
+      if (this._cancelRequested) break;
+      const res = await this.calendar.events.list({
+        calendarId,
+        timeMin, timeMax,
+        singleEvents: true,
+        orderBy: 'startTime',
+        maxResults: 250,
+        pageToken,
+      });
+
+      for (const event of res.data.items || []) {
+        if (!event.id) continue;
+        const startTime = event.start?.dateTime || event.start?.date || '';
+        const endTime   = event.end?.dateTime   || event.end?.date   || '';
+        const allDay    = !event.start?.dateTime;
+        const attendees = (event.attendees || []).map((a) => ({
+          email: a.email || '', name: a.displayName || '', responseStatus: a.responseStatus || 'needsAction',
+        }));
+        const meetLink = event.conferenceData?.entryPoints?.find((e) => e.entryPointType === 'video')?.uri;
+
+        const result = db.insert(calendarEvents).values({
+          eventId: event.id, calendarId, accountId: this.accountInfo?.email,
+          title: event.summary, description: event.description, location: event.location,
+          startTime, endTime, allDay, status: event.status,
+          attendees: JSON.stringify(attendees),
+          organizerEmail: event.organizer?.email, organizerName: event.organizer?.displayName,
+          recurrence: event.recurrence ? JSON.stringify(event.recurrence) : null,
+          htmlLink: event.htmlLink, meetLink: meetLink || null, colorId: event.colorId,
+          rawJson: JSON.stringify(event), updatedAt: event.updated,
+        }).onConflictDoUpdate({
+          target: [calendarEvents.eventId, calendarEvents.calendarId],
+          set: {
+            title: event.summary, description: event.description, startTime, endTime,
+            status: event.status, attendees: JSON.stringify(attendees),
+            rawJson: JSON.stringify(event), updatedAt: event.updated,
+          },
+        }).run();
+
+        if (result.changes > 0) saved++;
+      }
+
+      if (res.data.nextSyncToken) { this.syncTokens.set(calendarId, res.data.nextSyncToken); this.saveSyncTokens(); }
+      pageToken = res.data.nextPageToken || undefined;
+    } while (pageToken);
+
+    return saved;
+  }
+
   async incrementalSync(): Promise<number> {
     if (!this.calendar) throw new Error('Calendar not connected');
     const db = getDb();
@@ -237,60 +268,89 @@ export class CalendarSync {
 
     for (const cal of calendars) {
       const syncToken = this.syncTokens.get(cal.id);
-      if (!syncToken) continue;
+      if (!syncToken) {
+        // No token yet (never fully synced, or reset after a 410) — run the
+        // full sync path for this calendar so a fresh syncToken is established
+        // instead of silently skipping it forever.
+        try { updated += await this.fullSyncCalendar(cal.id); }
+        catch (e) { console.error(`[calendar] Full sync failed for ${cal.id}:`, e); }
+        continue;
+      }
 
       try {
-        const res = await this.calendar.events.list({ calendarId: cal.id, syncToken });
+        // Page through all changes. When changes exceed one page Google returns
+        // nextPageToken and only sends nextSyncToken on the LAST page — without
+        // this loop the token is never updated and the first page replays forever.
+        let pageToken: string | undefined;
+        let nextSyncToken: string | undefined;
+        do {
+          const res = await this.calendar.events.list({
+            calendarId: cal.id,
+            syncToken,
+            ...(pageToken ? { pageToken } : {}),
+          });
 
-        for (const event of res.data.items || []) {
-          if (!event.id) continue;
+          for (const event of res.data.items || []) {
+            if (!event.id) continue;
 
-          if (event.status === 'cancelled') {
-            db.delete(calendarEvents)
-              .where(and(eq(calendarEvents.eventId, event.id), eq(calendarEvents.calendarId, cal.id)))
-              .run();
-          } else {
-            const startTime = event.start?.dateTime || event.start?.date || '';
-            const endTime   = event.end?.dateTime   || event.end?.date   || '';
-            const insertResult = db.insert(calendarEvents).values({
-              eventId: event.id, calendarId: cal.id,
-              accountId: this.accountInfo?.email,
-              title: event.summary, description: event.description,
-              startTime, endTime, status: event.status,
-              rawJson: JSON.stringify(event), updatedAt: event.updated,
-              allDay: !event.start?.dateTime,
-              attendees: JSON.stringify(event.attendees || []),
-              organizerEmail: event.organizer?.email,
-              organizerName: event.organizer?.displayName,
-              htmlLink: event.htmlLink,
-            }).onConflictDoUpdate({
-              target: [calendarEvents.eventId, calendarEvents.calendarId],
-              set: { title: event.summary, startTime, endTime, status: event.status, rawJson: JSON.stringify(event), updatedAt: event.updated },
-            }).run();
+            if (event.status === 'cancelled') {
+              db.delete(calendarEvents)
+                .where(and(eq(calendarEvents.eventId, event.id), eq(calendarEvents.calendarId, cal.id)))
+                .run();
+            } else {
+              const startTime = event.start?.dateTime || event.start?.date || '';
+              const endTime   = event.end?.dateTime   || event.end?.date   || '';
+              const insertResult = db.insert(calendarEvents).values({
+                eventId: event.id, calendarId: cal.id,
+                accountId: this.accountInfo?.email,
+                title: event.summary, description: event.description,
+                startTime, endTime, status: event.status,
+                rawJson: JSON.stringify(event), updatedAt: event.updated,
+                allDay: !event.start?.dateTime,
+                attendees: JSON.stringify(event.attendees || []),
+                organizerEmail: event.organizer?.email,
+                organizerName: event.organizer?.displayName,
+                htmlLink: event.htmlLink,
+              }).onConflictDoUpdate({
+                target: [calendarEvents.eventId, calendarEvents.calendarId],
+                set: { title: event.summary, startTime, endTime, status: event.status, rawJson: JSON.stringify(event), updatedAt: event.updated },
+              }).run();
 
-            if (insertResult.changes > 0) {
-              updated++;
-              // Broadcast real-time calendar update to open Calendar views
-              broadcast({
-                type: 'calendar:updated',
-                data: {
-                  eventId: event.id,
-                  calendarId: cal.id,
-                  title: event.summary,
-                  startTime,
-                  endTime,
-                  status: event.status,
-                },
-              });
+              if (insertResult.changes > 0) {
+                updated++;
+                // Broadcast real-time calendar update to open Calendar views
+                broadcast({
+                  type: 'calendar:updated',
+                  data: {
+                    eventId: event.id,
+                    calendarId: cal.id,
+                    title: event.summary,
+                    startTime,
+                    endTime,
+                    status: event.status,
+                  },
+                });
+              }
             }
           }
-        }
 
-        if (res.data.nextSyncToken) { this.syncTokens.set(cal.id, res.data.nextSyncToken); this.saveSyncTokens(); }
+          nextSyncToken = res.data.nextSyncToken || undefined;
+          pageToken = res.data.nextPageToken || undefined;
+        } while (pageToken);
+
+        // Store the new token only after all pages were processed
+        if (nextSyncToken) { this.syncTokens.set(cal.id, nextSyncToken); this.saveSyncTokens(); }
       } catch (e: unknown) {
-        // 410 Gone — sync token expired, do a full re-sync for this calendar
-        if ((e as { code?: number }).code === 410) {
-          this.syncTokens.delete(cal.id);
+        const status = (e as { code?: number; status?: number });
+        // 410 Gone — sync token expired. Delete it (memory + persisted) and
+        // immediately run the full sync path so a fresh token is established;
+        // previously the calendar simply went dark after a 410.
+        if (status.code === 410 || status.status === 410) {
+          this.deleteSyncToken(cal.id);
+          try { updated += await this.fullSyncCalendar(cal.id); }
+          catch (e2) { console.error(`[calendar] Full re-sync after 410 failed for ${cal.id}:`, e2); }
+        } else {
+          console.error(`[calendar] Incremental sync error for ${cal.id}:`, e);
         }
       }
     }

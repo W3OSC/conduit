@@ -2,7 +2,7 @@ import { WebClient } from '@slack/web-api';
 import { SocketModeClient, LogLevel } from '@slack/socket-mode';
 import { getDb } from '../db/client.js';
 import { slackMessages, syncState, syncRuns, errorLog, accounts } from '../db/schema.js';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, sql } from 'drizzle-orm';
 import { broadcast } from '../websocket/hub.js';
 import {
   syncSlackContacts, upsertContactFromMessage, getContactCriteria,
@@ -148,6 +148,14 @@ export class SlackSync {
     const db = getDb();
     let saved = 0;
     let cursor: string | undefined;
+    let maxTs: string | undefined;
+
+    // Slack's `oldest` param wants Unix epoch seconds ("1234567890.123"), but
+    // our cursor is stored as an ISO string — passing it raw made the filter
+    // meaningless and every "incremental" sync re-walked full history.
+    const sinceEpoch = since && Number.isFinite(Date.parse(since))
+      ? (Date.parse(since) / 1000).toFixed(3)
+      : undefined;
 
     do {
       if (this._cancelRequested) break;
@@ -155,7 +163,7 @@ export class SlackSync {
       const res = await this.client.conversations.history({
         channel: channelId,
         limit: 200,
-        ...(since ? { oldest: since } : {}),
+        ...(sinceEpoch ? { oldest: sinceEpoch } : {}),
         ...(cursor ? { cursor } : {}),
       } as Parameters<typeof this.client.conversations.history>[0]);
       if (!res.ok) break;
@@ -198,6 +206,7 @@ export class SlackSync {
           rawJson: JSON.stringify(msg),
         }).onConflictDoNothing().run();
         if (result.changes > 0) saved++;
+        if (!maxTs || timestamp > maxTs) maxTs = timestamp;
 
         // Progress is updated per-channel in initialFullSync, not per-message
       }
@@ -209,25 +218,48 @@ export class SlackSync {
       await sleep(500);
     } while (cursor);
 
-    // Update sync state
+    // Update sync state. The cursor is the max MESSAGE timestamp seen (never
+    // wall-clock, which would skip anything delivered late), and it only moves
+    // forward — the previous version froze it at first-sync time forever.
+    const nowIso = new Date().toISOString();
     db.insert(syncState).values({
       source: 'slack',
       accountId: this.accountInfo?.userId,
       chatId: channelId,
       chatName: channelName,
-      lastMessageTs: new Date().toISOString(),
-      lastFetchedAt: new Date().toISOString(),
+      lastMessageTs: maxTs ?? since ?? null,
+      lastFetchedAt: nowIso,
       isFullSync: true,
       messageCount: saved,
     }).onConflictDoUpdate({
       target: [syncState.source, syncState.chatId, syncState.accountId],
       set: {
-        lastFetchedAt: new Date().toISOString(),
+        lastFetchedAt: nowIso,
         messageCount: saved,
+        lastMessageTs: sql`MAX(COALESCE(${syncState.lastMessageTs}, ''), COALESCE(excluded.last_message_ts, ''))`,
       },
     }).run();
 
     return saved;
+  }
+
+  /** Advance the per-channel cursor from a realtime event (monotonic). */
+  private advanceCursor(channelId: string, channelName: string, timestamp: string): void {
+    const db = getDb();
+    db.insert(syncState).values({
+      source: 'slack',
+      accountId: this.accountInfo?.userId,
+      chatId: channelId,
+      chatName: channelName,
+      lastMessageTs: timestamp,
+      lastFetchedAt: new Date().toISOString(),
+    }).onConflictDoUpdate({
+      target: [syncState.source, syncState.chatId, syncState.accountId],
+      set: {
+        lastFetchedAt: new Date().toISOString(),
+        lastMessageTs: sql`MAX(COALESCE(${syncState.lastMessageTs}, ''), excluded.last_message_ts)`,
+      },
+    }).run();
   }
 
   async initialFullSync(onProgress?: (service: string, chat: string, saved: number) => void): Promise<void> {
@@ -377,6 +409,7 @@ export class SlackSync {
       });
 
       if (result.changes > 0) {
+        this.advanceCursor(channelId, channelName, timestamp);
         if (userId && userId !== this.accountInfo?.userId) {
           upsertContactFromMessage({
             source: 'slack',
@@ -399,10 +432,13 @@ export class SlackSync {
   }
 
   private pollingInterval: ReturnType<typeof setInterval> | null = null;
+  private pollInFlight = false;
 
   private startPolling(): void {
     // Fallback: poll every 2 minutes when no app token
     this.pollingInterval = setInterval(async () => {
+      if (this.pollInFlight) return; // previous cycle still running
+      this.pollInFlight = true;
       try {
         const channels = await this.getChannels();
         for (const ch of channels) {
@@ -415,6 +451,8 @@ export class SlackSync {
         }
       } catch (e) {
         console.error('[slack] Polling error:', e);
+      } finally {
+        this.pollInFlight = false;
       }
     }, 2 * 60 * 1000);
     this.connected = true;

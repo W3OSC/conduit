@@ -52,6 +52,12 @@ async function main() {
   const app = express();
   const server = createServer(app);
 
+  // Honour X-Forwarded-* only when explicitly behind a trusted reverse proxy.
+  // Affects req.ip (login rate limiting) and req.secure (cookie `secure` flag).
+  if (process.env.TRUST_PROXY === '1' || process.env.TRUST_PROXY === 'true') {
+    app.set('trust proxy', true);
+  }
+
   // Security headers — applied to every response
   app.use((_req, res, next) => {
     // Prevent MIME-type sniffing
@@ -68,8 +74,16 @@ async function main() {
     next();
   });
 
-  // Middleware
-  app.use(cors({ origin: true, credentials: true }));
+  // CORS: the UI is same-origin (Vite proxies /api in dev; the server serves the
+  // built client in prod), so no cross-origin browser access is needed. Reflecting
+  // arbitrary origins with credentials — the previous behaviour — let any website
+  // the user visits make authenticated calls against their Conduit instance.
+  // Cross-origin browser apps can be allowed explicitly via CONDUIT_ALLOWED_ORIGINS.
+  const allowedOrigins = (process.env.CONDUIT_ALLOWED_ORIGINS || '')
+    .split(',').map((s) => s.trim()).filter(Boolean);
+  if (allowedOrigins.length > 0) {
+    app.use(cors({ origin: allowedOrigins, credentials: true }));
+  }
   app.use(express.json({ limit: '10mb' }));
   app.use(cookieParser());
 
@@ -84,6 +98,12 @@ async function main() {
 
   // API routes
   app.use('/api', apiRouter);
+
+  // Unmatched API paths must 404 as JSON — never fall through to the SPA
+  // catch-all, which would return index.html with a 200 to a confused agent.
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'Not found' });
+  });
 
   // Serve built React app in production
   try {
@@ -122,6 +142,9 @@ async function main() {
   // Fire-and-forget: connections run in the background, the HTTP server is
   // already accepting requests so the UI can render immediately.
   manager.connectAll().catch((e) => console.error('[conduit] connectAll error:', e));
+
+  // Retry errored services with backoff; user-disconnected services are left alone.
+  manager.startSupervisor();
 
   // Bootstrap contacts from existing messages for any source that has messages
   // but no contacts yet (e.g. after a direct DB import or first run).

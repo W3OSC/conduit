@@ -104,6 +104,26 @@ export const syncState = sqliteTable('sync_state', {
   uniqSourceChatAccount: unique().on(t.source, t.chatId, t.accountId),
 }));
 
+// Per-chat read cursors (source + chat_id → last_read_at). Created by
+// migration 0013 but never wired up until the unread model landed.
+export const chatReadState = sqliteTable('chat_read_state', {
+  source: text('source').notNull(),
+  chatId: text('chat_id').notNull(),
+  lastReadAt: text('last_read_at').notNull(),
+  updatedAt: text('updated_at').default(sql`(datetime('now'))`),
+}, (t) => ({
+  uniqSourceChat: unique().on(t.source, t.chatId),
+}));
+
+export const chatMuteState = sqliteTable('chat_mute_state', {
+  source: text('source').notNull(),
+  chatId: text('chat_id').notNull(),
+  isMuted: integer('is_muted', { mode: 'boolean' }).notNull().default(false),
+  updatedAt: text('updated_at').default(sql`(datetime('now'))`),
+}, (t) => ({
+  uniqSourceChat: unique().on(t.source, t.chatId),
+}));
+
 export const errorLog = sqliteTable('error_log', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   source: text('source').notNull(),
@@ -137,6 +157,9 @@ export const outbox = sqliteTable('outbox', {
    * Shape: Array<{ editIndex: number; searchedFor: string; matchedTo: string; similarity: number }>
    */
   fuzzyMatchInfo: text('fuzzy_match_info'),
+  // Client-supplied dedupe token (Idempotency-Key header). A retried POST
+  // after a timeout returns the existing item instead of double-queueing.
+  idempotencyKey: text('idempotency_key'),
   createdAt: text('created_at').default(sql`(datetime('now'))`),
   approvedAt: text('approved_at'),
   sentAt: text('sent_at'),
@@ -358,28 +381,13 @@ export const meetNotes = sqliteTable('meet_notes', {
 
 // ─── AI Chat Sessions ─────────────────────────────────────────────────────────
 
-export const aiSessions = sqliteTable('ai_sessions', {
-  id:               text('id').primaryKey(),                        // nanoid
-  title:            text('title').notNull().default('New Chat'),
-  systemPromptSent: integer('system_prompt_sent', { mode: 'boolean' }).notNull().default(false),
-  createdAt:        text('created_at').default(sql`(datetime('now'))`),
-  updatedAt:        text('updated_at').default(sql`(datetime('now'))`),
-});
-
-export const aiMessages = sqliteTable('ai_messages', {
-  id:        text('id').primaryKey(),                              // nanoid
-  sessionId: text('session_id').notNull(),                        // FK → ai_sessions
-  role:      text('role').notNull(),                              // 'user' | 'assistant' | 'system' | 'tool'
-  content:   text('content').notNull().default(''),
-  streaming: integer('streaming', { mode: 'boolean' }).notNull().default(false),
-  createdAt: text('created_at').default(sql`(datetime('now'))`),
-});
-
-// AI API access events — one row per Conduit API call made by the AI agent.
-// Populated server-side when the AI passes X-Session-Id on its requests.
+// AI API access events — one row per Conduit API call made by an external
+// agent that passes an X-Session-Id header. sessionId is an agent-supplied
+// grouping id (no FK); outbox.aiToolCallId links approval items back to the
+// originating call for the Outbox "raw request" view.
 export const aiToolCalls = sqliteTable('ai_tool_calls', {
   id:        text('id').primaryKey(),           // nanoid
-  sessionId: text('session_id').notNull(),      // FK → ai_sessions.id
+  sessionId: text('session_id').notNull(),      // agent-supplied grouping id
   name:      text('name').notNull(),            // e.g. 'getMessages', 'getChats'
   input:     text('input').notNull(),           // JSON: { method, path, params }
   output:    text('output'),                    // compact human-readable summary
@@ -568,10 +576,6 @@ export type InsertAuditLog = typeof auditLog.$inferInsert;
 export type MeetNote = typeof meetNotes.$inferSelect;
 export type InsertMeetNote = typeof meetNotes.$inferInsert;
 
-export type AiSession = typeof aiSessions.$inferSelect;
-export type InsertAiSession = typeof aiSessions.$inferInsert;
-export type AiMessage = typeof aiMessages.$inferSelect;
-export type InsertAiMessage = typeof aiMessages.$inferInsert;
 
 export type ObsidianVaultConfig = typeof obsidianVaultConfig.$inferSelect;
 export type SmbShareConfig = typeof smbShareConfig.$inferSelect;

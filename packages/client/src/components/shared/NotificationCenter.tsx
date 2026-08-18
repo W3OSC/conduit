@@ -11,7 +11,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Bell, MessageSquare, Mail, CalendarDays, SendHorizonal, X, CheckCheck } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { cn } from '@/lib/utils';
+import { cn, timeAgo } from '@/lib/utils';
 import { useNotificationStore, type AppNotification, type NotificationType } from '@/store';
 
 // ── Icons per notification type ───────────────────────────────────────────────
@@ -30,18 +30,8 @@ const TYPE_COLOR: Record<NotificationType, string> = {
   outbox:   'text-purple-400',
 };
 
-// ── Relative time helper ───────────────────────────────────────────────────────
-
-function relTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const s = Math.floor(diff / 1000);
-  if (s < 60) return 'just now';
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
-}
+// Relative time uses the shared timeAgo util (this file previously carried a
+// third formatter implementation).
 
 // ── Notification item ─────────────────────────────────────────────────────────
 
@@ -81,7 +71,7 @@ function NotifItem({ n, onDismiss }: { n: AppNotification; onDismiss: (id: strin
       <div className="flex-1 min-w-0">
         <p className="text-xs font-medium text-foreground/90 truncate">{n.title}</p>
         <p className="text-[11px] text-muted-foreground/70 truncate mt-0.5">{n.body}</p>
-        <p className="text-[10px] text-muted-foreground/40 mt-1">{relTime(n.timestamp)}</p>
+        <p className="text-[10px] text-muted-foreground/40 mt-1">{timeAgo(n.timestamp)}</p>
       </div>
       <button
         onClick={(e) => { e.stopPropagation(); onDismiss(n.id); }}

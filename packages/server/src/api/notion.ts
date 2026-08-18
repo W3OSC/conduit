@@ -15,10 +15,8 @@
  */
 
 import { Router } from 'express';
-import { getDb } from '../db/client.js';
-import { permissions } from '../db/schema.js';
-import { eq } from 'drizzle-orm';
 import { optionalAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
+import { isReadEnabled, isSendEnabled } from './permissions-utils.js';
 import { getConnectionManager } from '../connections/manager.js';
 import type { NotionReadAction, NotionWriteAction } from '../sync/notion.js';
 
@@ -35,22 +33,22 @@ function getNotion(res: ReturnType<Router['get']> extends never ? never : Parame
   return notion;
 }
 
-/** Check readEnabled permission for the notion service. */
-function checkReadPermission(res: Parameters<Parameters<Router['get']>[1]>[1]): boolean {
-  const db = getDb();
-  const perm = db.select().from(permissions).where(eq(permissions.service, 'notion')).get();
-  if (!perm?.readEnabled) {
-    res.status(403).json({ error: 'Notion read access is not enabled' });
+type RouteReq = Parameters<Parameters<Router['get']>[1]>[0];
+type RouteRes = Parameters<Parameters<Router['get']>[1]>[1];
+
+/** Check the actor's effective readEnabled for notion (per-key override aware). */
+function checkReadPermission(req: RouteReq, res: RouteRes): boolean {
+  const apiKeyId = (req as AuthedRequest).apiKey?.id;
+  if (apiKeyId && !isReadEnabled('notion', apiKeyId)) {
+    res.status(403).json({ error: 'Notion read access is not enabled for this API key' });
     return false;
   }
   return true;
 }
 
-/** Check sendEnabled permission for the notion service. */
-function checkWritePermission(res: Parameters<Parameters<Router['get']>[1]>[1]): boolean {
-  const db = getDb();
-  const perm = db.select().from(permissions).where(eq(permissions.service, 'notion')).get();
-  if (!perm?.sendEnabled) {
+/** Check the actor's effective sendEnabled for notion (per-key override aware). */
+function checkWritePermission(req: RouteReq, res: RouteRes): boolean {
+  if (!isSendEnabled('notion', (req as AuthedRequest).apiKey?.id)) {
     res.status(403).json({ error: 'Notion write access is not enabled' });
     return false;
   }
@@ -62,7 +60,7 @@ function checkWritePermission(res: Parameters<Parameters<Router['get']>[1]>[1]):
 
 router.get('/pages/:pageId', optionalAuth, async (req, res) => {
   const authedReq = req as AuthedRequest;
-  if (!checkReadPermission(res)) return;
+  if (!checkReadPermission(req, res)) return;
   const notion = getNotion(res);
   if (!notion) return;
 
@@ -89,7 +87,7 @@ router.get('/pages/:pageId', optionalAuth, async (req, res) => {
 
 router.post('/databases/:databaseId/query', optionalAuth, async (req, res) => {
   const authedReq = req as AuthedRequest;
-  if (!checkReadPermission(res)) return;
+  if (!checkReadPermission(req, res)) return;
   const notion = getNotion(res);
   if (!notion) return;
 
@@ -129,7 +127,7 @@ router.post('/databases/:databaseId/query', optionalAuth, async (req, res) => {
 
 router.get('/databases', optionalAuth, async (req, res) => {
   const authedReq = req as AuthedRequest;
-  if (!checkReadPermission(res)) return;
+  if (!checkReadPermission(req, res)) return;
   const notion = getNotion(res);
   if (!notion) return;
 
@@ -154,7 +152,7 @@ router.get('/databases', optionalAuth, async (req, res) => {
 
 router.post('/search', optionalAuth, async (req, res) => {
   const authedReq = req as AuthedRequest;
-  if (!checkReadPermission(res)) return;
+  if (!checkReadPermission(req, res)) return;
   const notion = getNotion(res);
   if (!notion) return;
 
@@ -194,7 +192,7 @@ router.post('/search', optionalAuth, async (req, res) => {
 
 router.get('/blocks/:blockId', optionalAuth, async (req, res) => {
   const authedReq = req as AuthedRequest;
-  if (!checkReadPermission(res)) return;
+  if (!checkReadPermission(req, res)) return;
   const notion = getNotion(res);
   if (!notion) return;
 
@@ -221,7 +219,7 @@ router.get('/blocks/:blockId', optionalAuth, async (req, res) => {
 
 router.get('/blocks/:blockId/children', optionalAuth, async (req, res) => {
   const authedReq = req as AuthedRequest;
-  if (!checkReadPermission(res)) return;
+  if (!checkReadPermission(req, res)) return;
   const notion = getNotion(res);
   if (!notion) return;
 
@@ -255,7 +253,7 @@ router.get('/blocks/:blockId/children', optionalAuth, async (req, res) => {
 
 router.patch('/pages/:pageId', optionalAuth, async (req, res) => {
   const authedReq = req as AuthedRequest;
-  if (!checkWritePermission(res)) return;
+  if (!checkWritePermission(req, res)) return;
   const notion = getNotion(res);
   if (!notion) return;
 
@@ -288,7 +286,7 @@ router.patch('/pages/:pageId', optionalAuth, async (req, res) => {
 
 router.post('/pages', optionalAuth, async (req, res) => {
   const authedReq = req as AuthedRequest;
-  if (!checkWritePermission(res)) return;
+  if (!checkWritePermission(req, res)) return;
   const notion = getNotion(res);
   if (!notion) return;
 

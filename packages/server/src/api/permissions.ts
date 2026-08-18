@@ -8,7 +8,7 @@ import { getConnectionManager } from '../connections/manager.js';
 
 const router = Router();
 
-export const ALL_SERVICES = ['slack', 'discord', 'telegram', 'gmail', 'calendar', 'twitter', 'notion', 'obsidian', 'smb'] as const;
+export const ALL_SERVICES = ['slack', 'discord', 'telegram', 'gmail', 'calendar', 'twitter', 'notion', 'obsidian', 'smb', 'gdrive'] as const;
 export type AllService = typeof ALL_SERVICES[number];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

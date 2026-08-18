@@ -27,16 +27,14 @@ import {
   type TweetAnalytic, type TwitterAnalytics, type TwitterAnalyticsByDay,
 } from '@/lib/api';
 import { Skeleton } from '@/components/shared/Skeleton';
-import { cn, timeAgo, formatDate } from '@/lib/utils';
+import { cn, timeAgo, formatDate, stringToHue } from '@/lib/utils';
+import { ChartTooltip } from '@/components/shared/ChartTooltip';
 import { toast } from '@/store';
 import { useConnectionStore } from '@/store';
 
 // ─── Shared avatar helpers ─────────────────────────────────────────────────────
 
-/** Returns a deterministic hue (0–359) from a string (username/name). */
-function strHue(s: string): number {
-  return s.split('').reduce((h, c) => (h * 31 + c.charCodeAt(0)) & 0xffff, 0) % 360;
-}
+// Deterministic avatar hue comes from the shared stringToHue util.
 
 /**
  * Avatar that shows a real profile image when available and falls back to a
@@ -57,7 +55,7 @@ function TwitterAvatar({
 }) {
   const [imgErr, setImgErr] = useState(false);
   const label = name || username || '?';
-  const hue = strHue(username || name || '?');
+  const hue = stringToHue(username || name || '?');
 
   if (avatarUrl && !imgErr) {
     return (
@@ -659,21 +657,6 @@ function FeedTab() {
 
 const CHART_COLORS = { likes: '#F59E0B', retweets: '#38BDF8', replies: '#8B5CF6' };
 
-const ChartTooltip = ({ active, payload, label }: Record<string, unknown>) => {
-  if (!active || !payload) return null;
-  return (
-    <div className="card-warm border-border/80 p-3 text-xs shadow-warm-lg min-w-[130px]">
-      <p className="text-muted-foreground mb-2 font-medium">{String(label)}</p>
-      {(payload as Array<{ name: string; value: number; color: string }>).map((p) => (
-        <div key={p.name} className="flex items-center justify-between gap-4">
-          <span style={{ color: p.color }} className="capitalize">{p.name}</span>
-          <span className="font-semibold text-foreground">{(p.value ?? 0).toLocaleString()}</span>
-        </div>
-      ))}
-    </div>
-  );
-};
-
 type SortCol = 'date' | 'likes' | 'retweets' | 'replies' | 'totalEngagement';
 type SortDir = 'asc' | 'desc';
 
@@ -857,7 +840,7 @@ function AnalyticsTab({ handle }: { handle: string }) {
               <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
               <XAxis dataKey="date" tick={axisStyle} tickLine={false} axisLine={false} />
               <YAxis tick={axisStyle} tickLine={false} axisLine={false} width={32} />
-              <Tooltip content={<ChartTooltip />} cursor={{ stroke: 'hsl(20 8% 28%)', strokeWidth: 1 }} />
+              <Tooltip content={<ChartTooltip capitalize />} cursor={{ stroke: 'hsl(var(--border))', strokeWidth: 1 }} />
               <Legend wrapperStyle={{ fontSize: 11 }} />
               <Area type="monotone" dataKey="likes"    stroke={CHART_COLORS.likes}    fill={`url(#g-likes)`}    strokeWidth={2} dot={false} />
               <Area type="monotone" dataKey="retweets" stroke={CHART_COLORS.retweets} fill={`url(#g-retweets)`} strokeWidth={2} dot={false} />
@@ -881,7 +864,7 @@ function AnalyticsTab({ handle }: { handle: string }) {
               <CartesianGrid strokeDasharray="3 3" stroke={gridColor} horizontal={false} />
               <XAxis type="number" tick={axisStyle} tickLine={false} axisLine={false} />
               <YAxis type="category" dataKey="name" tick={{ ...axisStyle, textAnchor: 'end' }} width={180} tickLine={false} axisLine={false} />
-              <Tooltip content={<ChartTooltip />} cursor={{ fill: 'hsl(20 8% 18% / 0.5)' }} />
+              <Tooltip content={<ChartTooltip capitalize />} cursor={{ fill: 'hsl(var(--secondary) / 0.5)' }} />
               <Bar dataKey="likes"    stackId="a" fill={CHART_COLORS.likes}    name="Likes"    radius={[0,0,0,0]} />
               <Bar dataKey="retweets" stackId="a" fill={CHART_COLORS.retweets} name="Retweets" radius={[0,0,0,0]} />
               <Bar dataKey="replies"  stackId="a" fill={CHART_COLORS.replies}  name="Replies"  radius={[0,3,3,0]} />
@@ -941,15 +924,9 @@ export default function TwitterPage() {
   const [tab, setTab] = useState<'dms' | 'feed' | 'analytics'>('dms');
   const { data: status, isLoading: statusLoading } = useQuery({ queryKey: ['twitter-status'], queryFn: api.twitterStatus, refetchInterval: 30000 });
 
-  if (statusLoading) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
-        <Loader2 className="w-6 h-6 animate-spin opacity-40" />
-      </div>
-    );
-  }
-
-  if (!status?.connected) {
+  // No full-page spinner while status loads — tabs render immediately with
+  // their own loading states; not-connected only shows once status is known.
+  if (!statusLoading && !status?.connected) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
         <div className="w-20 h-20 rounded-2xl bg-secondary/50 border border-border flex items-center justify-center">
@@ -985,11 +962,11 @@ export default function TwitterPage() {
           </button>
         ))}
         <div className="ml-auto flex items-center gap-2">
-          {status.handle && (
-            <span className="chip chip-sky text-xs">@{status.handle}</span>
+          {status?.handle && (
+            <span className="chip chip-sky text-xs">@{status?.handle}</span>
           )}
-          {status.dmCount != null && (
-            <span className="text-xs text-muted-foreground">{status.dmCount} DMs synced</span>
+          {status?.dmCount != null && (
+            <span className="text-xs text-muted-foreground">{status?.dmCount} DMs synced</span>
           )}
         </div>
       </div>
@@ -998,7 +975,7 @@ export default function TwitterPage() {
       <div className="flex-1 overflow-hidden flex">
         {tab === 'dms'       && <DmTab />}
         {tab === 'feed'      && <FeedTab />}
-        {tab === 'analytics' && <AnalyticsTab handle={status.handle || ''} />}
+        {tab === 'analytics' && <AnalyticsTab handle={status?.handle || ''} />}
       </div>
     </div>
   );

@@ -1,7 +1,7 @@
 /**
  * OpenAPI 3.0 spec for the Conduit API — agent-relevant endpoints only.
  *
- * This spec is designed for AI agents (Claude, OpenClaw, etc.) and covers
+ * This spec is designed for AI agent tool use and covers
  * all read, search, send, and context-gathering endpoints. Admin/setup routes
  * (credentials, service resets, sync management) are intentionally excluded.
  */
@@ -33,7 +33,7 @@ router.get('/openapi.json', (req, res) => {
       schemas: {
         Message: {
           type: 'object',
-          description: 'A single message from any connected platform',
+          description: 'A single message from any connected platform. The raw serialised platform payload (rawJson) is never returned; API-key actors additionally do not receive attachments/embeds.',
           properties: {
             source:        { type: 'string', enum: ['slack', 'discord', 'telegram', 'twitter', 'gmail'], description: 'The platform this message came from' },
             messageId:     { type: 'string', description: 'Platform-native message ID' },
@@ -160,7 +160,7 @@ router.get('/openapi.json', (req, res) => {
           description: 'A file or directory entry in the vault',
           properties: {
             name:     { type: 'string', description: 'File or directory name' },
-            path:     { type: 'string', description: 'Relative path from the vault root — use this with GET /obsidian/files/{path}' },
+            path:     { type: 'string', description: 'Relative path from the vault root — use this with GET /obsidian/vaults/{id}/files/{path}' },
             type:     { type: 'string', enum: ['file', 'directory'] },
             children: { type: 'array', description: 'Child entries (only present for type=directory)', items: { $ref: '#/components/schemas/ObsidianFileEntry' } },
           },
@@ -268,6 +268,188 @@ router.get('/openapi.json', (req, res) => {
                 },
               },
             },
+          },
+        },
+      },
+
+      '/digest': {
+        get: {
+          operationId: 'getDigest',
+          summary: 'Get the one-call agent briefing (what needs attention)',
+          description: 'Answers "what needs my attention?" in a single bounded response instead of many raw-list round trips. Returns chats needing a reply, unread email rollups, upcoming events, recent meeting notes, pending outbox items, and per-service unread totals. Fine-grained permissions apply — API keys only see sources, chats, and labels their key can read.',
+          parameters: [
+            {
+              name: 'since',
+              in: 'query',
+              description: 'ISO 8601 timestamp bounding the needsReply window. Defaults to 24 hours ago.',
+              schema: { type: 'string', format: 'date-time' },
+            },
+            {
+              name: 'meetings_days',
+              in: 'query',
+              description: 'How many days back to include in recentMeetings. Default 14, max 60.',
+              schema: { type: 'integer', default: 14, maximum: 60 },
+            },
+          ],
+          responses: {
+            '200': {
+              description: 'Attention digest',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      generatedAt: { type: 'string', format: 'date-time' },
+                      window: {
+                        type: 'object',
+                        properties: {
+                          since: { type: 'string', format: 'date-time' },
+                          until: { type: 'string', format: 'date-time' },
+                        },
+                      },
+                      needsReply: {
+                        type: 'array',
+                        description: 'Chats whose latest message is from someone else and newer than the chat\'s read cursor (max 15)',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            source:   { type: 'string' },
+                            chatId:   { type: 'string' },
+                            chatName: { type: 'string' },
+                            lastMessage: {
+                              type: 'object',
+                              properties: {
+                                senderName: { type: 'string' },
+                                excerpt:    { type: 'string' },
+                                timestamp:  { type: 'string', format: 'date-time' },
+                              },
+                            },
+                            unread: { type: 'integer' },
+                          },
+                        },
+                      },
+                      unreadEmail: {
+                        type: 'object',
+                        nullable: true,
+                        description: 'Unread email rollup. Null when Gmail read access is not permitted.',
+                        properties: {
+                          count:      { type: 'integer' },
+                          topSenders: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, count: { type: 'integer' } } } },
+                          latest: {
+                            type: 'array',
+                            items: {
+                              type: 'object',
+                              properties: {
+                                gmailId:    { type: 'string' },
+                                threadId:   { type: 'string' },
+                                from:       { type: 'string' },
+                                subject:    { type: 'string', nullable: true },
+                                receivedAt: { type: 'string', format: 'date-time', nullable: true },
+                              },
+                            },
+                          },
+                        },
+                      },
+                      upcomingEvents: {
+                        type: 'array',
+                        description: 'Events in the next 7 days (max 10)',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            eventId:       { type: 'string' },
+                            title:         { type: 'string', nullable: true },
+                            startTime:     { type: 'string', format: 'date-time' },
+                            endTime:       { type: 'string', format: 'date-time', nullable: true },
+                            meetLink:      { type: 'string', nullable: true },
+                            attendeeCount: { type: 'integer' },
+                          },
+                        },
+                      },
+                      recentMeetings: {
+                        type: 'array',
+                        description: 'Meet notes within meetings_days, excerpted (max 10)',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            id:          { type: 'integer' },
+                            title:       { type: 'string', nullable: true },
+                            meetingDate: { type: 'string', format: 'date-time', nullable: true },
+                            excerpt:     { type: 'string' },
+                          },
+                        },
+                      },
+                      pendingOutbox: {
+                        type: 'object',
+                        properties: {
+                          count: { type: 'integer', description: 'Total pending items for the actor' },
+                          items: {
+                            type: 'array',
+                            description: 'Most recent pending items (max 10)',
+                            items: {
+                              type: 'object',
+                              properties: {
+                                id:            { type: 'integer' },
+                                source:        { type: 'string' },
+                                recipientName: { type: 'string', nullable: true },
+                                preview:       { type: 'string' },
+                                createdAt:     { type: 'string', format: 'date-time' },
+                              },
+                            },
+                          },
+                        },
+                      },
+                      unreadBySource: {
+                        type: 'object',
+                        description: 'Per-service unread totals, keyed by source name',
+                        additionalProperties: { type: 'integer' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      '/context': {
+        get: {
+          operationId: 'getContext',
+          summary: 'Get Conduit self-description and live service state (no auth)',
+          description: 'Public self-documentation endpoint — no authentication required. Returns Conduit\'s version, capabilities with example calls, the live connection state of every configured service, and helpful links. Cached for 1 hour with ETag/Cache-Control; the cache invalidates when a service connects or disconnects.',
+          security: [],
+          responses: {
+            '200': {
+              description: 'Conduit self-description',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      conduit:      { type: 'object', description: 'Version, description, baseUrl, auth method, and capability list with example calls' },
+                      services:     { type: 'array', items: { type: 'object' }, description: 'Per-service descriptors: connection state, accounts/vaults/shares, capabilities, auth type' },
+                      helpfulLinks: { type: 'object', description: 'Links to settings, integrations, permissions, API keys, OpenAPI spec, and topology' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      '/skill': {
+        get: {
+          operationId: 'getSkill',
+          summary: 'Get the Conduit agent skill definition as Markdown (no auth)',
+          description: 'Returns the raw Markdown content of the Conduit agent skill (SKILL.md) — no authentication required. Always reflects the live file on the server.',
+          security: [],
+          responses: {
+            '200': {
+              description: 'Skill definition',
+              content: { 'text/markdown': { schema: { type: 'string' } } },
+            },
+            '404': { description: 'SKILL.md not found on the server' },
           },
         },
       },
@@ -396,7 +578,7 @@ router.get('/openapi.json', (req, res) => {
                     type: 'object',
                     properties: {
                       messages: { type: 'array', items: { $ref: '#/components/schemas/Message' } },
-                      total:    { type: 'integer' },
+                      total:    { type: 'integer', description: 'True count of matching rows across all queried sources (not capped at the page size) — suitable for pagination' },
                       conversationMeta: {
                         type: 'object',
                         nullable: true,
@@ -509,6 +691,7 @@ router.get('/openapi.json', (req, res) => {
                                     source:       { type: 'string' },
                                     messageCount: { type: 'integer' },
                                     lastTs:       { type: 'string', format: 'date-time', nullable: true },
+                                    unread:       { type: 'integer', description: 'Messages newer than the chat\'s read cursor that were not sent by the authenticated user' },
                                   },
                                 },
                               },
@@ -521,6 +704,91 @@ router.get('/openapi.json', (req, res) => {
                 },
               },
             },
+          },
+        },
+      },
+
+      '/chats/{source}/{chatId}/read': {
+        post: {
+          operationId: 'markChatRead',
+          summary: 'Mark a chat as read (UI session only)',
+          description: 'Sets the chat\'s read cursor, clearing its unread count. **UI session only** — requests carrying an X-API-Key header are rejected with 403.',
+          security: [],
+          parameters: [
+            { name: 'source', in: 'path', required: true, schema: { type: 'string', enum: ['telegram', 'discord', 'slack', 'twitter', 'gmail'] } },
+            { name: 'chatId', in: 'path', required: true, schema: { type: 'string' }, description: 'Conversation ID from GET /chats' },
+          ],
+          requestBody: {
+            required: false,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    at: { type: 'string', format: 'date-time', description: 'Read cursor timestamp. Defaults to now.' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Read cursor updated',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      success:    { type: 'boolean' },
+                      source:     { type: 'string' },
+                      chatId:     { type: 'string' },
+                      lastReadAt: { type: 'string', format: 'date-time' },
+                    },
+                  },
+                },
+              },
+            },
+            '400': { description: 'Unknown source' },
+            '403': { description: 'Not available to API keys' },
+          },
+        },
+      },
+
+      '/chats/read-all': {
+        post: {
+          operationId: 'markAllChatsRead',
+          summary: 'Mark every known chat as read (UI session only)',
+          description: 'Marks every known chat read, optionally limited to one source. Omit source to mark all of telegram, discord, slack, and twitter read. **UI session only** — requests carrying an X-API-Key header are rejected with 403.',
+          security: [],
+          requestBody: {
+            required: false,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    source: { type: 'string', enum: ['telegram', 'discord', 'slack', 'twitter'], description: 'Limit to one source' },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            '200': {
+              description: 'Chats marked read',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      success: { type: 'boolean' },
+                      marked:  { type: 'integer', description: 'Number of chats whose read cursor was updated' },
+                    },
+                  },
+                },
+              },
+            },
+            '403': { description: 'Not available to API keys' },
           },
         },
       },
@@ -769,6 +1037,16 @@ router.get('/openapi.json', (req, res) => {
               name: 'source', in: 'query',
               schema: { type: 'string', enum: ['slack', 'discord', 'telegram', 'twitter', 'gmail', 'calendar'] },
             },
+            {
+              name: 'limit', in: 'query',
+              description: 'Page size. Default 50, max 200.',
+              schema: { type: 'integer', default: 50, maximum: 200 },
+            },
+            {
+              name: 'offset', in: 'query',
+              description: 'Pagination offset. Default 0.',
+              schema: { type: 'integer', default: 0 },
+            },
           ],
           responses: {
             '200': {
@@ -779,7 +1057,10 @@ router.get('/openapi.json', (req, res) => {
                     type: 'object',
                     properties: {
                       items:        { type: 'array', items: { $ref: '#/components/schemas/OutboxItem' } },
-                      pendingCount: { type: 'integer' },
+                      total:        { type: 'integer', description: 'Count of items matching the status/source filters' },
+                      pendingCount: { type: 'integer', description: 'The actor\'s global pending total — NOT affected by the status/source filters' },
+                      limit:        { type: 'integer' },
+                      offset:       { type: 'integer' },
                     },
                   },
                 },
@@ -855,6 +1136,15 @@ The recipient_id field should be set to the file/directory path for smb actions.
   \`{"action":"delete_file","folderId":1,"fileId":"1BxiMVs0XRA5..."}\`
 
 The recipient_id field should be set to the fileId for existing-file actions, or the fileName for create_file. All writes require sendEnabled permission for the gdrive service.`,
+          parameters: [
+            {
+              name: 'Idempotency-Key',
+              in: 'header',
+              required: false,
+              schema: { type: 'string' },
+              description: 'Optional idempotency key. A retried POST carrying the same key returns the original outbox item (with idempotent: true) instead of queueing a duplicate. 409 if the key was used by a different API key.',
+            },
+          ],
           requestBody: {
             required: true,
             content: {
@@ -863,7 +1153,7 @@ The recipient_id field should be set to the fileId for existing-file actions, or
                   type: 'object',
                   required: ['source', 'recipient_id', 'content'],
                   properties: {
-                    source:         { type: 'string', enum: ['slack', 'discord', 'telegram', 'twitter', 'gmail', 'calendar', 'notion', 'obsidian', 'smb'], description: 'Platform to send on' },
+                    source:         { type: 'string', enum: ['slack', 'discord', 'telegram', 'twitter', 'gmail', 'calendar', 'notion', 'obsidian', 'smb', 'gdrive'], description: 'Platform to send on' },
                     recipient_id:   { type: 'string', description: 'Platform-native channel ID, user ID, vault file path (obsidian), or SMB file path (smb)' },
                     recipient_name: { type: 'string', description: 'Human-readable name for display in the outbox UI' },
                     content:        { type: 'string', description: 'Plain text for messaging platforms; JSON-encoded action object for obsidian, smb, gmail, calendar, notion' },
@@ -931,6 +1221,37 @@ The recipient_id field should be set to the fileId for existing-file actions, or
           ],
           responses: {
             '200': { description: 'Item deleted', content: { 'application/json': { schema: { type: 'object', properties: { success: { type: 'boolean' } } } } } },
+          },
+        },
+      },
+
+      '/outbox/{id}/retry': {
+        post: {
+          operationId: 'retryOutboxItem',
+          summary: 'Retry a failed outbox item',
+          description: 'Re-dispatches an outbox item whose status is failed. On success the item transitions to sent. Only failed items can be retried; API-key actors can only retry their own items and must still have send permission for the item\'s service.',
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'integer' }, description: 'Outbox item ID' },
+          ],
+          responses: {
+            '200': {
+              description: 'Item re-dispatched successfully',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      success: { type: 'boolean' },
+                      status:  { type: 'string', enum: ['sent'] },
+                    },
+                  },
+                },
+              },
+            },
+            '403': { description: 'Sending is not enabled for the item\'s service' },
+            '404': { description: 'Outbox item not found' },
+            '409': { description: 'Item is not in failed status' },
+            '500': { description: 'Dispatch failed again — the item returns to failed with the error message' },
           },
         },
       },
@@ -1445,6 +1766,72 @@ The recipient_id field should be set to the fileId for existing-file actions, or
         },
       },
 
+      // ── Meet Notes ────────────────────────────────────────────────────────────
+
+      '/meet-notes': {
+        get: {
+          operationId: 'listMeetNotes',
+          summary: 'List Google Meet meeting notes',
+          description: 'Lists Google Meet "Smart Notes" synced from Drive, newest first. Supports search and date-range filtering. Gated by the calendar read permission.',
+          parameters: [
+            { name: 'limit', in: 'query', description: 'Page size. Default 50, max 200.', schema: { type: 'integer', default: 50, maximum: 200 } },
+            { name: 'offset', in: 'query', description: 'Pagination offset. Default 0.', schema: { type: 'integer', default: 0 } },
+            { name: 'q', in: 'query', description: 'Substring search across note title and summary.', schema: { type: 'string' } },
+            { name: 'account_id', in: 'query', description: 'Filter to one Google account (email).', schema: { type: 'string' } },
+            { name: 'from', in: 'query', description: 'Only notes with meetingDate on or after this ISO timestamp.', schema: { type: 'string', format: 'date-time' } },
+            { name: 'to', in: 'query', description: 'Only notes with meetingDate on or before this ISO timestamp.', schema: { type: 'string', format: 'date-time' } },
+          ],
+          responses: {
+            '200': {
+              description: 'Meeting notes, newest first',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      notes: {
+                        type: 'array',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            id:          { type: 'integer', description: 'Use with GET /meet-notes/{id}' },
+                            title:       { type: 'string', nullable: true },
+                            summary:     { type: 'string', nullable: true, description: 'Full plaintext content of the notes doc' },
+                            meetingDate: { type: 'string', format: 'date-time', nullable: true },
+                            accountId:   { type: 'string', nullable: true, description: 'Google account email' },
+                            driveFileId: { type: 'string', nullable: true },
+                            docsUrl:     { type: 'string', nullable: true, description: 'Link to the Google Doc' },
+                            attendees:   { type: 'string', nullable: true, description: 'JSON array of { name, email } participant objects' },
+                          },
+                        },
+                      },
+                      total:  { type: 'integer', description: 'Total notes matching the filters' },
+                      limit:  { type: 'integer' },
+                      offset: { type: 'integer' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      '/meet-notes/{id}': {
+        get: {
+          operationId: 'getMeetNote',
+          summary: 'Get a single meeting note',
+          description: 'Returns one meeting note in full. Gated by the calendar read permission.',
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'integer' }, description: 'Note ID from GET /meet-notes' },
+          ],
+          responses: {
+            '200': { description: 'Meeting note', content: { 'application/json': { schema: { type: 'object' } } } },
+            '404': { description: 'Note not found' },
+          },
+        },
+      },
+
       // ── Twitter / X ───────────────────────────────────────────────────────────
 
       '/twitter/feed': {
@@ -1540,9 +1927,10 @@ The recipient_id field should be set to the fileId for existing-file actions, or
         get: {
           operationId: 'listTwitterDMs',
           summary: 'List Twitter DM conversations',
-          description: 'Returns all synced Twitter direct message conversations with participant info and last message.',
+          description: 'Returns synced Twitter direct message conversations grouped by conversationId, sorted by most recent message. otherName/otherHandle/otherAvatarUrl describe the participant who is not the authenticated user. Requires DM read permission for the API key.',
           parameters: [
-            { name: 'limit', in: 'query', schema: { type: 'integer', default: 50 } },
+            { name: 'limit', in: 'query', schema: { type: 'integer', default: 50, maximum: 100 } },
+            { name: 'offset', in: 'query', schema: { type: 'integer', default: 0 } },
           ],
           responses: {
             '200': {
@@ -1558,37 +1946,34 @@ The recipient_id field should be set to the fileId for existing-file actions, or
                           type: 'object',
                           properties: {
                             conversationId: { type: 'string', description: 'Pass to GET /twitter/dms/{conversationId} for messages' },
-                            participants: {
-                              type: 'array',
-                              items: {
-                                type: 'object',
-                                properties: {
-                                  userId:      { type: 'string' },
-                                  displayName: { type: 'string' },
-                                  handle:      { type: 'string' },
-                                  avatarUrl:   { type: 'string', nullable: true },
-                                  isMe:        { type: 'boolean' },
-                                },
-                              },
-                            },
+                            participantIds: { type: 'array', items: { type: 'string' }, description: 'Twitter user IDs seen in this conversation' },
+                            otherName:      { type: 'string', description: 'Display name of the other participant (empty string when unknown)' },
+                            otherHandle:    { type: 'string', description: '@handle of the other participant, without the @ (empty string when unknown)' },
+                            otherAvatarUrl: { type: 'string', nullable: true, description: 'Avatar URL of the other participant, from the contacts table' },
                             lastMessage: {
                               type: 'object',
-                              nullable: true,
+                              description: 'The stored DM row for the most recent message in the conversation',
                               properties: {
-                                text:      { type: 'string' },
-                                timestamp: { type: 'string', format: 'date-time' },
-                                senderId:  { type: 'string' },
+                                conversationId: { type: 'string' },
+                                messageId:      { type: 'string' },
+                                senderId:       { type: 'string' },
+                                senderHandle:   { type: 'string', nullable: true },
+                                senderName:     { type: 'string', nullable: true },
+                                text:           { type: 'string', nullable: true },
+                                createdAt:      { type: 'string', format: 'date-time' },
                               },
                             },
-                            unreadCount: { type: 'integer' },
+                            messageCount:   { type: 'integer', description: 'Number of stored messages in this conversation' },
                           },
                         },
                       },
+                      total: { type: 'integer', description: 'Total number of conversations before limit/offset are applied' },
                     },
                   },
                 },
               },
             },
+            '403': { description: 'DM access is not permitted for this API key' },
           },
         },
       },
@@ -1597,7 +1982,7 @@ The recipient_id field should be set to the fileId for existing-file actions, or
         get: {
           operationId: 'getTwitterDMConversation',
           summary: 'Get messages in a Twitter DM conversation',
-          description: 'Returns all stored messages in a specific DM conversation.',
+          description: 'Returns all stored messages in a specific DM conversation, oldest first. Requires DM read permission for the API key.',
           parameters: [
             { name: 'conversationId', in: 'path', required: true, schema: { type: 'string' } },
             { name: 'limit', in: 'query', schema: { type: 'integer', default: 100 } },
@@ -1616,22 +2001,23 @@ The recipient_id field should be set to the fileId for existing-file actions, or
                         items: {
                           type: 'object',
                           properties: {
-                            id:           { type: 'string' },
-                            text:         { type: 'string' },
-                            senderId:     { type: 'string' },
-                            senderHandle: { type: 'string' },
-                            senderName:   { type: 'string' },
-                            isMe:         { type: 'boolean' },
-                            timestamp:    { type: 'string', format: 'date-time' },
+                            conversationId:  { type: 'string' },
+                            messageId:       { type: 'string' },
+                            senderId:        { type: 'string' },
+                            senderHandle:    { type: 'string', nullable: true },
+                            senderName:      { type: 'string', nullable: true },
+                            senderAvatarUrl: { type: 'string', nullable: true, description: 'Avatar URL from the contacts table' },
+                            text:            { type: 'string', nullable: true },
+                            createdAt:       { type: 'string', format: 'date-time' },
                           },
                         },
                       },
-                      total: { type: 'integer' },
                     },
                   },
                 },
               },
             },
+            '403': { description: 'DM access is not permitted for this API key' },
           },
         },
       },
@@ -2601,6 +2987,44 @@ GET /gdrive/folders/1/files/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms`,
       },
 
       // ── Google Drive ──────────────────────────────────────────────────────────
+
+      '/gdrive/accounts': {
+        get: {
+          operationId: 'listGdriveAccounts',
+          summary: 'List Google accounts with an active Drive connection',
+          description: 'Returns the Google accounts that currently have an active Google Drive sync connection. Gated by the gdrive read permission.',
+          responses: {
+            '200': {
+              description: 'Connected Drive accounts',
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      accounts: {
+                        type: 'array',
+                        description: 'Google accounts with an active Drive sync manager',
+                        items: {
+                          type: 'object',
+                          properties: {
+                            email:  { type: 'string', description: 'Google account email' },
+                            status: {
+                              type: 'object',
+                              properties: {
+                                status: { type: 'string', enum: ['connected', 'disconnected'] },
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
 
       '/gdrive/folders': {
         get: {

@@ -105,6 +105,7 @@ export class GmailSync {
   private creds: GmailCreds | null = null;
   private _cancelRequested = false;
   private _pollInterval: NodeJS.Timeout | null = null;
+  private syncInFlight = false;
   public connected = false;
   public accountInfo: { email: string; displayName?: string } | null = null;
   private historyId: string | null = null;
@@ -127,8 +128,11 @@ export class GmailSync {
     this.stopPolling();
     this._pollInterval = setInterval(async () => {
       if (!this.connected) return;
+      if (this.syncInFlight) return; // previous cycle still running — skip this tick
+      this.syncInFlight = true;
       try { await this.incrementalSync(); }
       catch (e) { console.error('[gmail] Poll error:', e); }
+      finally { this.syncInFlight = false; }
     }, intervalMs);
     console.log(`[gmail] Polling started (every ${intervalMs / 1000}s) for ${this.accountInfo?.email}`);
   }
@@ -368,25 +372,39 @@ export class GmailSync {
       return 0;
     }
 
+    // Capture as locals: a concurrent disconnect() setting this.gmail = null
+    // cannot affect an in-progress sync, and TS keeps the non-null narrowing.
+    const gmail = this.gmail;
+    const startHistoryId = this.historyId;
     const db = getDb();
     let saved = 0;
 
     try {
-      const histRes = await this.gmail.users.history.list({
-        userId: 'me',
-        startHistoryId: this.historyId,
-        historyTypes: ['messageAdded', 'labelAdded', 'labelRemoved'],
-      });
-
-      const histories = histRes.data.history || [];
-      if (histRes.data.historyId) { this.historyId = histRes.data.historyId; this.saveHistoryId(); }
+      // Collect ALL history pages before processing. A burst of changes (bulk
+      // archive, mailing-list storm) can span multiple pages; processing only
+      // the first page while advancing historyId would silently and
+      // unrecoverably drop the rest.
+      const histories: gmail_v1.Schema$History[] = [];
+      let latestHistoryId: string | null = null;
+      let pageToken: string | undefined;
+      do {
+        const histRes = await gmail.users.history.list({
+          userId: 'me',
+          startHistoryId,
+          historyTypes: ['messageAdded', 'labelAdded', 'labelRemoved'],
+          pageToken,
+        });
+        histories.push(...(histRes.data.history || []));
+        if (histRes.data.historyId) latestHistoryId = histRes.data.historyId;
+        pageToken = histRes.data.nextPageToken || undefined;
+      } while (pageToken);
 
       for (const h of histories) {
         for (const added of h.messagesAdded || []) {
           const stub = added.message;
           if (!stub?.id) continue;
           try {
-            const msgRes = await this.gmail.users.messages.get({
+            const msgRes = await gmail.users.messages.get({
               userId: 'me', id: stub.id, format: 'metadata',
               metadataHeaders: ['From', 'To', 'Cc', 'Subject'],
             });
@@ -434,21 +452,40 @@ export class GmailSync {
           } catch { /* skip */ }
         }
 
-        // Handle label changes (mark read/unread, archive, etc.)
+        // Handle label changes (mark read/unread, star, archive, etc.)
+        // The actual delta lives in labelsAdded[i].labelIds / labelsRemoved[i].labelIds —
+        // NOT in message.labelIds (the message's full label set at fetch time).
         // Track affected thread IDs so we can re-broadcast their unread counts.
         const affectedThreadIds = new Set<string>();
-        for (const labChange of [...(h.labelsAdded || []), ...(h.labelsRemoved || [])]) {
+        for (const labChange of h.labelsAdded || []) {
           const stub = labChange.message;
           if (!stub?.id) continue;
-          const isRead = !stub.labelIds?.includes('UNREAD');
-          const isStarred = stub.labelIds?.includes('STARRED') ?? false;
-          const labels = JSON.stringify(stub.labelIds || []);
-          db.update(gmailMessages).set({ isRead, isStarred, labels })
-            .where(eq(gmailMessages.gmailId, stub.id)).run();
-          // Track the thread so we can update its unread count badge
-          const msgRow = db.select({ threadId: gmailMessages.threadId })
+          const row = db.select({ threadId: gmailMessages.threadId, labels: gmailMessages.labels })
             .from(gmailMessages).where(eq(gmailMessages.gmailId, stub.id)).get();
-          if (msgRow?.threadId) affectedThreadIds.add(msgRow.threadId);
+          if (!row) continue; // not synced locally (out of window) — skip silently
+          const delta = labChange.labelIds || [];
+          const labels = new Set<string>(JSON.parse(row.labels || '[]'));
+          for (const l of delta) labels.add(l);
+          const set: { labels: string; isRead?: boolean; isStarred?: boolean } = { labels: JSON.stringify([...labels]) };
+          if (delta.includes('UNREAD'))  set.isRead = false;
+          if (delta.includes('STARRED')) set.isStarred = true;
+          db.update(gmailMessages).set(set).where(eq(gmailMessages.gmailId, stub.id)).run();
+          affectedThreadIds.add(row.threadId);
+        }
+        for (const labChange of h.labelsRemoved || []) {
+          const stub = labChange.message;
+          if (!stub?.id) continue;
+          const row = db.select({ threadId: gmailMessages.threadId, labels: gmailMessages.labels })
+            .from(gmailMessages).where(eq(gmailMessages.gmailId, stub.id)).get();
+          if (!row) continue; // not synced locally (out of window) — skip silently
+          const delta = labChange.labelIds || [];
+          const labels = new Set<string>(JSON.parse(row.labels || '[]'));
+          for (const l of delta) labels.delete(l);
+          const set: { labels: string; isRead?: boolean; isStarred?: boolean } = { labels: JSON.stringify([...labels]) };
+          if (delta.includes('UNREAD'))  set.isRead = true;
+          if (delta.includes('STARRED')) set.isStarred = false;
+          db.update(gmailMessages).set(set).where(eq(gmailMessages.gmailId, stub.id)).run();
+          affectedThreadIds.add(row.threadId);
         }
 
         // Re-broadcast unread counts for threads whose read state changed
@@ -466,6 +503,10 @@ export class GmailSync {
           }
         }
       }
+
+      // Advance the stored historyId only after every page has been processed,
+      // so an error mid-processing retries from the previous checkpoint.
+      if (latestHistoryId) { this.historyId = latestHistoryId; this.saveHistoryId(); }
 
       return saved;
     } catch (e: any) {

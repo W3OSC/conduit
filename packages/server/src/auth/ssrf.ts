@@ -8,7 +8,7 @@
  * Policy (configurable in Settings → Security):
  *  - `security.blockPrivateIpSsrf` (default: false)
  *    Block URLs that resolve to known private/loopback IP ranges.
- *    Non-IP hostnames (e.g. Docker service names like "openclaw") are allowed
+ *    Non-IP hostnames (e.g. Docker service names) are allowed
  *    since they're common in legitimate local setups.
  *
  * Note: This provides defence-in-depth, not a complete SSRF firewall — DNS

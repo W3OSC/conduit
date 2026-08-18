@@ -13,7 +13,6 @@ import { useThemeStore, PRIMARY_COLOR_MAP } from '@/store/theme';
 import Inbox from '@/pages/Inbox';
 import Dashboard from '@/pages/Dashboard';
 import Chat from '@/pages/Chat';
-import AiChat from '@/pages/AiChat';
 
 // Non-critical routes — lazy-loaded for performance
 const Outbox         = lazy(() => import('@/pages/Outbox'));
@@ -95,7 +94,13 @@ function PageLoader() {
 
 const queryClient = new QueryClient({
   defaultOptions: {
-    queries: { staleTime: 30000, retry: 2 },
+    queries: {
+      staleTime: 30000,
+      retry: 2,
+      // Keep showing the previous page while a filter/search change refetches —
+      // no more blank-to-skeleton flicker on every keystroke or tab switch.
+      placeholderData: (previousData: unknown) => previousData,
+    },
   },
 });
 
@@ -114,7 +119,6 @@ function AppInner() {
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/chat" element={<Chat />} />
               <Route path="/chat/:service/:chatId" element={<Chat />} />
-              <Route path="/ai" element={<AiChat />} />
               <Route path="/outbox" element={<Outbox />} />
               <Route path="/contacts" element={<Contacts />} />
               <Route path="/email" element={<Email />} />

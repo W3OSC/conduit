@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getDb } from '../db/client.js';
+import { getDb, getSqlite } from '../db/client.js';
 import { auditLog } from '../db/schema.js';
 import { eq, and, desc, gte, lte, like, sql } from 'drizzle-orm';
 import { optionalAuth } from '../auth/middleware.js';
@@ -33,28 +33,60 @@ router.get('/', optionalAuth, (req, res) => {
   res.json({ items, total });
 });
 
+// Streams the CSV row-by-row via better-sqlite3's .iterate() — never builds the
+// full export in memory. Invoked by the UI via window.open with zero query
+// params and cookie auth; action/service/actor filters are optional extras.
 router.get('/export', optionalAuth, (req, res) => {
-  const db = getDb();
-  const items = db.select().from(auditLog).orderBy(desc(auditLog.timestamp)).all();
+  const { action, service, actor } = req.query as Record<string, string>;
+  const sqlite = getSqlite();
 
-  const headers = ['id', 'action', 'service', 'actor', 'targetId', 'detail', 'timestamp'];
-  const rows = items.map((i) => [
-    i.id,
-    i.action,
-    i.service || '',
-    i.actor,
-    i.targetId || '',
-    i.detail || '',
-    i.timestamp || '',
-  ]);
-
-  const csv = [headers, ...rows]
-    .map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))
-    .join('\n');
+  const conditions: string[] = [];
+  const params: string[] = [];
+  if (action)  { conditions.push('action = ?');  params.push(action); }
+  if (service) { conditions.push('service = ?'); params.push(service); }
+  if (actor)   { conditions.push('actor = ?');   params.push(actor); }
+  const where = conditions.length ? ` WHERE ${conditions.join(' AND ')}` : '';
 
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', 'attachment; filename="conduit-audit-log.csv"');
-  res.send(csv);
+
+  const escape = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`;
+
+  type AuditRow = {
+    id: number;
+    action: string;
+    service: string | null;
+    actor: string;
+    target_id: string | null;
+    detail: string | null;
+    timestamp: string | null;
+  };
+
+  const stmt = sqlite.prepare(
+    `SELECT id, action, service, actor, target_id, detail, timestamp
+     FROM audit_log${where}
+     ORDER BY timestamp DESC`,
+  );
+
+  const FLUSH_BYTES = 64 * 1024;
+  let chunk = '"id","action","service","actor","targetId","detail","timestamp"';
+  for (const row of stmt.iterate(...params) as IterableIterator<AuditRow>) {
+    chunk += '\n' + [
+      row.id,
+      row.action,
+      row.service || '',
+      row.actor,
+      row.target_id || '',
+      row.detail || '',
+      row.timestamp || '',
+    ].map(escape).join(',');
+    if (chunk.length >= FLUSH_BYTES) {
+      res.write(chunk);
+      chunk = '';
+    }
+  }
+  if (chunk) res.write(chunk);
+  res.end();
 });
 
 export default router;

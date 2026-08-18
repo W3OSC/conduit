@@ -37,8 +37,11 @@ export function invalidateContextCache(): void {
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 function baseUrl(req: import('express').Request): string {
-  const proto = (req.headers['x-forwarded-proto'] as string | undefined) ?? req.protocol ?? 'http';
-  const host  = (req.headers['x-forwarded-host'] as string | undefined) ?? req.get('host') ?? 'localhost';
+  // req.protocol / req.get('host') honour X-Forwarded-* only when the app-level
+  // `trust proxy` setting is enabled (TRUST_PROXY env). Reading the raw headers
+  // here would let any caller poison the cached context URLs for an hour.
+  const proto = req.protocol || 'http';
+  const host  = req.get('host') || 'localhost';
   return `${proto}://${host}`;
 }
 
@@ -85,8 +88,8 @@ router.get('/context', async (req, res) => {
           description: 'Read messages and activity from all connected platforms in one place.',
           examples: [
             'GET /api/messages',
-            'GET /api/messages?source=slack&search=bethog',
-            'GET /api/messages?source=gmail&unread=true',
+            'GET /api/digest',
+            'GET /api/activity?since=&limit=50',
           ],
         },
         {
@@ -111,7 +114,7 @@ router.get('/context', async (req, res) => {
         {
           name: 'contacts',
           description: 'Unified address book aggregated from all messaging services.',
-          examples: ['GET /api/contacts', 'GET /api/contacts?search=joe'],
+          examples: ['GET /api/contacts', 'GET /api/contacts?q=joe'],
         },
         {
           name: 'calendar',
@@ -120,11 +123,6 @@ router.get('/context', async (req, res) => {
             'GET /api/calendar/events',
             'GET /api/calendar/calendars',
           ],
-        },
-        {
-          name: 'AI assistant',
-          description: 'Chat with an AI assistant that has tool access to all Conduit data.',
-          examples: ['POST /api/ai/chat', 'GET /api/ai/sessions'],
         },
       ],
     };
@@ -155,8 +153,8 @@ router.get('/context', async (req, res) => {
         lastSync: slack.lastSync ?? null,
         account: slack.displayName ?? null,
         capabilities: [
-          { method: 'GET',  path: '/api/messages?source=slack',      description: 'list Slack messages (supports ?search=, ?chat_id=, ?limit=, ?offset=)' },
-          { method: 'GET',  path: '/api/messages?source=slack&unread=true', description: 'list unread Slack messages' },
+          { method: 'GET',  path: '/api/messages?source=slack',      description: 'list Slack messages (supports ?chat_id=, ?limit=, ?before=, ?after=)' },
+          { method: 'GET',  path: '/api/digest', description: 'one-call attention briefing: needs-reply chats, unread rollups, events, meetings, pending outbox' },
           { method: 'POST', path: '/api/outbox',                      description: 'queue a message for sending to a Slack channel' },
           { method: 'GET',  path: '/api/topology/slack',              description: 'list workspaces and channels' },
         ],
@@ -226,7 +224,7 @@ router.get('/context', async (req, res) => {
         lastSync: discord.lastSync ?? null,
         account: discord.displayName ?? null,
         capabilities: [
-          { method: 'GET',  path: '/api/messages?source=discord',     description: 'list Discord messages (supports ?search=, ?chat_id=, ?limit=)' },
+          { method: 'GET',  path: '/api/messages?source=discord',     description: 'list Discord messages (supports ?chat_id=, ?limit=, ?before=, ?after=)' },
           { method: 'POST', path: '/api/outbox',                      description: 'queue a message for sending to a Discord channel' },
           { method: 'GET',  path: '/api/topology/discord',            description: 'list servers and channels' },
         ],
@@ -266,7 +264,7 @@ router.get('/context', async (req, res) => {
         lastSync: telegram.lastSync ?? null,
         account: telegram.displayName ?? null,
         capabilities: [
-          { method: 'GET',  path: '/api/messages?source=telegram',    description: 'list Telegram messages (supports ?search=, ?chat_id=, ?limit=)' },
+          { method: 'GET',  path: '/api/messages?source=telegram',    description: 'list Telegram messages (supports ?chat_id=, ?limit=, ?before=, ?after=)' },
           { method: 'POST', path: '/api/outbox',                      description: 'queue a Telegram message for sending' },
           { method: 'GET',  path: '/api/topology/telegram',           description: 'list chats and channels' },
         ],
@@ -283,7 +281,7 @@ router.get('/context', async (req, res) => {
         lastSync: twitter.lastSync ?? null,
         account: twitter.displayName ?? null,
         capabilities: [
-          { method: 'GET',  path: '/api/messages?source=twitter',     description: 'list Twitter DMs (supports ?search=, ?limit=)' },
+          { method: 'GET',  path: '/api/messages?source=twitter',     description: 'list Twitter DMs (supports ?chat_id=, ?limit=)' },
           { method: 'GET',  path: '/api/twitter/feed',                description: 'get Twitter home feed' },
           { method: 'POST', path: '/api/outbox',                      description: 'queue a Twitter DM or tweet' },
           { method: 'GET',  path: '/api/topology/twitter',            description: 'account info and DM conversations' },

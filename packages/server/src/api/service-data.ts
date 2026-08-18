@@ -21,11 +21,11 @@ import {
   telegramMessages, discordMessages, slackMessages,
   gmailMessages, calendarEvents, twitterDms,
   syncState, syncRuns, settings, contacts, meetNotes,
-  aiSessions, aiMessages, aiToolCalls,
+  aiToolCalls,
   auditLog, outbox, errorLog,
 } from '../db/schema.js';
 import { eq, and, like } from 'drizzle-orm';
-import { optionalAuth } from '../auth/middleware.js';
+import { optionalAuth, uiOnlyAuth } from '../auth/middleware.js';
 import { getConnectionManager, type ServiceName } from '../connections/manager.js';
 import { broadcast } from '../websocket/hub.js';
 import { getSqlite } from '../db/client.js';
@@ -34,7 +34,7 @@ const router = Router();
 
 // ── Reset + resync ─────────────────────────────────────────────────────────────
 
-router.post('/service/:service/reset', optionalAuth, async (req, res) => {
+router.post('/service/:service/reset', uiOnlyAuth, async (req, res) => {
   const service = req.params['service'] as ServiceName;
   if (!['slack', 'discord', 'telegram', 'gmail', 'calendar', 'twitter'].includes(service)) {
     return res.status(400).json({ error: 'Unknown service' });
@@ -97,7 +97,7 @@ router.post('/service/:service/reset', optionalAuth, async (req, res) => {
 
 // ── Per-account Gmail reset + resync ──────────────────────────────────────────
 
-router.post('/service/gmail/reset/:email', optionalAuth, async (req, res) => {
+router.post('/service/gmail/reset/:email', uiOnlyAuth, async (req, res) => {
   const email = decodeURIComponent(req.params['email'] as string);
   const db = getDb();
 
@@ -147,7 +147,7 @@ router.post('/service/gmail/reset/:email', optionalAuth, async (req, res) => {
 //            __drizzle_migrations
 // Wiped: all messages, contacts, AI sessions, audit log, outbox, sync state, etc.
 
-router.post('/reset-app-data', optionalAuth, async (req, res) => {
+router.post('/reset-app-data', uiOnlyAuth, async (req, res) => {
   const db = getDb();
   const sqlite = getSqlite();
 
@@ -168,9 +168,7 @@ router.post('/reset-app-data', optionalAuth, async (req, res) => {
     db.delete(syncState).run();
     db.delete(syncRuns).run();
 
-    // AI
-    db.delete(aiSessions).run();
-    db.delete(aiMessages).run();
+    // AI tool-call log
     db.delete(aiToolCalls).run();
 
     // Operational

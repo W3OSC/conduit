@@ -68,6 +68,7 @@ function matchCalendarEvent(meetingDateISO: string | null, accountId: string | n
 export class MeetNotesSync {
   private auth: InstanceType<typeof google.auth.OAuth2> | null = null;
   private _pollInterval: NodeJS.Timeout | null = null;
+  private syncInFlight = false;
   public accountInfo: { email: string } | null = null;
   public connected = false;
 
@@ -107,7 +108,11 @@ export class MeetNotesSync {
   startPolling(intervalMs = 30 * 60 * 1000): void {
     this.stopPolling();
     this._pollInterval = setInterval(() => {
-      this.incrementalSync().catch((e) => console.error('[meet-notes] Poll error:', e));
+      if (this.syncInFlight) return; // previous cycle still running — skip this tick
+      this.syncInFlight = true;
+      this.incrementalSync()
+        .catch((e) => console.error('[meet-notes] Poll error:', e))
+        .finally(() => { this.syncInFlight = false; });
     }, intervalMs);
   }
 

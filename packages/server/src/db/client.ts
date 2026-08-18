@@ -31,6 +31,8 @@ export function getDb() {
     _sqlite = new Database(dbPath);
     // Enable WAL mode for better concurrent read performance
     _sqlite.pragma('journal_mode = WAL');
+    // Wait up to 5s on a locked database instead of failing immediately with SQLITE_BUSY
+    _sqlite.pragma('busy_timeout = 5000');
     _sqlite.pragma('foreign_keys = ON');
     _db = drizzle(_sqlite, { schema });
   }
@@ -99,9 +101,17 @@ function migrateVaultPaths(): void {
  * On startup, any sync runs that were left in 'running' state are orphaned —
  * the server process that started them is gone. Mark them as 'cancelled' so
  * they don't appear as active syncs in the UI indefinitely.
+ * Also prunes sync_runs older than 30 days so the table doesn't grow unbounded.
  */
 function cleanupOrphanedSyncs(): void {
   const db = getDb();
+
+  // Retention: delete sync run history older than 30 days
+  const pruned = getSqlite()
+    .prepare("DELETE FROM sync_runs WHERE started_at < datetime('now','-30 days')")
+    .run();
+  if (pruned.changes > 0) console.log(`[db] Pruned ${pruned.changes} sync run(s) older than 30 days`);
+
   const orphaned = db.select().from(syncRuns)
     .where(and(eq(syncRuns.status, 'running'), isNull(syncRuns.finishedAt)))
     .all();

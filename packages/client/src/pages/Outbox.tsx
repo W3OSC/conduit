@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useMemo, useEffect } from 'react';
+import { diffLines } from 'diff';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -10,7 +11,7 @@ import { api, type OutboxItem } from '@/lib/api';
 import { ServiceBadge } from '@/components/shared/ServiceBadge';
 import { TableSkeleton } from '@/components/shared/Skeleton';
 import { FileDiffView, type PatchEdit } from '@/components/shared/FileDiffView';
-import { cn, timeAgo, formatDate } from '@/lib/utils';
+import { cn, timeAgo, formatDate, copyToClipboard } from '@/lib/utils';
 import { toast } from '@/store';
 
 type FilterStatus = 'all' | 'pending' | 'approved' | 'sent' | 'rejected' | 'failed';
@@ -314,6 +315,116 @@ function StructuredContentView({ item, editing, editDraft, setEditDraft }: Conte
 
 // ── Raw request panel ─────────────────────────────────────────────────────────
 
+// ── Advanced details drawer ───────────────────────────────────────────────────
+// The "dig into the data" view: provenance (which API key, when), the
+// original-vs-edited diff, and fuzzy-match resolutions for file patches.
+
+function AdvancedDetails({ item }: { item: OutboxItem }) {
+  const [open, setOpen] = useState(false);
+
+  const { data: keys } = useQuery({
+    queryKey: ['api-keys'],
+    queryFn: api.apiKeys,
+    enabled: open && item.apiKeyId != null,
+    staleTime: 5 * 60_000,
+  });
+  const keyName = item.apiKeyId != null
+    ? keys?.find((k) => k.id === item.apiKeyId)?.name ?? `key #${item.apiKeyId}`
+    : null;
+
+  const edited = item.editedContent && item.editedContent !== item.content;
+  const fuzzyMatches = useMemo(() => {
+    if (!item.fuzzyMatchInfo) return [];
+    try {
+      return JSON.parse(item.fuzzyMatchInfo) as Array<{
+        editIndex: number; searchedFor: string; matchedTo: string; similarity: number;
+      }>;
+    } catch { return []; }
+  }, [item.fuzzyMatchInfo]);
+
+  const contentDiff = useMemo(() => {
+    if (!open || !edited) return [];
+    return diffLines(item.content, item.editedContent!);
+  }, [open, edited, item.content, item.editedContent]);
+
+  const meta: Array<[string, string]> = [
+    ['Item ID', String(item.id)],
+    ...(item.batchId ? [['Batch', item.batchId] as [string, string]] : []),
+    ['Requester', item.requester === 'api' ? (keyName ? `API key · ${keyName}` : 'API key') : 'Conduit UI'],
+    ...(item.idempotencyKey ? [['Idempotency key', item.idempotencyKey] as [string, string]] : []),
+    ['Created', formatDate(item.createdAt, 'MMM d, HH:mm:ss')],
+    ...(item.approvedAt ? [['Approved', formatDate(item.approvedAt, 'MMM d, HH:mm:ss')] as [string, string]] : []),
+    ...(item.sentAt ? [['Sent', formatDate(item.sentAt, 'MMM d, HH:mm:ss')] as [string, string]] : []),
+  ];
+
+  return (
+    <div className="border border-border/50 rounded-xl overflow-hidden">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-widest text-muted-foreground/60 hover:text-muted-foreground hover:bg-secondary/40 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:ring-inset"
+      >
+        <Terminal className="w-3 h-3" />
+        Advanced
+        {fuzzyMatches.length > 0 && <span className="chip chip-amber text-[9px] normal-case tracking-normal">fuzzy-matched</span>}
+        {edited && <span className="chip chip-amber text-[9px] normal-case tracking-normal">edited</span>}
+        {open ? <ChevronUp className="w-3 h-3 ml-auto" /> : <ChevronDown className="w-3 h-3 ml-auto" />}
+      </button>
+
+      {open && (
+        <div className="px-3 pb-3 pt-1 space-y-3 text-xs">
+          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
+            {meta.map(([label, value]) => (
+              <div key={label} className="contents">
+                <dt className="text-muted-foreground/60">{label}</dt>
+                <dd className="font-mono text-[11px] text-foreground/80 break-all">{value}</dd>
+              </div>
+            ))}
+          </dl>
+
+          {edited && (
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/50 mb-1.5">
+                Original → edited
+              </p>
+              <pre className="bg-secondary/40 rounded-lg p-2 overflow-x-auto font-mono text-[11px] leading-relaxed">
+                {contentDiff.map((part, i) => (
+                  <span
+                    key={i}
+                    className={cn(
+                      part.added && 'text-emerald-400 bg-emerald-500/10',
+                      part.removed && 'text-red-400 bg-red-500/10 line-through',
+                    )}
+                  >
+                    {part.value}
+                  </span>
+                ))}
+              </pre>
+            </div>
+          )}
+
+          {fuzzyMatches.length > 0 && (
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/50 mb-1.5">
+                Fuzzy-matched anchors
+              </p>
+              <div className="space-y-1.5">
+                {fuzzyMatches.map((m, i) => (
+                  <div key={i} className="bg-secondary/40 rounded-lg p-2 font-mono text-[11px] space-y-0.5">
+                    <p className="text-red-400/80 line-through break-all">{m.searchedFor}</p>
+                    <p className="text-emerald-400/90 break-all">{m.matchedTo}</p>
+                    <p className="text-muted-foreground/50 text-[10px]">{Math.round(m.similarity * 100)}% similar</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RawRequestPanel({ toolCallId }: { toolCallId: string }) {
   const [open, setOpen] = useState(false);
 
@@ -326,11 +437,16 @@ function RawRequestPanel({ toolCallId }: { toolCallId: string }) {
 
   const rawText = data ? JSON.stringify(data.input, null, 2) : '';
 
-  function copyToClipboard() {
+  async function copyRawText() {
     if (!rawText) return;
-    navigator.clipboard.writeText(rawText).then(() =>
-      toast({ title: 'Copied to clipboard', variant: 'success' })
-    );
+    // utils.copyToClipboard has the plain-HTTP fallback — navigator.clipboard
+    // is undefined on non-secure LAN origins, the common self-hosted setup.
+    try {
+      await copyToClipboard(rawText);
+      toast({ title: 'Copied to clipboard', variant: 'success' });
+    } catch {
+      toast({ title: 'Copy failed', variant: 'destructive' });
+    }
   }
 
   return (
@@ -364,7 +480,7 @@ function RawRequestPanel({ toolCallId }: { toolCallId: string }) {
               {data && (
                 <>
                   <button
-                    onClick={copyToClipboard}
+                    onClick={copyRawText}
                     title="Copy to clipboard"
                     className="absolute top-2 right-2 p-1 rounded hover:bg-secondary/80 text-muted-foreground hover:text-foreground transition-colors"
                   >
@@ -393,7 +509,9 @@ interface OutboxCardProps {
 
 function OutboxCard({ item, nested = false }: OutboxCardProps) {
   const [editing, setEditing] = useState(false);
-  const [expanded, setExpanded] = useState(!nested && item.status === 'pending');
+  // Collapsed by default — twenty auto-expanded pending payloads made the
+  // queue an unusable wall. The header carries quick approve/reject instead.
+  const [expanded, setExpanded] = useState(false);
   const [editDraft, setEditDraft] = useState<Record<string, string>>({});
   const qc = useQueryClient();
 
@@ -426,15 +544,42 @@ function OutboxCard({ item, nested = false }: OutboxCardProps) {
     return JSON.stringify(merged);
   }
 
+  // Optimistically flip the item's status in every cached ['outbox'…] query so
+  // the card moves instantly; the settled invalidation reconciles with the
+  // server (which may report 'sent' or 'failed' after dispatch).
+  const optimisticStatus = (status: OutboxItem['status']) => {
+    qc.cancelQueries({ queryKey: ['outbox'] });
+    const previous = qc.getQueriesData<{ items: OutboxItem[]; pendingCount: number }>({ queryKey: ['outbox'] });
+    qc.setQueriesData<{ items: OutboxItem[]; pendingCount: number } | undefined>(
+      { queryKey: ['outbox'] },
+      (old) => old && {
+        ...old,
+        items: (old.items ?? []).map((i) => (i.id === item.id ? { ...i, status } : i)),
+        pendingCount: item.status === 'pending' && status !== 'pending'
+          ? Math.max(0, (old.pendingCount ?? 0) - 1)
+          : old.pendingCount,
+      },
+    );
+    return { previous };
+  };
+  const rollback = (ctx?: { previous: Array<[readonly unknown[], unknown]> }) => {
+    for (const [key, data] of ctx?.previous ?? []) qc.setQueryData(key, data);
+  };
+
   const approve = useMutation({
     mutationFn: () => api.updateOutboxItem(item.id, 'approve'),
-    onSuccess: () => { toast({ title: 'Approved & sent', variant: 'success' }); qc.invalidateQueries({ queryKey: ['outbox'] }); },
-    onError: (e: Error) => toast({ title: 'Failed', description: e.message, variant: 'destructive' }),
+    onMutate: () => optimisticStatus('approved'),
+    onSuccess: () => toast({ title: 'Approved & sent', variant: 'success' }),
+    onError: (e: Error, _v, ctx) => { rollback(ctx); toast({ title: 'Failed', description: e.message, variant: 'destructive' }); },
+    onSettled: () => qc.invalidateQueries({ queryKey: ['outbox'] }),
   });
 
   const reject = useMutation({
     mutationFn: () => api.updateOutboxItem(item.id, 'reject'),
-    onSuccess: () => { toast({ title: 'Rejected' }); qc.invalidateQueries({ queryKey: ['outbox'] }); },
+    onMutate: () => optimisticStatus('rejected'),
+    onSuccess: () => toast({ title: 'Rejected' }),
+    onError: (e: Error, _v, ctx) => { rollback(ctx); toast({ title: 'Reject failed', description: e.message, variant: 'destructive' }); },
+    onSettled: () => qc.invalidateQueries({ queryKey: ['outbox'] }),
   });
 
   const save = useMutation({
@@ -445,11 +590,20 @@ function OutboxCard({ item, nested = false }: OutboxCardProps) {
       setEditing(false);
       setEditDraft({});
     },
+    onError: (e: Error) => toast({ title: 'Save failed', description: e.message, variant: 'destructive' }),
   });
 
   const del = useMutation({
     mutationFn: () => api.deleteOutboxItem(item.id),
     onSuccess: () => { toast({ title: 'Deleted' }); qc.invalidateQueries({ queryKey: ['outbox'] }); },
+    onError: (e: Error) => toast({ title: 'Delete failed', description: e.message, variant: 'destructive' }),
+  });
+
+  const retry = useMutation({
+    mutationFn: () => api.retryOutboxItem(item.id),
+    onSuccess: () => toast({ title: 'Retried & sent', variant: 'success' }),
+    onError: (e: Error) => toast({ title: 'Retry failed', description: e.message, variant: 'destructive' }),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['outbox'] }),
   });
 
   const isPending = item.status === 'pending';
@@ -474,12 +628,20 @@ function OutboxCard({ item, nested = false }: OutboxCardProps) {
         nested && 'rounded-lg shadow-none border-border/60',
       )}
     >
-      {/* ── Card header ─────────────────────────────────────────────────── */}
+      {/* ── Card header — keyboard-operable: Enter/Space expand, a/r act ── */}
       <div
-        className="flex items-start gap-3 p-4 cursor-pointer select-none"
+        className="flex items-start gap-3 p-4 cursor-pointer select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:ring-inset"
         onClick={() => !editing && setExpanded((v) => !v)}
         role="button"
+        tabIndex={0}
+        data-outbox-header
         aria-expanded={expanded}
+        onKeyDown={(e) => {
+          if (editing) return;
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded((v) => !v); }
+          else if (e.key === 'a' && isPending && !approve.isPending) { e.preventDefault(); approve.mutate(); }
+          else if (e.key === 'r' && isPending && !reject.isPending) { e.preventDefault(); reject.mutate(); }
+        }}
       >
         {!nested && (
           <div className="mt-0.5 flex-shrink-0">
@@ -513,6 +675,28 @@ function OutboxCard({ item, nested = false }: OutboxCardProps) {
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0">
+          {isPending && !editing && (
+            <div className="flex items-center gap-1">
+              <button
+                onClick={(e) => { e.stopPropagation(); approve.mutate(); }}
+                disabled={approve.isPending}
+                className="p-1.5 rounded-lg text-emerald-500 hover:bg-emerald-500/10 transition-colors"
+                title="Approve (a)"
+                aria-label="Approve"
+              >
+                <Check className="w-4 h-4" />
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); reject.mutate(); }}
+                disabled={reject.isPending}
+                className="p-1.5 rounded-lg text-red-500 hover:bg-red-500/10 transition-colors"
+                title="Reject (r)"
+                aria-label="Reject"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
           <StatusChip status={item.status} />
           {!editing && (
             expanded
@@ -548,6 +732,9 @@ function OutboxCard({ item, nested = false }: OutboxCardProps) {
                   {item.errorMessage}
                 </pre>
               )}
+
+              {/* ── Advanced details (provenance, diffs, fuzzy matches) ───── */}
+              <AdvancedDetails item={item} />
 
               {/* ── Raw AI request (only when linked to an AI tool call) ──── */}
               {item.aiToolCallId && (
@@ -606,12 +793,23 @@ function OutboxCard({ item, nested = false }: OutboxCardProps) {
                   </button>
                 </div>
               ) : (item.status === 'rejected' || item.status === 'failed') ? (
-                <button
-                  onClick={(e) => { e.stopPropagation(); del.mutate(); }}
-                  className="btn-ghost text-xs text-muted-foreground"
-                >
-                  <Trash2 className="w-3.5 h-3.5" /> Delete
-                </button>
+                <div className="flex items-center gap-2">
+                  {item.status === 'failed' && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); retry.mutate(); }}
+                      disabled={retry.isPending}
+                      className="btn-secondary text-xs"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" /> {retry.isPending ? 'Retrying…' : 'Retry'}
+                    </button>
+                  )}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); del.mutate(); }}
+                    className="btn-ghost text-xs text-muted-foreground"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" /> Delete
+                  </button>
+                </div>
               ) : null}
             </div>
           </motion.div>
@@ -680,12 +878,17 @@ function BatchCard({ batchId, items }: { batchId: string; items: OutboxItem[] })
         hasError && 'border-red-500/30',
       )}
     >
-      {/* ── Batch header ─────────────────────────────────────────────────── */}
+      {/* ── Batch header — keyboard-operable like single cards ───────────── */}
       <div
-        className="flex items-start gap-3 p-4 cursor-pointer select-none"
+        className="flex items-start gap-3 p-4 cursor-pointer select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:ring-inset"
         onClick={() => setExpanded((v) => !v)}
         role="button"
+        tabIndex={0}
+        data-outbox-header
         aria-expanded={expanded}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded((v) => !v); }
+        }}
       >
         <div className="mt-0.5 flex-shrink-0">
           <ServiceBadge service={source} size="sm" />
@@ -824,12 +1027,34 @@ export default function Outbox() {
       statusFilter === 'all' ? undefined : statusFilter,
       sourceFilter === 'all' ? undefined : sourceFilter,
     ),
-    refetchInterval: 5000,
+    refetchInterval: 60_000, // WS outbox events invalidate this — interval is only a fallback
   });
 
   const items = data?.items || [];
   const pendingCount = data?.pendingCount || 0;
   const groups = groupByBatch(items);
+
+  // j/k roving focus over card headers; a/r/Enter are handled by the focused
+  // header itself. Ignores keystrokes while typing in inputs.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'j' && e.key !== 'k') return;
+      const target = e.target as HTMLElement | null;
+      if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+      const headers = Array.from(document.querySelectorAll<HTMLElement>('[data-outbox-header]'));
+      if (headers.length === 0) return;
+      e.preventDefault();
+      const active = document.activeElement as HTMLElement | null;
+      const idx = active ? headers.indexOf(active) : -1;
+      const next = e.key === 'j'
+        ? headers[Math.min(idx + 1, headers.length - 1)]
+        : headers[Math.max(idx - 1, 0)];
+      next?.focus();
+      next?.scrollIntoView({ block: 'nearest' });
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   return (
     <div className="p-4 space-y-4 animate-fade-in overflow-y-auto h-full">
@@ -843,12 +1068,18 @@ export default function Outbox() {
             {pendingCount} pending
           </motion.span>
         )}
+        <span className="ml-auto hidden sm:flex items-center gap-2 text-[10px] text-muted-foreground/50 select-none">
+          <kbd className="px-1.5 py-0.5 rounded bg-secondary border border-border/60 font-mono">j/k</kbd> navigate
+          <kbd className="px-1.5 py-0.5 rounded bg-secondary border border-border/60 font-mono">a</kbd> approve
+          <kbd className="px-1.5 py-0.5 rounded bg-secondary border border-border/60 font-mono">r</kbd> reject
+          <kbd className="px-1.5 py-0.5 rounded bg-secondary border border-border/60 font-mono">↵</kbd> expand
+        </span>
       </div>
 
       {/* Filters */}
       <div className="flex items-center gap-3 flex-wrap">
         <FilterBar
-          options={['all', 'pending', 'approved', 'sent', 'rejected'] as FilterStatus[]}
+          options={['all', 'pending', 'approved', 'sent', 'rejected', 'failed'] as FilterStatus[]}
           value={statusFilter}
           onChange={setStatusFilter}
         />
@@ -869,7 +1100,7 @@ export default function Outbox() {
           </div>
           <div className="text-center">
             <p className="text-sm font-medium">Outbox is empty</p>
-            <p className="text-xs opacity-60 mt-1">Messages sent through the Chat page will appear here for approval</p>
+            <p className="text-xs opacity-60 mt-1">Actions queued by your AI agents (and outgoing messages from Conduit) wait here for your approval</p>
           </div>
         </div>
       ) : (

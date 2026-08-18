@@ -3,12 +3,12 @@ import { NavLink, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard, MessageSquare, SendHorizonal, Sliders, ScrollText,
-  Users, Mail, CalendarDays, X as Twitter, Inbox, Bot, BookOpen,
+  Users, Mail, CalendarDays, X as Twitter, Inbox, BookOpen,
   ArrowUpCircle, Copy, Check, RefreshCw,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { cn, copyToClipboard } from '@/lib/utils';
-import { useOutboxStore, useConnectionStore, useUpdateStore, useSyncStore, useThemeStore } from '@/store';
+import { useConnectionStore, useUpdateStore, useSyncStore, useThemeStore } from '@/store';
 import { api } from '@/lib/api';
 import { toast } from '@/store';
 import { AppIcon } from '@/components/shared/AppIcon';
@@ -23,13 +23,11 @@ const SERVICES = [
   { id: 'calendar', label: 'Calendar' },
   { id: 'notion',   label: 'Notion'   },
   { id: 'obsidian', label: 'Files'    },
-  { id: 'ai',       label: 'AI'       },
 ] as const;
 
 const NAV_ITEMS = [
   { to: '/',            icon: Inbox,           label: 'Inbox'      },
   { to: '/dashboard',   icon: LayoutDashboard, label: 'Dashboard'  },
-  { to: '/ai',          icon: Bot,             label: 'AI',        service: 'ai'       },
   { to: '/files',       icon: BookOpen,        label: 'Files',     service: 'obsidian' },
   { to: '/chat',        icon: MessageSquare,   label: 'Chat',      service: 'slack'    },
   { to: '/outbox',      icon: SendHorizonal,   label: 'Outbox',    badge: true         },
@@ -187,7 +185,15 @@ function SidebarVersionFooter() {
 
 export function Sidebar() {
   const location = useLocation();
-  const pendingCount = useOutboxStore((s) => s.pendingCount);
+  // Server-authoritative badge: WS outbox events invalidate ['outbox'], the
+  // interval is only a slow fallback. (The old Zustand counter started at 0 on
+  // every reload and drifted on missed events.)
+  const { data: outboxBadge } = useQuery({
+    queryKey: ['outbox', 'badge'],
+    queryFn: () => api.outbox(undefined, undefined, { limit: 1 }),
+    refetchInterval: 120_000,
+  });
+  const pendingCount = outboxBadge?.pendingCount ?? 0;
   const statuses = useConnectionStore((s) => s.statuses);
   const syncProgress = useSyncStore((s) => s.progress);
   const sidebarCompact = useThemeStore((s) => s.sidebarCompact);
@@ -216,7 +222,10 @@ export function Sidebar() {
 
           const { to, icon: Icon, label } = item;
           const service = 'service' in item ? (item as { service?: string }).service : undefined;
-          if (service && statuses[service]?.status !== 'connected') return null;
+          // Dim rather than hide disconnected services — a menu that changes
+          // shape as connections flap is disorienting, and hiding the entry
+          // made the page's own "not connected" guidance unreachable.
+          const dimmed = !!service && statuses[service]?.status !== 'connected';
           const badge = 'badge' in item ? (item as { badge?: boolean }).badge : false;
           const isActive = to === '/'
             ? location.pathname === '/'
@@ -232,6 +241,7 @@ export function Sidebar() {
                   isActive
                     ? 'bg-primary/12 text-primary'
                     : 'text-sidebar-foreground hover:bg-white/5 hover:text-foreground',
+                  dimmed && !isActive && 'opacity-40 hover:opacity-80',
                 )}>
                   {isActive && (
                     <motion.div

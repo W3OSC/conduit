@@ -29,9 +29,11 @@ import { fileURLToPath } from 'url';
 import { getDb } from '../db/client.js';
 import { obsidianVaultConfig } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
-import { optionalAuth, trackAiCall } from '../auth/middleware.js';
+import { optionalAuth, uiOnlyAuth, trackAiCall, type AuthedRequest } from '../auth/middleware.js';
+import { requireRead, resolveEffectiveFineGrained } from './permissions-utils.js';
+import type { ObsidianFineGrained } from '../db/schema.js';
 import { getConnectionManager } from '../connections/manager.js';
-import { ObsidianVaultSync } from '../sync/obsidian.js';
+import { ObsidianVaultSync, type VaultFileEntry } from '../sync/obsidian.js';
 import { validateGitRemoteUrl } from '../auth/ssrf.js';
 
 const router = Router();
@@ -79,7 +81,7 @@ router.get('/vaults', optionalAuth, (_req, res) => {
 
 // ── POST /obsidian/vaults — create a new vault ─────────────────────────────
 
-router.post('/vaults', optionalAuth, async (req, res) => {
+router.post('/vaults', uiOnlyAuth, async (req, res) => {
   const db = getDb();
   const {
     name,
@@ -149,7 +151,7 @@ router.get('/vaults/:id', optionalAuth, (req, res) => {
 
 // ── PUT /obsidian/vaults/:id — update a vault ─────────────────────────────
 
-router.put('/vaults/:id', optionalAuth, async (req, res) => {
+router.put('/vaults/:id', uiOnlyAuth, async (req, res) => {
   const id = parseVaultId(req.params['id'] as string);
   if (id === null) { res.status(400).json({ error: 'Invalid vault id' }); return; }
 
@@ -196,7 +198,7 @@ router.put('/vaults/:id', optionalAuth, async (req, res) => {
 
 // ── DELETE /obsidian/vaults/:id — remove a vault ──────────────────────────
 
-router.delete('/vaults/:id', optionalAuth, async (req, res) => {
+router.delete('/vaults/:id', uiOnlyAuth, async (req, res) => {
   const id = parseVaultId(req.params['id'] as string);
   if (id === null) { res.status(400).json({ error: 'Invalid vault id' }); return; }
 
@@ -218,7 +220,7 @@ router.delete('/vaults/:id', optionalAuth, async (req, res) => {
 
 // ── POST /obsidian/vaults/:id/test ────────────────────────────────────────
 
-router.post('/vaults/:id/test', optionalAuth, async (req, res) => {
+router.post('/vaults/:id/test', uiOnlyAuth, async (req, res) => {
   const id = parseVaultId(req.params['id'] as string);
   if (id === null) { res.status(400).json({ error: 'Invalid vault id' }); return; }
 
@@ -241,7 +243,7 @@ router.post('/vaults/:id/test', optionalAuth, async (req, res) => {
 
 // ── POST /obsidian/vaults/:id/generate-ssh-key ────────────────────────────
 
-router.post('/vaults/:id/generate-ssh-key', optionalAuth, async (req, res) => {
+router.post('/vaults/:id/generate-ssh-key', uiOnlyAuth, async (req, res) => {
   const id = parseVaultId(req.params['id'] as string);
   if (id === null) { res.status(400).json({ error: 'Invalid vault id' }); return; }
 
@@ -297,7 +299,7 @@ router.get('/vaults/:id/ssh-fingerprint', optionalAuth, async (req, res) => {
 
 // ── POST /obsidian/vaults/:id/clone ───────────────────────────────────────
 
-router.post('/vaults/:id/clone', optionalAuth, async (req, res) => {
+router.post('/vaults/:id/clone', uiOnlyAuth, async (req, res) => {
   const id = parseVaultId(req.params['id'] as string);
   if (id === null) { res.status(400).json({ error: 'Invalid vault id' }); return; }
 
@@ -370,7 +372,42 @@ router.post('/vaults/:id/sync', optionalAuth, async (req, res) => {
 
 // ── GET /obsidian/vaults/:id/files ────────────────────────────────────────
 
-router.get('/vaults/:id/files', optionalAuth, trackAiCall, async (req, res) => {
+/**
+ * Read-path allowlist filtering for API keys. A directory survives when it is
+ * inside an allowed prefix, or is an ancestor of one (so the agent can walk
+ * down to the allowed subtree). Files must be inside an allowed prefix.
+ */
+function readPathAllowlist(apiKeyId: number | null | undefined): string[] | null {
+  if (!apiKeyId) return null;
+  const fg = resolveEffectiveFineGrained('obsidian', apiKeyId) as ObsidianFineGrained | null;
+  const paths = fg?.readPaths;
+  return paths && paths.length > 0 ? paths : null;
+}
+
+function isPathReadable(filePath: string, allowlist: string[] | null): boolean {
+  if (!allowlist) return true;
+  return allowlist.some((prefix) => filePath.startsWith(prefix));
+}
+
+function filterVaultTree(entries: VaultFileEntry[], allowlist: string[]): VaultFileEntry[] {
+  const out: VaultFileEntry[] = [];
+  for (const entry of entries) {
+    if (entry.type === 'file') {
+      if (allowlist.some((prefix) => entry.path.startsWith(prefix))) out.push(entry);
+      continue;
+    }
+    const dirWithin = allowlist.some((prefix) => entry.path.startsWith(prefix));
+    const dirAncestor = allowlist.some((prefix) => prefix.startsWith(entry.path + '/'));
+    if (!dirWithin && !dirAncestor) continue;
+    const children = entry.children
+      ? (dirWithin ? entry.children : filterVaultTree(entry.children, allowlist))
+      : entry.children;
+    out.push({ ...entry, children });
+  }
+  return out;
+}
+
+router.get('/vaults/:id/files', optionalAuth, requireRead('obsidian'), trackAiCall, async (req, res) => {
   const id = parseVaultId(req.params['id'] as string);
   if (id === null) { res.status(400).json({ error: 'Invalid vault id' }); return; }
 
@@ -383,7 +420,9 @@ router.get('/vaults/:id/files', optionalAuth, trackAiCall, async (req, res) => {
   }
 
   try {
-    const files = await sync.listFiles();
+    let files = await sync.listFiles();
+    const allowlist = readPathAllowlist((req as AuthedRequest).apiKey?.id);
+    if (allowlist) files = filterVaultTree(files, allowlist);
     res.json({ files });
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
@@ -392,7 +431,7 @@ router.get('/vaults/:id/files', optionalAuth, trackAiCall, async (req, res) => {
 
 // ── GET /obsidian/vaults/:id/files/* ─────────────────────────────────────
 
-router.get('/vaults/:id/files/*path', optionalAuth, trackAiCall, async (req, res) => {
+router.get('/vaults/:id/files/*path', optionalAuth, requireRead('obsidian'), trackAiCall, async (req, res) => {
   const id = parseVaultId(req.params['id'] as string);
   if (id === null) { res.status(400).json({ error: 'Invalid vault id' }); return; }
 
@@ -409,6 +448,12 @@ router.get('/vaults/:id/files/*path', optionalAuth, trackAiCall, async (req, res
 
   if (!filePath) {
     res.status(400).json({ error: 'File path is required' });
+    return;
+  }
+
+  const allowlist = readPathAllowlist((req as AuthedRequest).apiKey?.id);
+  if (!isPathReadable(filePath, allowlist)) {
+    res.status(403).json({ error: `Reading "${filePath}" is not permitted for this API key` });
     return;
   }
 

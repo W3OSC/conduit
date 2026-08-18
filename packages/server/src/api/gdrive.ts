@@ -51,7 +51,9 @@ import { Readable } from 'stream';
 import { getDb } from '../db/client.js';
 import { googleDriveFolderConfig, googleDriveFileCache } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
-import { optionalAuth, uiOnlyAuth } from '../auth/middleware.js';
+import { optionalAuth, uiOnlyAuth, type AuthedRequest } from '../auth/middleware.js';
+import { requireRead, resolveEffectiveFineGrained } from './permissions-utils.js';
+import type { GdriveFineGrained } from '../db/schema.js';
 import { getConnectionManager } from '../connections/manager.js';
 
 // Multer: store uploads in memory (max 100 MB per file)
@@ -66,10 +68,22 @@ function parseFolderId(raw: string): number | null {
   return isNaN(id) ? null : id;
 }
 
+/**
+ * Per-folder read permission for API keys. Absent entry = inherit the
+ * service-level readEnabled (already enforced by requireRead upstream).
+ */
+function canReadFolder(folderConfigId: number, apiKeyId: number | undefined): boolean {
+  if (!apiKeyId) return true;
+  const fg = resolveEffectiveFineGrained('gdrive', apiKeyId) as GdriveFineGrained | null;
+  const perm = fg?.folderPermissions?.[String(folderConfigId)];
+  if (!perm) return true;
+  return perm.read !== false;
+}
+
 // ── GET /gdrive/accounts ───────────────────────────────────────────────────────
 // Lists all Gmail accounts that have an active GdriveSyncManager instance.
 
-router.get('/accounts', optionalAuth, (_req, res) => {
+router.get('/accounts', optionalAuth, requireRead('gdrive'), (_req, res) => {
   const manager = getConnectionManager();
   const accounts = manager.getGdriveAccounts();
   res.json({ accounts });
@@ -78,7 +92,7 @@ router.get('/accounts', optionalAuth, (_req, res) => {
 // ── GET /gdrive/available-folders ─────────────────────────────────────────────
 // Fetches the list of folders available to whitelist from Google's API.
 
-router.get('/available-folders', optionalAuth, async (req, res) => {
+router.get('/available-folders', uiOnlyAuth, async (req, res) => {
   const email     = (req.query['email'] as string | undefined)?.trim();
   const driveType = ((req.query['driveType'] as string | undefined) ?? 'personal') as 'personal' | 'shared';
 
@@ -98,10 +112,12 @@ router.get('/available-folders', optionalAuth, async (req, res) => {
 
 // ── GET /gdrive/folders — list all whitelisted folders ────────────────────────
 
-router.get('/folders', optionalAuth, (_req, res) => {
+router.get('/folders', optionalAuth, requireRead('gdrive'), (req, res) => {
   const db = getDb();
   const manager = getConnectionManager();
-  const rows = db.select().from(googleDriveFolderConfig).all();
+  const apiKeyId = (req as AuthedRequest).apiKey?.id;
+  const rows = db.select().from(googleDriveFolderConfig).all()
+    .filter((row) => canReadFolder(row.id, apiKeyId));
   const folders = rows.map((row) => ({
     ...row,
     connectionStatus: manager.getGdriveFolderStatus(row.id),
@@ -150,7 +166,7 @@ router.post('/folders', uiOnlyAuth, async (req, res) => {
 
 // ── GET /gdrive/folders/:id — get a single folder ─────────────────────────────
 
-router.get('/folders/:id', optionalAuth, (req, res) => {
+router.get('/folders/:id', optionalAuth, requireRead('gdrive'), (req, res) => {
   const id = parseFolderId(req.params['id'] as string);
   if (id === null) return res.status(400).json({ error: 'Invalid folder ID' });
 
@@ -210,7 +226,7 @@ router.delete('/folders/:id', uiOnlyAuth, (req, res) => {
 
 // ── POST /gdrive/folders/:id/test — verify access ────────────────────────────
 
-router.post('/folders/:id/test', optionalAuth, async (req, res) => {
+router.post('/folders/:id/test', uiOnlyAuth, async (req, res) => {
   const id = parseFolderId(req.params['id'] as string);
   if (id === null) return res.status(400).json({ error: 'Invalid folder ID' });
 
@@ -239,7 +255,7 @@ router.post('/folders/:id/test', optionalAuth, async (req, res) => {
 
 // ── POST /gdrive/folders/:id/sync — trigger manual cache refresh ──────────────
 
-router.post('/folders/:id/sync', optionalAuth, async (req, res) => {
+router.post('/folders/:id/sync', optionalAuth, requireRead('gdrive'), async (req, res) => {
   const id = parseFolderId(req.params['id'] as string);
   if (id === null) return res.status(400).json({ error: 'Invalid folder ID' });
 
@@ -262,9 +278,13 @@ router.post('/folders/:id/sync', optionalAuth, async (req, res) => {
 
 // ── GET /gdrive/folders/:id/files — get file tree ─────────────────────────────
 
-router.get('/folders/:id/files', optionalAuth, async (req, res) => {
+router.get('/folders/:id/files', optionalAuth, requireRead('gdrive'), async (req, res) => {
   const id = parseFolderId(req.params['id'] as string);
   if (id === null) return res.status(400).json({ error: 'Invalid folder ID' });
+
+  if (!canReadFolder(id, (req as AuthedRequest).apiKey?.id)) {
+    return res.status(403).json({ error: 'Read access to this folder is not permitted for this API key' });
+  }
 
   const db = getDb();
   const row = db.select().from(googleDriveFolderConfig).where(eq(googleDriveFolderConfig.id, id)).get();
@@ -286,7 +306,7 @@ router.get('/folders/:id/files', optionalAuth, async (req, res) => {
 
 // ── GET /gdrive/folders/:id/download/* — download raw file as browser blob ─────
 
-router.get('/folders/:id/download/*path', optionalAuth, async (req, res) => {
+router.get('/folders/:id/download/*path', optionalAuth, requireRead('gdrive'), async (req, res) => {
   const id = parseFolderId(req.params['id'] as string);
   if (id === null) return res.status(400).json({ error: 'Invalid folder ID' });
 
@@ -297,9 +317,15 @@ router.get('/folders/:id/download/*path', optionalAuth, async (req, res) => {
   const row = db.select().from(googleDriveFolderConfig).where(eq(googleDriveFolderConfig.id, id)).get();
   if (!row) return res.status(404).json({ error: 'Folder not found' });
 
+  // The cache is the source of truth for folder membership. An unknown file ID
+  // must be denied — skipping the check on a cache miss would let any Drive
+  // file be fetched through any whitelisted folder.
   const cached = db.select().from(googleDriveFileCache).where(eq(googleDriveFileCache.fileId, fileId)).get();
-  if (cached && cached.folderConfigId !== id) {
-    return res.status(403).json({ error: 'File does not belong to this folder config' });
+  if (!cached || cached.folderConfigId !== id) {
+    return res.status(403).json({ error: 'File is not part of this folder (POST /gdrive/folders/:id/sync refreshes the file index)' });
+  }
+  if (!canReadFolder(id, (req as AuthedRequest).apiKey?.id)) {
+    return res.status(403).json({ error: 'Read access to this folder is not permitted for this API key' });
   }
 
   const manager = getConnectionManager();
@@ -404,7 +430,7 @@ router.post('/folders/:id/upload', uiOnlyAuth, upload.single('file'), async (req
 
 // ── GET /gdrive/folders/:id/files/* — read file contents ──────────────────────
 
-router.get('/folders/:id/files/*path', optionalAuth, async (req, res) => {
+router.get('/folders/:id/files/*path', optionalAuth, requireRead('gdrive'), async (req, res) => {
   const id = parseFolderId(req.params['id'] as string);
   if (id === null) return res.status(400).json({ error: 'Invalid folder ID' });
 
@@ -416,12 +442,16 @@ router.get('/folders/:id/files/*path', optionalAuth, async (req, res) => {
   const row = db.select().from(googleDriveFolderConfig).where(eq(googleDriveFolderConfig.id, id)).get();
   if (!row) return res.status(404).json({ error: 'Folder not found' });
 
-  // Verify file belongs to this folder (security check via cache)
+  // Verify file belongs to this folder. An unknown file ID must be denied —
+  // skipping the check on a cache miss would let any Drive file be read.
   const cached = db.select().from(googleDriveFileCache)
     .where(eq(googleDriveFileCache.fileId, fileId))
     .get();
-  if (cached && cached.folderConfigId !== id) {
-    return res.status(403).json({ error: 'File does not belong to this folder config' });
+  if (!cached || cached.folderConfigId !== id) {
+    return res.status(403).json({ error: 'File is not part of this folder (POST /gdrive/folders/:id/sync refreshes the file index)' });
+  }
+  if (!canReadFolder(id, (req as AuthedRequest).apiKey?.id)) {
+    return res.status(403).json({ error: 'Read access to this folder is not permitted for this API key' });
   }
 
   const manager = getConnectionManager();

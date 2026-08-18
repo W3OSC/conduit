@@ -110,7 +110,7 @@ export default function AuditLog() {
   const { data, isLoading } = useQuery({
     queryKey: ['audit-log', actionFilter, serviceFilter, actorFilter],
     queryFn: () => api.auditLog({ action: actionFilter || undefined, service: serviceFilter || undefined, actor: actorFilter || undefined, limit: 200 }),
-    refetchInterval: 15000,
+    refetchInterval: 60_000,
   });
 
   const items = data?.items || [];
@@ -135,11 +135,11 @@ export default function AuditLog() {
       <div className="flex items-center gap-2 flex-wrap">
         <SelectFilter
           value={actionFilter} onChange={setActionFilter} placeholder="All Actions"
-          options={['read','send_request','approve','reject','send','connect','disconnect','key_created','key_revoked','test'].map((a) => ({ label: a.replace(/_/g,' '), value: a }))}
+          options={['read','send_request','approve','reject','retry','send','outbox_deleted','connect','disconnect','key_created','key_revoked','test'].map((a) => ({ label: a.replace(/_/g,' '), value: a }))}
         />
         <SelectFilter
           value={serviceFilter} onChange={setServiceFilter} placeholder="All Services"
-          options={['slack','discord','telegram','gmail','calendar','twitter'].map((s) => ({ label: s, value: s }))}
+          options={['slack','discord','telegram','gmail','calendar','twitter','notion','obsidian','smb','gdrive'].map((s) => ({ label: s, value: s }))}
         />
         <SelectFilter
           value={actorFilter} onChange={setActorFilter} placeholder="All Actors"

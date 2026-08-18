@@ -8,8 +8,10 @@
  * - API key actor: override ?? global (null stored override = "inherit from global").
  */
 
+import type { Request, Response, NextFunction } from 'express';
 import { getDb } from '../db/client.js';
 import { permissions, apiKeyPermissions } from '../db/schema.js';
+import type { AuthedRequest } from '../auth/middleware.js';
 import type {
   ServiceFineGrained,
   SlackFineGrained,
@@ -51,6 +53,80 @@ export function resolveEffectiveFineGrained(
   if (!override) return globalFg;
   const overrideFg = parseFgConfig(override.fineGrainedConfig);
   return overrideFg ?? globalFg;
+}
+
+// ── Service-level read/send toggles ───────────────────────────────────────────
+
+/**
+ * Whether the actor may read from a service at all.
+ * The human UI actor is never read-restricted — the toggles govern agent (API
+ * key) access. For keys: per-key override ?? global permissions row ?? true.
+ */
+export function isReadEnabled(service: string, apiKeyId: number | null | undefined): boolean {
+  if (!apiKeyId) return true;
+  const db = getDb();
+  const override = db.select().from(apiKeyPermissions)
+    .where(and(eq(apiKeyPermissions.apiKeyId, apiKeyId), eq(apiKeyPermissions.service, service)))
+    .get();
+  if (override && override.readEnabled !== null) return override.readEnabled;
+  const global = db.select().from(permissions).where(eq(permissions.service, service)).get();
+  return global?.readEnabled ?? true;
+}
+
+/**
+ * Effective send/write toggle for the actor.
+ * For API keys: per-key override ?? global. For the UI actor: global.
+ */
+export function isSendEnabled(service: string, apiKeyId: number | null | undefined): boolean {
+  const db = getDb();
+  const global = db.select().from(permissions).where(eq(permissions.service, service)).get();
+  const globalEnabled = global?.sendEnabled ?? false;
+  if (!apiKeyId) return globalEnabled;
+  const override = db.select().from(apiKeyPermissions)
+    .where(and(eq(apiKeyPermissions.apiKeyId, apiKeyId), eq(apiKeyPermissions.service, service)))
+    .get();
+  if (override && override.sendEnabled !== null) return override.sendEnabled;
+  return globalEnabled;
+}
+
+/**
+ * Effective requireApproval flag for the actor: per-key override ?? global ?? true.
+ */
+export function isApprovalRequired(service: string, apiKeyId: number | null | undefined): boolean {
+  const db = getDb();
+  const global = db.select().from(permissions).where(eq(permissions.service, service)).get();
+  const globalRequired = global?.requireApproval ?? true;
+  if (!apiKeyId) return globalRequired;
+  const override = db.select().from(apiKeyPermissions)
+    .where(and(eq(apiKeyPermissions.apiKeyId, apiKeyId), eq(apiKeyPermissions.service, service)))
+    .get();
+  if (override && override.requireApproval !== null) return override.requireApproval;
+  return globalRequired;
+}
+
+/**
+ * Express middleware: reject API-key actors whose effective readEnabled for
+ * `service` is off. Must run after optionalAuth/apiKeyAuth so the key is resolved.
+ */
+export function requireRead(service: string) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const authedReq = req as AuthedRequest;
+    const apiKeyId = authedReq.apiKey?.id;
+    if (apiKeyId && !isReadEnabled(service, apiKeyId)) {
+      res.status(403).json({ error: `Read access to ${service} is not permitted for this API key` });
+      return;
+    }
+    next();
+  };
+}
+
+/**
+ * Filter a list of source/service names down to those the actor may read.
+ * UI actors pass everything through.
+ */
+export function filterEnabledSources(sources: string[], apiKeyId: number | null | undefined): string[] {
+  if (!apiKeyId) return sources;
+  return sources.filter((s) => isReadEnabled(s, apiKeyId));
 }
 
 // ── Read enforcement ──────────────────────────────────────────────────────────

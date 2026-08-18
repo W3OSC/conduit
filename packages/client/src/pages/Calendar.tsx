@@ -16,6 +16,7 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { ScheduleXCalendar, useNextCalendarApp } from '@schedule-x/react';
 import { createViewMonthGrid, createViewWeek, createViewDay, createViewMonthAgenda } from '@schedule-x/calendar';
 import '@schedule-x/theme-default/dist/index.css';
@@ -180,9 +181,10 @@ function MeetingNotesSidebar({
   const [search, setSearch] = useState('');
   const [selectedNote, setSelectedNote] = useState<MeetNote | null>(null);
 
+  const debouncedSearch = useDebouncedValue(search);
   const { data, isLoading } = useQuery({
-    queryKey: ['meet-notes', search],
-    queryFn: () => api.meetNotes({ limit: 30, q: search || undefined }),
+    queryKey: ['meet-notes', debouncedSearch],
+    queryFn: () => api.meetNotes({ limit: 30, q: debouncedSearch || undefined }),
     staleTime: 60_000,
     refetchInterval: 5 * 60_000,
   });
@@ -659,8 +661,20 @@ function CreateEventModal({ calendars, onClose, defaultStart }: { calendars: Goo
     onError: (e: Error) => toast({ title: 'Failed', description: e.message, variant: 'destructive' }),
   });
 
+  // Escape closes — the modal was previously mouse-only.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   return (
-    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+    <div
+      className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Create event"
+    >
       <motion.div
         initial={{ opacity: 0, scale: 0.97, y: 8 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -857,15 +871,9 @@ export default function Calendar() {
     return () => ro.disconnect();
   }, [calendar]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (statusLoading) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
-        <Loader2 className="w-6 h-6 animate-spin opacity-40" />
-      </div>
-    );
-  }
-
-  if (!statusData?.connected) {
+  // No full-page spinner while status loads — render the calendar shell and
+  // let sections skeleton; only show not-connected once status is known.
+  if (!statusLoading && !statusData?.connected) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
         <div className="w-20 h-20 rounded-2xl bg-secondary/50 border border-border flex items-center justify-center">

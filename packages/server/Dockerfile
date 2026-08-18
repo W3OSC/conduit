@@ -35,6 +35,8 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages/server/node_modules ./node_modules
 COPY packages/server/package.json ./package.json
 COPY packages/server/drizzle ./drizzle
+# The skill file served by GET /api/skill (resolved as /app/skills/… at runtime)
+COPY skills ./skills
 # Place the built client where the server expects it: /app/packages/client/dist
 COPY --from=builder /app/packages/client/dist ./packages/client/dist
 # Copy the .git directory for runtime update checking / git pull

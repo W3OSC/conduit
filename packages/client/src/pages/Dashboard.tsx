@@ -11,13 +11,14 @@ import { useConnectionStore, useSyncStore } from '@/store';
 import { StatusDot } from '@/components/shared/StatusDot';
 import { ServiceIcon } from '@/components/shared/ServiceBadge';
 import { CardSkeleton } from '@/components/shared/Skeleton';
-import { cn, timeAgo } from '@/lib/utils';
+import { cn, timeAgo, stringToHue } from '@/lib/utils';
+import { SERVICE_THEME } from '@/lib/serviceTheme';
+import { ChartTooltip } from '@/components/shared/ChartTooltip';
 
 const SERVICES = ['slack', 'discord', 'telegram', 'twitter', 'gmail'] as const;
-const SVC_COLORS: Record<string, string> = {
-  slack: '#8B5CF6', discord: '#6366F1', telegram: '#0EA5E9',
-  twitter: '#38BDF8', gmail: '#EF4444',
-};
+const SVC_COLORS: Record<string, string> = Object.fromEntries(
+  SERVICES.map((s) => [s, SERVICE_THEME[s]?.hex ?? '#78716C']),
+);
 
 const fade = (delay = 0) => ({
   initial: { opacity: 0, y: 12 },
@@ -25,8 +26,10 @@ const fade = (delay = 0) => ({
   transition: { duration: 0.3, ease: [0.16, 1, 0.3, 1] as [number, number, number, number], delay },
 });
 
-const gridColor = 'hsl(20 8% 14%)';
-const axisStyle = { fontSize: 10, fill: 'hsl(25 8% 42%)' };
+// Token-driven chart chrome — the previous hardcoded dark values were
+// unreadable in light mode.
+const gridColor = 'hsl(var(--border))';
+const axisStyle = { fontSize: 10, fill: 'hsl(var(--muted-foreground))' };
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -133,23 +136,6 @@ function ServiceCard({ service, avgDuration }: { service: typeof SERVICES[number
   );
 }
 
-// ── Chart tooltip ─────────────────────────────────────────────────────────────
-
-const ChartTooltip = ({ active, payload, label }: Record<string, unknown>) => {
-  if (!active || !payload) return null;
-  return (
-    <div className="card-warm border-border/80 p-3 text-xs shadow-warm-lg min-w-[120px]">
-      <p className="text-muted-foreground mb-2 font-medium">{String(label)}</p>
-      {(payload as Array<{ name: string; value: number; color: string }>).map((p) => (
-        <div key={p.name} className="flex items-center justify-between gap-4">
-          <span style={{ color: p.color }}>{p.name}</span>
-          <span className="font-semibold text-foreground">{(p.value ?? 0).toLocaleString()}</span>
-        </div>
-      ))}
-    </div>
-  );
-};
-
 // ── Chart card wrapper ────────────────────────────────────────────────────────
 
 function ChartCard({ title, subtitle, icon: Icon, children, controls, delay = 0 }: {
@@ -184,7 +170,7 @@ function MiniTweetCard({ tweet }: { tweet: Tweet }) {
   const avatarUrl = (tweet as unknown as Record<string, unknown>).avatar as string | undefined
     || (tweet as unknown as Record<string, unknown>).profileImageUrl as string | undefined;
   const [imgErr, setImgErr] = useState(false);
-  const hue = tweet.username.split('').reduce((h, c) => (h * 31 + c.charCodeAt(0)) & 0xffff, 0) % 360;
+  const hue = stringToHue(tweet.username);
 
   return (
     <div className="flex-shrink-0 w-56 h-full bg-secondary/40 border border-border/60 rounded-xl p-3.5 flex flex-col gap-2.5 hover:bg-secondary/70 transition-colors">
@@ -343,7 +329,9 @@ export default function Dashboard() {
 
   const statuses = useConnectionStore((s) => s.statuses);
   const totalMessages = Object.values(statusData?.messageCounts || {}).reduce((a, b) => a + b, 0);
-  const connectedCount = Object.values(statuses).filter((s) => s?.status === 'connected').length;
+  // Count only the services this dashboard actually tracks — statuses holds
+  // all nine services, and the old hardcoded "/6" denominator matched neither.
+  const connectedCount = SERVICES.filter((s) => statuses[s]?.status === 'connected').length;
 
   if (isLoading) {
     return (
@@ -360,7 +348,7 @@ export default function Dashboard() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2 flex-shrink-0">
         <StatCard title="Total Messages" value={totalMessages.toLocaleString()} icon={MessageSquare} amber sub="Across all services" />
         <StatCard title="Active Chats" value={Object.values(statusData?.chatCounts || {}).reduce((a, b) => a + b, 0)} icon={Database} sub="Synced conversations" />
-        <StatCard title="Services Online" value={`${connectedCount}/6`} icon={Wifi} sub={connectedCount === 6 ? 'All connected' : 'Some offline'} />
+        <StatCard title="Services Online" value={`${connectedCount}/${SERVICES.length}`} icon={Wifi} sub={connectedCount === SERVICES.length ? 'All connected' : 'Some offline'} />
         <StatCard title="Errors" value={statusData?.errorCount ?? 0} icon={AlertTriangle} sub="In error log" />
       </div>
 
@@ -407,7 +395,7 @@ export default function Dashboard() {
               <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
               <XAxis dataKey="date" tick={axisStyle} tickLine={false} axisLine={false} />
               <YAxis tick={axisStyle} tickLine={false} axisLine={false} width={36} />
-              <Tooltip content={<ChartTooltip />} cursor={{ stroke: 'hsl(20 8% 28%)', strokeWidth: 1 }} />
+              <Tooltip content={<ChartTooltip />} cursor={{ stroke: 'hsl(var(--border))', strokeWidth: 1 }} />
               {SERVICES.map((s) => (
                 <Area key={s} type="monotone" dataKey={s} stroke={SVC_COLORS[s]}
                   fill={`url(#g-${s})`} strokeWidth={2} dot={false} />
@@ -429,7 +417,7 @@ export default function Dashboard() {
               <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
               <XAxis dataKey="date" tick={axisStyle} tickLine={false} axisLine={false} />
               <YAxis tick={axisStyle} tickLine={false} axisLine={false} width={36} />
-              <Tooltip content={<ChartTooltip />} cursor={{ fill: 'hsl(20 8% 18% / 0.5)' }} />
+              <Tooltip content={<ChartTooltip />} cursor={{ fill: 'hsl(var(--secondary) / 0.5)' }} />
               <Bar dataKey="success" fill="#10B981" radius={[3, 3, 0, 0]} name="Success" stackId="a" />
               <Bar dataKey="error"   fill="#EF4444" radius={[3, 3, 0, 0]} name="Error"   stackId="a" />
             </BarChart>
@@ -450,7 +438,7 @@ export default function Dashboard() {
                 <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
                 <XAxis dataKey="date" tick={axisStyle} tickLine={false} axisLine={false} />
                 <YAxis tick={axisStyle} tickLine={false} axisLine={false} width={36} />
-                <Tooltip content={<ChartTooltip />} cursor={{ stroke: 'hsl(20 8% 28%)', strokeWidth: 1 }} />
+                <Tooltip content={<ChartTooltip />} cursor={{ stroke: 'hsl(var(--border))', strokeWidth: 1 }} />
                 <Line type="monotone" dataKey="received" stroke="#8B5CF6" strokeWidth={2} dot={false} name="Received" />
                 <Line type="monotone" dataKey="approved" stroke="#10B981" strokeWidth={2} dot={false} name="Approved" />
                 <Line type="monotone" dataKey="rejected" stroke="#EF4444" strokeWidth={2} dot={false} name="Rejected" />

@@ -1,4 +1,5 @@
 import { cn } from '@/lib/utils';
+import { SERVICE_THEME, DEFAULT_SERVICE_THEME } from '@/lib/serviceTheme';
 
 interface ServiceBadgeProps {
   service: string;
@@ -6,25 +7,10 @@ interface ServiceBadgeProps {
   size?: 'xs' | 'sm' | 'md';
 }
 
-const SERVICE_CONFIG: Record<string, {
-  label: string; letter: string;
-  bg: string; text: string; border: string; dot: string;
-}> = {
-  slack:    { label: 'Slack',    letter: 'S', bg: 'bg-violet-500/10', text: 'text-violet-400', border: 'border-violet-500/25', dot: 'bg-violet-400' },
-  discord:  { label: 'Discord',  letter: 'D', bg: 'bg-indigo-500/10', text: 'text-indigo-400', border: 'border-indigo-500/25', dot: 'bg-indigo-400' },
-  telegram: { label: 'Telegram', letter: 'T', bg: 'bg-sky-500/10',    text: 'text-sky-400',    border: 'border-sky-500/25',   dot: 'bg-sky-400'    },
-  twitter:  { label: 'Twitter',  letter: '𝕏', bg: 'bg-sky-400/10',   text: 'text-sky-300',    border: 'border-sky-400/25',   dot: 'bg-sky-300'    },
-  gmail:    { label: 'Gmail',    letter: 'G', bg: 'bg-red-500/10',    text: 'text-red-400',    border: 'border-red-500/25',   dot: 'bg-red-400'    },
-  calendar: { label: 'Calendar', letter: 'C', bg: 'bg-amber-500/10',  text: 'text-amber-400',  border: 'border-amber-500/25', dot: 'bg-amber-400'  },
-  notion:   { label: 'Notion',   letter: 'N', bg: 'bg-zinc-500/10',   text: 'text-zinc-300',   border: 'border-zinc-500/25',  dot: 'bg-zinc-300'   },
-  obsidian: { label: 'Files',    letter: 'F', bg: 'bg-purple-500/10', text: 'text-purple-300', border: 'border-purple-500/25',dot: 'bg-purple-300'  },
-  ai:       { label: 'AI',       letter: 'A', bg: 'bg-emerald-500/10',text: 'text-emerald-300',border: 'border-emerald-500/25',dot: 'bg-emerald-300' },
-};
-
-const DEFAULT_CONFIG = {
-  label: 'Unknown', letter: '?',
-  bg: 'bg-warm-700/40', text: 'text-warm-300', border: 'border-warm-600/40', dot: 'bg-warm-400',
-};
+// Palette comes from the canonical per-service theme (lib/serviceTheme.ts) —
+// this file previously carried one of four competing colour maps.
+const SERVICE_CONFIG = SERVICE_THEME;
+const DEFAULT_CONFIG = DEFAULT_SERVICE_THEME;
 
 // Inline SVG logo paths for each service — monochrome, fills with currentColor
 export function ServiceLogo({ service, className }: { service: string; className?: string }) {

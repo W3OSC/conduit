@@ -162,6 +162,34 @@
       "when": 1777834263366,
       "tag": "0022_google_drive",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1777834263367,
+      "tag": "0023_outbox_fuzzy_match_info",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1777834263368,
+      "tag": "0024_remove_ai_chat",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1777834263369,
+      "tag": "0025_perf_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1777834263370,
+      "tag": "0026_outbox_idempotency",
+      "breakpoints": true
     }
   ]
 }

@@ -307,34 +307,21 @@ async function buildGmailTopology() {
     gmailInstances.map(async (g) => {
       const email = g.accountInfo?.email ?? '';
 
-      // Label counts from local DB
-      const labelRows = db
-        .select({
-          labels: gmailMessages.labels,
-          isRead: gmailMessages.isRead,
-        })
-        .from(gmailMessages)
-        .where(eq(gmailMessages.accountId, email))
-        .all();
+      // Label counts aggregated in SQL via JSON1 — one pass, no per-row JS parsing
+      const labelAgg = db.all<{ label: string; total: number; unread: number }>(sql`
+        SELECT je.value AS label,
+               COUNT(*) AS total,
+               SUM(CASE WHEN COALESCE(is_read, 0) = 0 THEN 1 ELSE 0 END) AS unread
+        FROM gmail_messages, json_each(COALESCE(labels, '[]')) AS je
+        WHERE account_id = ${email}
+        GROUP BY je.value
+      `);
 
-      // Aggregate label counts in JS (labels is a JSON array column)
-      const labelCounts = new Map<string, { total: number; unread: number }>();
-      for (const row of labelRows) {
-        let labels: string[] = [];
-        try { labels = JSON.parse(row.labels ?? '[]') as string[]; } catch { /* skip */ }
-        for (const lbl of labels) {
-          const entry = labelCounts.get(lbl) ?? { total: 0, unread: 0 };
-          entry.total++;
-          if (!row.isRead) entry.unread++;
-          labelCounts.set(lbl, entry);
-        }
-      }
-
-      const labelList = [...labelCounts.entries()].map(([id, counts]) => ({
-        id,
-        name: id,            // display name == id for now; enriched below
-        messageCount: counts.total,
-        unreadCount: counts.unread,
+      const labelList = labelAgg.map((r) => ({
+        id: r.label,
+        name: r.label,       // display name == id for now; enriched below
+        messageCount: r.total,
+        unreadCount: r.unread,
       }));
 
       // Enrich label display names via Gmail API if connected

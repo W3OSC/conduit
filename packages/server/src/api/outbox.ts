@@ -10,9 +10,11 @@ import type {
 } from '../db/schema.js';
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { optionalAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
+import { isSendEnabled, isApprovalRequired } from './permissions-utils.js';
 import { getConnectionManager } from '../connections/manager.js';
 import { broadcast } from '../websocket/hub.js';
 import { fuzzyFind, type FuzzyMatchInfo } from '../util/fuzzy-search.js';
+import type { Request } from 'express';
 
 const router = Router();
 
@@ -20,19 +22,25 @@ const router = Router();
 
 interface PendingBatchSlot {
   batchId: string;
-  source: string;
+  slotKey: string;
   timer: ReturnType<typeof setTimeout>;
 }
 
 /**
- * In-memory map of `source → PendingBatchSlot`.
+ * In-memory map of `source:actor → PendingBatchSlot`.
  *
  * When a single-item POST /outbox request arrives we look up whether there is
- * already an open slot for the same service.  If so we join that batch.  If
- * not we open a new slot and schedule a timer to close it after the window
- * expires.  This means any number of individual outbox requests for the same
- * service that arrive within BATCH_WINDOW_MS of each other end up sharing a
- * batchId and are presented to the user as a single grouped card.
+ * already an open slot for the same service AND the same actor.  If so we join
+ * that batch.  If not we open a new slot and schedule a timer to close it after
+ * the window expires.  This means any number of individual outbox requests for
+ * the same service from the same actor that arrive within BATCH_WINDOW_MS of
+ * each other end up sharing a batchId and are presented to the user as a single
+ * grouped card.
+ *
+ * Slots are keyed by `service:apiKeyId` (or `service:ui` for the UI actor) so
+ * two different API keys posting to the same service within the window never
+ * share a batch — otherwise a batch approve/reject would act on both keys'
+ * items at once.
  */
 const pendingBatchSlots = new Map<string, PendingBatchSlot>();
 
@@ -40,20 +48,22 @@ const pendingBatchSlots = new Map<string, PendingBatchSlot>();
 const BATCH_WINDOW_MS = 3_000;
 
 /**
- * Return an existing open batchId for `source` (and refresh the close timer),
- * or create a new one.
+ * Return an existing open batchId for `source` + `actorKey` (and refresh the
+ * close timer), or create a new one. `actorKey` is the API key id as a string,
+ * or 'ui' for the UI actor.
  */
-function getOrCreateBatchSlot(source: string): string {
-  const existing = pendingBatchSlots.get(source);
+function getOrCreateBatchSlot(source: string, actorKey: string): string {
+  const slotKey = `${source}:${actorKey}`;
+  const existing = pendingBatchSlots.get(slotKey);
   if (existing) {
     // Refresh the timer so the window extends from the latest item
     clearTimeout(existing.timer);
-    existing.timer = setTimeout(() => pendingBatchSlots.delete(source), BATCH_WINDOW_MS);
+    existing.timer = setTimeout(() => pendingBatchSlots.delete(slotKey), BATCH_WINDOW_MS);
     return existing.batchId;
   }
   const batchId = randomUUID();
-  const timer = setTimeout(() => pendingBatchSlots.delete(source), BATCH_WINDOW_MS);
-  pendingBatchSlots.set(source, { batchId, source, timer });
+  const timer = setTimeout(() => pendingBatchSlots.delete(slotKey), BATCH_WINDOW_MS);
+  pendingBatchSlots.set(slotKey, { batchId, slotKey, timer });
   return batchId;
 }
 
@@ -462,35 +472,106 @@ async function dispatchOutboxItem(
   }
 }
 
+// ── Atomic status transitions ─────────────────────────────────────────────────
+
+/**
+ * Atomically transition an outbox row out of `fromStatus`.
+ *
+ * The status guard in the WHERE clause is what makes concurrent
+ * approve/reject/retry race-safe: better-sqlite3 executes the UPDATE
+ * atomically, so exactly one caller observes `changes === 1` and proceeds to
+ * dispatch; every other concurrent caller gets `false` and must treat the item
+ * as already handled.
+ */
+export function atomicStatusFlip(
+  id: number,
+  fromStatus: 'pending' | 'failed',
+  set: { status: string; approvedAt?: string | null; errorMessage?: string | null },
+): boolean {
+  const db = getDb();
+  const result = db.update(outbox)
+    .set(set)
+    .where(and(eq(outbox.id, id), eq(outbox.status, fromStatus)))
+    .run();
+  return result.changes === 1;
+}
+
+// ── Idempotency ───────────────────────────────────────────────────────────────
+
+/** Extract a non-empty Idempotency-Key header value, or null. */
+function getIdempotencyKeyHeader(req: Request): string | null {
+  const raw = req.headers['idempotency-key'];
+  const val = Array.isArray(raw) ? raw[0] : raw;
+  return typeof val === 'string' && val.trim() !== '' ? val.trim() : null;
+}
+
+/** Look up an existing outbox row by client-supplied idempotency key. */
+export function findByIdempotencyKey(key: string): typeof outbox.$inferSelect | null {
+  const db = getDb();
+  return db.select().from(outbox).where(eq(outbox.idempotencyKey, key)).get() ?? null;
+}
+
+/** True when `e` is a SQLite unique-constraint violation (idempotency-key race). */
+function isUniqueConstraintError(e: unknown): boolean {
+  const code = (e as { code?: string } | null)?.code;
+  if (code === 'SQLITE_CONSTRAINT_UNIQUE' || code === 'SQLITE_CONSTRAINT') return true;
+  const msg = e instanceof Error ? e.message : String(e);
+  return msg.includes('UNIQUE constraint failed');
+}
+
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 router.get('/', optionalAuth, (req, res) => {
+  const authedReq = req as AuthedRequest;
   const db = getDb();
-  const { status, source } = req.query as Record<string, string>;
+  const { status, source, limit: limitQ, offset: offsetQ } = req.query as Record<string, string | undefined>;
 
-  const conditions = [];
+  const limitNum = parseInt(limitQ ?? '', 10);
+  const offsetNum = parseInt(offsetQ ?? '', 10);
+  const limit = Math.min(Number.isFinite(limitNum) && limitNum > 0 ? limitNum : 50, 200);
+  const offset = Number.isFinite(offsetNum) && offsetNum > 0 ? offsetNum : 0;
+
+  // API key actors only ever see their own items; the UI actor sees everything.
+  const scope = [];
+  if (authedReq.apiKey?.id) scope.push(eq(outbox.apiKeyId, authedReq.apiKey.id));
+
+  const conditions = [...scope];
   if (status) conditions.push(eq(outbox.status, status));
   if (source) conditions.push(eq(outbox.source, source));
+  const whereExpr = conditions.length ? and(...conditions) : undefined;
 
   const items = db.select().from(outbox)
-    .where(conditions.length ? and(...conditions) : undefined)
-    .orderBy(desc(outbox.createdAt))
+    .where(whereExpr)
+    .orderBy(desc(outbox.createdAt), desc(outbox.id))
+    .limit(limit)
+    .offset(offset)
     .all();
 
-  const pendingCount = (db.select({ count: sql<number>`count(*)` }).from(outbox)
-    .where(eq(outbox.status, 'pending')).get()?.count) ?? 0;
+  const total = (db.select({ count: sql<number>`count(*)` }).from(outbox)
+    .where(whereExpr).get()?.count) ?? 0;
 
-  res.json({ items, pendingCount });
+  // pendingCount is key-scoped but NOT affected by the status/source filters —
+  // the UI badge relies on it being the global pending total for the actor.
+  const pendingCount = (db.select({ count: sql<number>`count(*)` }).from(outbox)
+    .where(and(...scope, eq(outbox.status, 'pending'))).get()?.count) ?? 0;
+
+  res.json({ items, total, pendingCount, limit, offset });
 });
 
 // ── Batch-level read ──────────────────────────────────────────────────────────
 // IMPORTANT: must be registered BEFORE /:id so Express doesn't treat "batch" as an id.
 
 router.get('/batch/:batchId', optionalAuth, (req, res) => {
+  const authedReq = req as AuthedRequest;
   const db = getDb();
   const { batchId } = req.params as { batchId: string };
+
+  // API key actors only ever see their own items; the UI actor sees everything.
+  const conditions = [eq(outbox.batchId, batchId)];
+  if (authedReq.apiKey?.id) conditions.push(eq(outbox.apiKeyId, authedReq.apiKey.id));
+
   const items = db.select().from(outbox)
-    .where(eq(outbox.batchId, batchId))
+    .where(and(...conditions))
     .orderBy(outbox.id)
     .all();
   if (items.length === 0) { res.status(404).json({ error: 'Batch not found' }); return; }
@@ -533,20 +614,30 @@ router.patch('/batch/:batchId', optionalAuth, async (req, res) => {
   }
 
   if (action === 'reject') {
+    let count = 0;
     for (const item of items) {
-      db.update(outbox).set({ status: 'rejected' }).where(eq(outbox.id, item.id)).run();
+      // Atomic guard: only reject items that are still pending at UPDATE time.
+      if (!atomicStatusFlip(item.id, 'pending', { status: 'rejected' })) continue;
+      count++;
       writeAuditLog('reject', authedReq.actor, { service: item.source, targetId: String(item.id), detail: { batch_id: batchId } });
       broadcast({ type: 'outbox:updated', data: { id: item.id, status: 'rejected' } });
     }
-    res.json({ success: true, status: 'rejected', count: items.length });
+    res.json({ success: true, status: 'rejected', count });
     return;
   }
 
-  // approve — dispatch each item sequentially; collect results
+  // approve — dispatch each item sequentially (rate-limit friendly); a failure
+  // on one item marks it failed and continues with the rest.
   const results: Array<{ id: number; status: string; error?: string }> = [];
+  let approved = 0;
+  let failed = 0;
 
   for (const item of items) {
-    db.update(outbox).set({ status: 'approved', approvedAt: new Date().toISOString() }).where(eq(outbox.id, item.id)).run();
+    // Atomic guard: skip items a concurrent request already handled.
+    if (!atomicStatusFlip(item.id, 'pending', { status: 'approved', approvedAt: new Date().toISOString() })) {
+      results.push({ id: item.id, status: 'skipped', error: 'Item is not pending (already handled?)' });
+      continue;
+    }
     writeAuditLog('approve', authedReq.actor, { service: item.source, targetId: String(item.id), detail: { batch_id: batchId } });
 
     try {
@@ -560,22 +651,30 @@ router.patch('/batch/:batchId', optionalAuth, async (req, res) => {
       });
       broadcast({ type: 'outbox:updated', data: { id: item.id, status: 'sent' } });
       results.push({ id: item.id, status: 'sent' });
+      approved++;
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       db.update(outbox).set({ status: 'failed', errorMessage: errMsg }).where(eq(outbox.id, item.id)).run();
       broadcast({ type: 'outbox:updated', data: { id: item.id, status: 'failed', error: errMsg } });
       results.push({ id: item.id, status: 'failed', error: errMsg });
+      failed++;
     }
   }
 
   const allSent = results.every((r) => r.status === 'sent');
-  res.json({ success: allSent, results });
+  res.json({ success: allSent, approved, failed, results });
 });
 
 router.get('/:id', optionalAuth, (req, res) => {
+  const authedReq = req as AuthedRequest;
   const db = getDb();
   const item = db.select().from(outbox).where(eq(outbox.id, parseInt(req.params['id'] as string))).get();
-  if (!item) { res.status(404).json({ error: 'Not found' }); return; }
+  // API key actors only ever see their own items (404 rather than 403 so the
+  // existence of other keys' items is not leaked).
+  if (!item || (authedReq.apiKey?.id && item.apiKeyId !== authedReq.apiKey.id)) {
+    res.status(404).json({ error: 'Not found' });
+    return;
+  }
   res.json(item);
 });
 
@@ -592,6 +691,21 @@ router.post('/', optionalAuth, async (req, res) => {
   if (!source || !recipient_id || !content) {
     res.status(400).json({ error: 'source, recipient_id, content are required' });
     return;
+  }
+
+  // Idempotent replay: a retried POST carrying the same Idempotency-Key
+  // returns the original row instead of double-queueing.
+  const idempotencyKey = getIdempotencyKeyHeader(req);
+  if (idempotencyKey) {
+    const existing = findByIdempotencyKey(idempotencyKey);
+    if (existing) {
+      if (authedReq.apiKey?.id && existing.apiKeyId !== authedReq.apiKey.id) {
+        res.status(409).json({ error: 'Idempotency-Key is already in use' });
+        return;
+      }
+      res.status(200).json({ ...existing, idempotent: true });
+      return;
+    }
   }
 
   const perm = db.select().from(permissions).where(eq(permissions.service, source)).get();
@@ -637,21 +751,53 @@ router.post('/', optionalAuth, async (req, res) => {
   const aiToolCallId = recordAiOutboxToolCall(authedReq, source, recipient_id, finalContent);
 
   // Assign to an auto-batch slot so rapid sequential requests for the same
-  // service are grouped into one batch card in the UI.
-  const autoBatchId = getOrCreateBatchSlot(source);
-
-  const item = db.insert(outbox).values({
-    batchId: autoBatchId,
+  // service from the same actor are grouped into one batch card in the UI.
+  const autoBatchId = getOrCreateBatchSlot(
     source,
-    recipientId: recipient_id,
-    recipientName: recipient_name || recipient_id,
-    content: finalContent,
-    status: 'pending',
-    requester: authedReq.actor,
-    apiKeyId: authedReq.apiKey?.id || null,
-    aiToolCallId,
-    fuzzyMatchInfo,
-  }).returning().get();
+    authedReq.apiKey?.id != null ? String(authedReq.apiKey.id) : 'ui',
+  );
+
+  // requireApproval unification: when the actor's effective requireApproval is
+  // off, the item is created pre-approved and dispatched immediately (mirroring
+  // /gmail/actions and /calendar/actions). UI actors additionally require the
+  // directSendFromUi toggle, preserving prior behaviour.
+  const approvalRequired = isApprovalRequired(source, authedReq.apiKey?.id);
+  const autoSend = authedReq.actor === 'ui'
+    ? Boolean(perm.directSendFromUi) && !approvalRequired
+    : !approvalRequired;
+
+  let item: typeof outbox.$inferSelect;
+  try {
+    item = db.insert(outbox).values({
+      batchId: autoBatchId,
+      source,
+      recipientId: recipient_id,
+      recipientName: recipient_name || recipient_id,
+      content: finalContent,
+      status: autoSend ? 'approved' : 'pending',
+      approvedAt: autoSend ? new Date().toISOString() : null,
+      requester: authedReq.actor,
+      apiKeyId: authedReq.apiKey?.id || null,
+      aiToolCallId,
+      fuzzyMatchInfo,
+      idempotencyKey,
+    }).returning().get();
+  } catch (e) {
+    // Unique-constraint race: a concurrent request with the same
+    // Idempotency-Key won the insert. Return its row.
+    if (idempotencyKey && isUniqueConstraintError(e)) {
+      const existing = findByIdempotencyKey(idempotencyKey);
+      if (existing) {
+        if (authedReq.apiKey?.id && existing.apiKeyId !== authedReq.apiKey.id) {
+          res.status(409).json({ error: 'Idempotency-Key is already in use' });
+          return;
+        }
+        res.status(200).json({ ...existing, idempotent: true });
+        return;
+      }
+    }
+    throw e;
+  }
 
   writeAuditLog('send_request', authedReq.actor, {
     service: source,
@@ -662,12 +808,14 @@ router.post('/', optionalAuth, async (req, res) => {
 
   broadcast({ type: 'outbox:new', data: item });
 
-  if (authedReq.actor === 'ui' && perm.directSendFromUi && !perm.requireApproval) {
+  if (autoSend) {
     try {
-      await dispatchOutboxItem(source, recipient_id, content);
+      // Dispatch what was stored (finalContent) — never the raw request
+      // content, which may lack the fuzzy-match rewrite / injected vaultId.
+      const textToSend = item.editedContent || item.content;
+      await dispatchOutboxItem(source, recipient_id, textToSend);
       db.update(outbox).set({
         status: 'sent',
-        approvedAt: new Date().toISOString(),
         sentAt: new Date().toISOString(),
       }).where(eq(outbox.id, item.id)).run();
       writeAuditLog('send', authedReq.actor, {
@@ -680,6 +828,7 @@ router.post('/', optionalAuth, async (req, res) => {
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       db.update(outbox).set({ status: 'failed', errorMessage: errMsg }).where(eq(outbox.id, item.id)).run();
+      broadcast({ type: 'outbox:updated', data: { id: item.id, status: 'failed', error: errMsg } });
     }
   }
 
@@ -915,9 +1064,14 @@ router.patch('/:id', optionalAuth, async (req, res) => {
   const { action, content } = req.body as { action: 'approve' | 'reject' | 'edit'; content?: string };
 
   const item = db.select().from(outbox).where(eq(outbox.id, id)).get();
-  if (!item) { res.status(404).json({ error: 'Not found' }); return; }
+  // API key actors only ever touch their own items (404, not 403, so other
+  // keys' item ids are not enumerable).
+  if (!item || (authedReq.apiKey?.id && item.apiKeyId !== authedReq.apiKey.id)) {
+    res.status(404).json({ error: 'Not found' });
+    return;
+  }
   if (item.status !== 'pending' && action !== 'edit') {
-    res.status(400).json({ error: 'Item is not pending' });
+    res.status(409).json({ error: 'Item is not pending (already handled?)' });
     return;
   }
 
@@ -928,7 +1082,11 @@ router.patch('/:id', optionalAuth, async (req, res) => {
   }
 
   if (action === 'reject') {
-    db.update(outbox).set({ status: 'rejected' }).where(eq(outbox.id, id)).run();
+    // Atomic guard — a concurrent approve/reject that got there first wins.
+    if (!atomicStatusFlip(id, 'pending', { status: 'rejected' })) {
+      res.status(409).json({ error: 'Item is not pending (already handled?)' });
+      return;
+    }
     writeAuditLog('reject', authedReq.actor, { service: item.source, targetId: String(id) });
     broadcast({ type: 'outbox:updated', data: { id, status: 'rejected' } });
     res.json({ success: true, status: 'rejected' });
@@ -936,7 +1094,12 @@ router.patch('/:id', optionalAuth, async (req, res) => {
   }
 
   if (action === 'approve') {
-    db.update(outbox).set({ status: 'approved', approvedAt: new Date().toISOString() }).where(eq(outbox.id, id)).run();
+    // Atomic guard: exactly one concurrent approver wins the flip and
+    // dispatches — this is what prevents double-sending.
+    if (!atomicStatusFlip(id, 'pending', { status: 'approved', approvedAt: new Date().toISOString() })) {
+      res.status(409).json({ error: 'Item is not pending (already handled?)' });
+      return;
+    }
     writeAuditLog('approve', authedReq.actor, { service: item.source, targetId: String(id) });
 
     try {
@@ -959,9 +1122,78 @@ router.patch('/:id', optionalAuth, async (req, res) => {
   }
 });
 
-router.delete('/:id', optionalAuth, (req, res) => {
+// ── POST /outbox/:id/retry — re-dispatch a failed item ───────────────────────
+
+router.post('/:id/retry', optionalAuth, async (req, res) => {
+  const authedReq = req as AuthedRequest;
   const db = getDb();
-  db.delete(outbox).where(eq(outbox.id, parseInt(req.params['id'] as string))).run();
+  const id = parseInt(req.params['id'] as string);
+
+  const item = db.select().from(outbox).where(eq(outbox.id, id)).get();
+  if (!item || (authedReq.apiKey?.id && item.apiKeyId !== authedReq.apiKey.id)) {
+    res.status(404).json({ error: 'Not found' });
+    return;
+  }
+  if (item.status !== 'failed') {
+    res.status(409).json({ error: 'Only failed items can be retried' });
+    return;
+  }
+  if (authedReq.apiKey?.id && !isSendEnabled(item.source, authedReq.apiKey.id)) {
+    res.status(403).json({ error: `Sending is not enabled for ${item.source}` });
+    return;
+  }
+
+  // Atomic guard against concurrent retries.
+  if (!atomicStatusFlip(id, 'failed', { status: 'approved', approvedAt: new Date().toISOString(), errorMessage: null })) {
+    res.status(409).json({ error: 'Item is no longer failed (concurrent retry?)' });
+    return;
+  }
+  writeAuditLog('retry', authedReq.actor, { service: item.source, targetId: String(id), apiKeyId: authedReq.apiKey?.id });
+  broadcast({ type: 'outbox:updated', data: { id, status: 'approved' } });
+
+  try {
+    const textToSend = item.editedContent || item.content;
+    await dispatchOutboxItem(item.source, item.recipientId, textToSend);
+    db.update(outbox).set({ status: 'sent', sentAt: new Date().toISOString() }).where(eq(outbox.id, id)).run();
+    writeAuditLog('send', authedReq.actor, {
+      service: item.source,
+      targetId: String(id),
+      detail: { recipient_id: item.recipientId, retried: true },
+    });
+    broadcast({ type: 'outbox:updated', data: { id, status: 'sent' } });
+    res.json({ success: true, status: 'sent' });
+  } catch (e) {
+    const errMsg = e instanceof Error ? e.message : String(e);
+    db.update(outbox).set({ status: 'failed', errorMessage: errMsg }).where(eq(outbox.id, id)).run();
+    broadcast({ type: 'outbox:updated', data: { id, status: 'failed', error: errMsg } });
+    res.status(500).json({ error: errMsg });
+  }
+});
+
+router.delete('/:id', optionalAuth, (req, res) => {
+  const authedReq = req as AuthedRequest;
+  const db = getDb();
+  const id = parseInt(req.params['id'] as string);
+
+  const item = db.select().from(outbox).where(eq(outbox.id, id)).get();
+  if (!item || (authedReq.apiKey?.id && item.apiKeyId !== authedReq.apiKey.id)) {
+    res.status(404).json({ error: 'Not found' });
+    return;
+  }
+  // Sent items are history and in-flight approvals must not vanish mid-send.
+  if (item.status === 'sent' || item.status === 'approved') {
+    res.status(409).json({ error: `Cannot delete an item with status "${item.status}"` });
+    return;
+  }
+
+  db.delete(outbox).where(eq(outbox.id, id)).run();
+  writeAuditLog('outbox_deleted', authedReq.actor, {
+    service: item.source,
+    targetId: String(id),
+    apiKeyId: authedReq.apiKey?.id,
+    detail: { status: item.status, recipient_id: item.recipientId },
+  });
+  broadcast({ type: 'outbox:updated', data: { id, status: 'deleted' } });
   res.json({ success: true });
 });
 

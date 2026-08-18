@@ -19,7 +19,7 @@ import { getDb } from '../db/client.js';
 import { settings, obsidianVaultConfig, smbShareConfig, googleDriveFolderConfig } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 
-export type ServiceName = 'slack' | 'discord' | 'telegram' | 'gmail' | 'calendar' | 'twitter' | 'notion' | 'obsidian' | 'smb' | 'gdrive' | 'ai';
+export type ServiceName = 'slack' | 'discord' | 'telegram' | 'gmail' | 'calendar' | 'twitter' | 'notion' | 'obsidian' | 'smb' | 'gdrive';
 // Vault-specific status key format: 'obsidian:<id>'
 export type VaultStatusKey = `obsidian:${number}`;
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
@@ -67,7 +67,6 @@ export class ConnectionManager {
     obsidian: { status: 'disconnected' },
     smb:      { status: 'disconnected' },
     gdrive:   { status: 'disconnected' },
-    ai:       { status: 'disconnected' },
   };
 
   // Per-account Gmail/Calendar statuses
@@ -330,32 +329,62 @@ export class ConnectionManager {
       tasks.push(this.connectSmbShare(smbRow.id).catch((e) => console.error(`[smb:${smbRow.id}] Auto-connect failed:`, e)));
     }
 
-    // AI — reflect configured status from stored settings
-    this.checkAiStatus();
-
     await Promise.allSettled(tasks);
     console.log('[conduit] Auto-connect complete.');
   }
 
-  /** Reads AI webhook settings and updates the ai connection status accordingly. */
-  checkAiStatus(): void {
-    const db = getDb();
-    const webhookRow  = db.select().from(settings).where(eq(settings.key, 'ai.webhookUrl')).get();
-    const keyIdRow    = db.select().from(settings).where(eq(settings.key, 'ai.apiKeyId')).get();
-    const verifiedRow = db.select().from(settings).where(eq(settings.key, 'ai.verified')).get();
-    const configured  = !!(webhookRow?.value && keyIdRow?.value);
-    const verified    = configured && verifiedRow?.value === '1';
-    this.setStatus('ai',
-      !configured
-        ? { status: 'disconnected' }
-        : verified
-          ? { status: 'connected',   mode: 'webhook', displayName: webhookRow!.value }
-          : { status: 'connecting',  mode: 'webhook', displayName: webhookRow!.value },
-    );
+  // ── Reconnect supervisor ─────────────────────────────────────────────────────
+  // Services in 'error' state with stored credentials are retried with
+  // exponential backoff (1 → 2 → 4 → 8 → 16 min cap). A user-initiated
+  // disconnect sets 'disconnected' and is never auto-retried.
+
+  private supervisorInterval: ReturnType<typeof setInterval> | null = null;
+  private reconnectAttempts = new Map<ServiceName, number>();
+  private nextReconnectAt = new Map<ServiceName, number>();
+
+  startSupervisor(): void {
+    if (this.supervisorInterval) return;
+    this.supervisorInterval = setInterval(() => {
+      try { this.superviseConnections(); } catch (e) { console.error('[conduit] Supervisor error:', e); }
+    }, 60_000);
   }
 
-  disconnectAi(): void {
-    this.setStatus('ai', { status: 'disconnected', mode: undefined, displayName: undefined });
+  stopSupervisor(): void {
+    if (this.supervisorInterval) clearInterval(this.supervisorInterval);
+    this.supervisorInterval = null;
+  }
+
+  private superviseConnections(): void {
+    const now = Date.now();
+
+    const check = (service: ServiceName, hasCreds: boolean, connect: () => Promise<void>): void => {
+      if (this.statuses[service].status !== 'error' || !hasCreds) {
+        if (this.statuses[service].status === 'connected') {
+          this.reconnectAttempts.delete(service);
+          this.nextReconnectAt.delete(service);
+        }
+        return;
+      }
+      if (now < (this.nextReconnectAt.get(service) ?? 0)) return;
+      const attempts = (this.reconnectAttempts.get(service) ?? 0) + 1;
+      this.reconnectAttempts.set(service, attempts);
+      this.nextReconnectAt.set(service, now + Math.min(2 ** attempts, 16) * 60_000);
+      console.log(`[conduit] Auto-reconnecting ${service} (attempt ${attempts})`);
+      connect().catch((e) => console.error(`[${service}] Auto-reconnect failed:`, e));
+    };
+
+    const slackCreds = getCreds('slack') as SlackCreds | null;
+    check('slack', !!slackCreds?.token, () => this.connectSlack());
+
+    const discordCreds = getCreds('discord') as DiscordCreds | null;
+    check('discord', !!discordCreds?.token, () => this.connectDiscord());
+
+    const telegramCreds = getCreds('telegram') as TelegramCreds | null;
+    check('telegram', !!(telegramCreds?.apiId && telegramCreds?.sessionString), () => this.connectTelegram());
+
+    const twitterCreds = getCreds('twitter') as { cookieString?: string } | null;
+    check('twitter', !!twitterCreds?.cookieString, () =>
+      this.connectTwitter({ cookieString: twitterCreds!.cookieString! }));
   }
 
   async connectSlack(): Promise<void> {
@@ -371,6 +400,10 @@ export class ConnectionManager {
       const info = this.slack.accountInfo;
       this.setStatus('slack', { status: 'connected', accountId: info?.userId, displayName: info?.displayName });
       await this.slack.startSocketMode();
+      // Catch-up: realtime-only connects permanently lose anything that arrived
+      // while the server (or socket) was down. With per-chat cursors this walk
+      // is cheap — usually one page per channel.
+      this.slack.initialFullSync().catch((e) => console.error('[slack] Catch-up sync failed:', e));
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e);
       this.setStatus('slack', { status: 'error', error: err });
@@ -389,6 +422,8 @@ export class ConnectionManager {
       if (!ok) throw new Error('Login failed');
       const info = this.discord.accountInfo;
       this.setStatus('discord', { status: 'connected', accountId: info?.userId, displayName: info?.displayName, mode: 'gateway' });
+      // Catch-up for messages missed while offline (cursor-bounded, cheap).
+      this.discord.initialFullSync().catch((e) => console.error('[discord] Catch-up sync failed:', e));
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e);
       this.setStatus('discord', { status: 'error', error: err });
@@ -409,6 +444,8 @@ export class ConnectionManager {
       if (!ok) { this.setStatus('telegram', { status: 'error', error: 'Session invalid — re-authenticate in Connections' }); return; }
       const info = this.telegram.accountInfo;
       this.setStatus('telegram', { status: 'connected', accountId: info?.userId, displayName: info?.displayName, mode: 'mtproto' });
+      // Catch-up for messages missed while offline (cursor-bounded, cheap).
+      this.telegram.initialFullSync().catch((e) => console.error('[telegram] Catch-up sync failed:', e));
     } catch (e) {
       this.setStatus('telegram', { status: 'error', error: e instanceof Error ? e.message : String(e) });
     }
@@ -1331,6 +1368,7 @@ export class ConnectionManager {
   }
 
   async disconnectAll(): Promise<void> {
+    this.stopSupervisor();
     if (this.slack) await this.slack.disconnect();
     if (this.discord) await this.discord.disconnect();
     if (this.telegram) this.telegram.disconnect();

@@ -2,13 +2,14 @@ import { Router } from 'express';
 import { getDb } from '../db/client.js';
 import {
   telegramMessages, discordMessages, slackMessages, twitterDms, gmailMessages,
-  syncState, syncRuns, errorLog, contacts, accounts, settings,
+  syncState, syncRuns, errorLog, contacts, accounts, settings, chatReadState,
 } from '../db/schema.js';
 import { eq, and, desc, like, gte, lte, sql, isNull, inArray } from 'drizzle-orm';
-import { optionalAuth, writeAuditLog, trackAiCall, type AuthedRequest } from '../auth/middleware.js';
+import { optionalAuth, uiOnlyAuth, writeAuditLog, trackAiCall, type AuthedRequest } from '../auth/middleware.js';
+import { broadcast } from '../websocket/hub.js';
 import {
   filterReadIds, filterGmailByLabels, resolveTwitterReadPerms, resolveEffectiveFineGrained,
-  isReadPermitted,
+  isReadPermitted, filterEnabledSources,
 } from './permissions-utils.js';
 import type { DiscordFineGrained } from '../db/schema.js';
 
@@ -82,6 +83,33 @@ function enrichSender(
 const router = Router();
 
 const MSG_SOURCES = ['telegram', 'discord', 'slack', 'twitter', 'gmail'] as const;
+
+// ── Unread model ──────────────────────────────────────────────────────────────
+// Per-chat read cursors live in chat_read_state. Chats without a row count
+// unread only from the "unread epoch" (first boot with the unread model), so
+// a fresh install doesn't show years of backlog as unread.
+
+let cachedUnreadEpoch: string | null = null;
+
+function getUnreadEpoch(db: ReturnType<typeof getDb>): string {
+  if (cachedUnreadEpoch) return cachedUnreadEpoch;
+  const row = db.select().from(settings).where(eq(settings.key, 'chat.unreadEpoch')).get();
+  if (row) {
+    cachedUnreadEpoch = row.value;
+  } else {
+    cachedUnreadEpoch = new Date().toISOString();
+    db.insert(settings)
+      .values({ key: 'chat.unreadEpoch', value: cachedUnreadEpoch, updatedAt: cachedUnreadEpoch })
+      .onConflictDoNothing()
+      .run();
+  }
+  return cachedUnreadEpoch;
+}
+
+// Telegram dialog folders come from a live MTProto RPC — cache them so /chats
+// never blocks on the network (5-minute TTL, refreshed opportunistically).
+let tgFolderCache: { at: number; map: Map<string, { id: number; title: string }> } | null = null;
+const TG_FOLDER_TTL_MS = 5 * 60 * 1000;
 
 router.get('/status', optionalAuth, (req, res) => {
   const db = getDb();
@@ -205,6 +233,7 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
   interface ChatEntry {
     id: string; name: string; source: string;
     messageCount: number; lastTs?: string;
+    unread?: number;                 // messages newer than the chat's read cursor
     avatarUrl?: string | null;
     guildId?: string | null;         // Discord server channels only
     lastMessageId?: string | number | null; // Telegram: for message-level deep links
@@ -222,16 +251,53 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
 
   const result: Record<string, ServiceTree> = {};
 
+  // Service-level read toggles for API keys — a disabled service contributes
+  // no tree at all.
+  const enabledChatSources = new Set(
+    filterEnabledSources(['discord', 'slack', 'telegram', 'twitter', 'gmail'], apiKeyId),
+  );
+
   // ── Discord ─────────────────────────────────────────────────────────────────
-  {
+  if (enabledChatSources.has('discord')) {
     const dcCache = buildContactCache(db, 'discord');
-    // Get all distinct channels with their latest message info
-    const allDiscordChannels = db.selectDistinct({
-      channelId: discordMessages.channelId,
-      channelName: discordMessages.channelName,
-      guildId: discordMessages.guildId,
-      guildName: discordMessages.guildName,
-    }).from(discordMessages).all();
+    const unreadEpoch = getUnreadEpoch(db);
+    const dcMyIds = JSON.stringify([...dcCache.myAccountIds]);
+
+    // One pass: latest row per channel (name/guild) + count + unread, instead
+    // of 3 queries per channel.
+    const dcRows = db.all<{
+      channelId: string; channelName: string | null; guildId: string | null;
+      guildName: string | null; cnt: number; latestTs: string; unread: number;
+    }>(sql`
+      WITH latest AS (
+        SELECT channel_id, channel_name, guild_id, guild_name,
+               ROW_NUMBER() OVER (PARTITION BY channel_id ORDER BY timestamp DESC) AS rn
+        FROM discord_messages
+      ),
+      own AS (
+        SELECT channel_id AS ch, MAX(timestamp) AS last_own_ts
+        FROM discord_messages
+        WHERE author_id IN (SELECT value FROM json_each(${dcMyIds}))
+        GROUP BY channel_id
+      ),
+      stats AS (
+        SELECT m.channel_id AS ch,
+               COUNT(*) AS cnt,
+               MAX(m.timestamp) AS latest_ts,
+               SUM(CASE WHEN m.timestamp > MAX(COALESCE(r.last_read_at, ${unreadEpoch}), COALESCE(o.last_own_ts, ''))
+                         AND (m.author_id IS NULL OR m.author_id NOT IN (SELECT value FROM json_each(${dcMyIds})))
+                        THEN 1 ELSE 0 END) AS unread
+        FROM discord_messages m
+        LEFT JOIN chat_read_state r ON r.source = 'discord' AND r.chat_id = m.channel_id
+        LEFT JOIN own o ON o.ch = m.channel_id
+        GROUP BY m.channel_id
+      )
+      SELECT l.channel_id AS channelId, l.channel_name AS channelName,
+             l.guild_id AS guildId, l.guild_name AS guildName,
+             s.cnt AS cnt, s.latest_ts AS latestTs, s.unread AS unread
+      FROM latest l JOIN stats s ON s.ch = l.channel_id
+      WHERE l.rn = 1
+    `);
 
     // Fine-grained read enforcement: filter channels and guilds for API key actors
     const discordFg = apiKeyId
@@ -239,55 +305,51 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
       : null;
     const allowedDiscordChannels = discordFg?.readChannelIds;
     const allowedDiscordGuilds = discordFg?.readGuildIds;
-    const channels = allDiscordChannels.filter((ch) => {
+    const channels = dcRows.filter((ch) => {
       if (!apiKeyId) return true;
       if (allowedDiscordChannels?.length && !allowedDiscordChannels.includes(ch.channelId)) return false;
       if (allowedDiscordGuilds?.length && ch.guildId && !allowedDiscordGuilds.includes(ch.guildId)) return false;
       return true;
     });
 
+    // DM participant names: one query for all DM channels, grouped in JS.
+    const dmParticipants = db.all<{ channelId: string; authorId: string | null; authorName: string | null }>(sql`
+      SELECT DISTINCT channel_id AS channelId, author_id AS authorId, author_name AS authorName
+      FROM discord_messages WHERE guild_id IS NULL
+    `);
+    const dmParticipantsByChannel = new Map<string, Array<{ authorId: string | null; authorName: string | null }>>();
+    for (const p of dmParticipants) {
+      const list = dmParticipantsByChannel.get(p.channelId) ?? [];
+      list.push(p);
+      dmParticipantsByChannel.set(p.channelId, list);
+    }
+
     const dmChats: ChatEntry[] = [];
     const guilds = new Map<string, { name: string; channels: ChatEntry[] }>();
 
     for (const ch of channels) {
-      const countRow = db.select({ count: sql<number>`count(*)` })
-        .from(discordMessages).where(eq(discordMessages.channelId, ch.channelId)).get();
-      const latestRow = db.select({ ts: discordMessages.timestamp })
-        .from(discordMessages).where(eq(discordMessages.channelId, ch.channelId))
-        .orderBy(desc(discordMessages.timestamp)).limit(1).get();
-
       const entry: ChatEntry = {
         id: ch.channelId,
         name: ch.channelName || ch.channelId,
         source: 'discord',
-        messageCount: countRow?.count || 0,
-        lastTs: latestRow?.ts || undefined,
+        messageCount: ch.cnt,
+        lastTs: ch.latestTs || undefined,
+        unread: ch.unread,
         guildId: ch.guildId || null,
       };
 
       if (!ch.guildId) {
         // DM — enrich with contact display name and avatar.
-        // Fall back to the authorName stored in messages when no contact exists.
-        const sample = db.select({
-          authorId: discordMessages.authorId,
-          authorName: discordMessages.authorName,
-        })
-          .from(discordMessages)
-          .where(and(eq(discordMessages.channelId, ch.channelId), isNull(discordMessages.guildId)))
-          .limit(5).all();
-
-        for (const row of sample) {
+        for (const row of dmParticipantsByChannel.get(ch.channelId) ?? []) {
           if (!row.authorId || dcCache.myAccountIds.has(row.authorId)) continue;
           const contact = dcCache.contacts.get(row.authorId);
           if (contact?.displayName) {
             entry.name = contact.displayName;
             entry.avatarUrl = contact.avatarUrl ?? null;
           } else if (row.authorName && row.authorName !== 'Unknown') {
-            // No contact yet — use name stored in message, avatar will be initial fallback
             entry.name = row.authorName;
             entry.avatarUrl = null;
           }
-          // Stop at the first non-self participant regardless of whether we found a contact
           break;
         }
         dmChats.push(entry);
@@ -325,41 +387,74 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
   }
 
   // ── Slack ───────────────────────────────────────────────────────────────────
-  {
+  if (enabledChatSources.has('slack')) {
     const slackCache = buildContactCache(db, 'slack');
-    const allSlackChannels = db.selectDistinct({
-      channelId: slackMessages.channelId,
-      channelName: slackMessages.channelName,
-    }).from(slackMessages).all();
+    const unreadEpoch = getUnreadEpoch(db);
+    const slMyIds = JSON.stringify([...slackCache.myAccountIds]);
+
+    const slRows = db.all<{
+      channelId: string; channelName: string | null; cnt: number; latestTs: string; unread: number;
+    }>(sql`
+      WITH latest AS (
+        SELECT channel_id, channel_name,
+               ROW_NUMBER() OVER (PARTITION BY channel_id ORDER BY timestamp DESC) AS rn
+        FROM slack_messages
+      ),
+      own AS (
+        SELECT channel_id AS ch, MAX(timestamp) AS last_own_ts
+        FROM slack_messages
+        WHERE user_id IN (SELECT value FROM json_each(${slMyIds}))
+        GROUP BY channel_id
+      ),
+      stats AS (
+        SELECT m.channel_id AS ch,
+               COUNT(*) AS cnt,
+               MAX(m.timestamp) AS latest_ts,
+               SUM(CASE WHEN m.timestamp > MAX(COALESCE(r.last_read_at, ${unreadEpoch}), COALESCE(o.last_own_ts, ''))
+                         AND (m.user_id IS NULL OR m.user_id NOT IN (SELECT value FROM json_each(${slMyIds})))
+                        THEN 1 ELSE 0 END) AS unread
+        FROM slack_messages m
+        LEFT JOIN chat_read_state r ON r.source = 'slack' AND r.chat_id = m.channel_id
+        LEFT JOIN own o ON o.ch = m.channel_id
+        GROUP BY m.channel_id
+      )
+      SELECT l.channel_id AS channelId, l.channel_name AS channelName,
+             s.cnt AS cnt, s.latest_ts AS latestTs, s.unread AS unread
+      FROM latest l JOIN stats s ON s.ch = l.channel_id
+      WHERE l.rn = 1
+    `);
 
     // Fine-grained read enforcement
     const allowedSlackChannels = apiKeyId
       ? (resolveEffectiveFineGrained('slack', apiKeyId) as import('../db/schema.js').SlackFineGrained | null)?.readChannelIds
       : undefined;
     const channels = allowedSlackChannels?.length
-      ? allSlackChannels.filter((ch) => allowedSlackChannels.includes(ch.channelId))
-      : allSlackChannels;
+      ? slRows.filter((ch) => allowedSlackChannels.includes(ch.channelId))
+      : slRows;
 
-    // Build a map of channelId → { messageCount, latestTs } directly from messages
-    // so sort order reflects actual message activity, not sync time
-    const slackStats = db.select({
-      channelId: slackMessages.channelId,
-      count: sql<number>`count(*)`,
-      latestTs: sql<string>`max(timestamp)`,
-    }).from(slackMessages).groupBy(slackMessages.channelId).all();
-    const statsMap = new Map(slackStats.map((s) => [s.channelId, s]));
+    // DM participants: one query for all D…/G… channels, grouped in JS.
+    const slackDmParticipants = db.all<{ channelId: string; userId: string | null }>(sql`
+      SELECT DISTINCT channel_id AS channelId, user_id AS userId
+      FROM slack_messages WHERE channel_id LIKE 'D%' OR channel_id LIKE 'G%'
+    `);
+    const slackParticipantsByChannel = new Map<string, Array<{ userId: string | null }>>();
+    for (const p of slackDmParticipants) {
+      const list = slackParticipantsByChannel.get(p.channelId) ?? [];
+      list.push(p);
+      slackParticipantsByChannel.set(p.channelId, list);
+    }
 
     const dmChats: ChatEntry[] = [];
     const channelChats: ChatEntry[] = [];
 
     for (const ch of channels) {
-      const stats = statsMap.get(ch.channelId);
       const entry: ChatEntry = {
         id: ch.channelId,
         name: ch.channelName || ch.channelId,
         source: 'slack',
-        messageCount: stats?.count || 0,
-        lastTs: stats?.latestTs || undefined,
+        messageCount: ch.cnt,
+        lastTs: ch.latestTs || undefined,
+        unread: ch.unread,
       };
 
       // Slack channel ID conventions:
@@ -372,10 +467,7 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
       if (isDm) {
         // Try to find contacts whose userId matches message senders in this channel
         const isGroupDm = ch.channelId.startsWith('G');
-        const senderRow = db.selectDistinct({ userId: slackMessages.userId })
-          .from(slackMessages)
-          .where(and(eq(slackMessages.channelId, ch.channelId)))
-          .limit(isGroupDm ? 20 : 5).all();
+        const senderRow = slackParticipantsByChannel.get(ch.channelId) ?? [];
 
         if (isGroupDm) {
           // For MPDM channels, collect all non-self participant names
@@ -430,61 +522,81 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
   }
 
   // ── Telegram ────────────────────────────────────────────────────────────────
-  {
-    // Single query: per-chat stats (count, latest timestamp, latest chatName/chatType)
-    // Uses MAX(timestamp) for correct recency ordering — avoids N+1 queries.
-    const tgStatsRows = db.select({
-      chatId:        telegramMessages.chatId,
-      count:         sql<number>`count(*)`,
-      latestTs:      sql<string>`max(timestamp)`,
-      lastMessageId: sql<number>`max(message_id)`,
-    }).from(telegramMessages)
-      .groupBy(telegramMessages.chatId)
-      .all();
-
-    // Build a map of chatId → stats for O(1) lookup
-    const tgStatsMap = new Map(tgStatsRows.map((r) => [r.chatId, r]));
-
-    // Separate query for chatName + chatType: pick the most recent non-null
-    // chatType per chat (needed for DM/group/channel classification)
-    const tgMetaRows = db.select({
-      chatId:   telegramMessages.chatId,
-      chatName: telegramMessages.chatName,
-      chatType: telegramMessages.chatType,
-    }).from(telegramMessages)
-      .orderBy(desc(telegramMessages.id))
-      .all();
-
-    // Deduplicate: keep best (most recent + non-null chatType) per chatId
-    const tgChatMap = new Map<number, { chatName: string | null; chatType: string | null }>();
-    for (const row of tgMetaRows) {
-      if (!tgChatMap.has(row.chatId)) {
-        tgChatMap.set(row.chatId, { chatName: row.chatName, chatType: row.chatType });
-      } else if (!tgChatMap.get(row.chatId)!.chatType && row.chatType) {
-        tgChatMap.get(row.chatId)!.chatType = row.chatType;
-      }
-    }
-
+  if (enabledChatSources.has('telegram')) {
     const tgCache = buildContactCache(db, 'telegram');
+    const unreadEpoch = getUnreadEpoch(db);
+    const tgMyIds = JSON.stringify([...tgCache.myAccountIds]);
 
-    // Fetch dialog folders from the live Telegram client if connected
+    // Single pass: latest row per chat (name) + stats + unread. The previous
+    // version materialised EVERY telegram message row just to dedupe names.
+    const tgRows = db.all<{
+      chatId: number; chatName: string | null; chatType: string | null;
+      cnt: number; latestTs: string; lastMessageId: number; unread: number;
+    }>(sql`
+      WITH latest AS (
+        SELECT chat_id, chat_name,
+               ROW_NUMBER() OVER (PARTITION BY chat_id ORDER BY id DESC) AS rn
+        FROM telegram_messages
+      ),
+      own AS (
+        SELECT chat_id AS ch, MAX(timestamp) AS last_own_ts
+        FROM telegram_messages
+        WHERE CAST(sender_id AS TEXT) IN (SELECT value FROM json_each(${tgMyIds}))
+        GROUP BY chat_id
+      ),
+      stats AS (
+        SELECT m.chat_id AS ch,
+               COUNT(*) AS cnt,
+               MAX(m.timestamp) AS latest_ts,
+               MAX(m.message_id) AS last_message_id,
+               MAX(m.chat_type) AS chat_type,
+               SUM(CASE WHEN m.timestamp > MAX(COALESCE(r.last_read_at, ${unreadEpoch}), COALESCE(o.last_own_ts, ''))
+                         AND (m.sender_id IS NULL OR CAST(m.sender_id AS TEXT) NOT IN (SELECT value FROM json_each(${tgMyIds})))
+                        THEN 1 ELSE 0 END) AS unread
+        FROM telegram_messages m
+        LEFT JOIN chat_read_state r ON r.source = 'telegram' AND r.chat_id = CAST(m.chat_id AS TEXT)
+        LEFT JOIN own o ON o.ch = m.chat_id
+        GROUP BY m.chat_id
+      )
+      SELECT l.chat_id AS chatId, l.chat_name AS chatName, s.chat_type AS chatType,
+             s.cnt AS cnt, s.latest_ts AS latestTs, s.last_message_id AS lastMessageId,
+             s.unread AS unread
+      FROM latest l JOIN stats s ON s.ch = l.chat_id
+      WHERE l.rn = 1
+    `);
+
+    const tgChatMap = new Map<number, typeof tgRows[number]>();
+    for (const row of tgRows) tgChatMap.set(row.chatId, row);
+
+    // Dialog folders come from a live MTProto RPC — serve from cache so this
+    // endpoint never blocks on the network; refresh in the background.
     const { getConnectionManager } = await import('../connections/manager.js');
     const manager = getConnectionManager();
     const tgBridge = manager.getTelegram();
     let folderMap = new Map<string, { id: number; title: string }>(); // chatId → folder
 
-    if (tgBridge?.connected) {
-      try {
-        const folders = await tgBridge.getDialogFolders();
+    if (tgFolderCache && Date.now() - tgFolderCache.at < TG_FOLDER_TTL_MS) {
+      folderMap = tgFolderCache.map;
+    } else if (tgBridge?.connected) {
+      const refresh = tgBridge.getDialogFolders().then((folders) => {
+        const map = new Map<string, { id: number; title: string }>();
         for (const folder of folders) {
           for (const chatId of folder.chatIds) {
-            // A chat can only be in one folder — last write wins (Telegram allows multiple)
-            if (!folderMap.has(chatId)) {
-              folderMap.set(chatId, { id: folder.id, title: folder.title });
-            }
+            if (!map.has(chatId)) map.set(chatId, { id: folder.id, title: folder.title });
           }
         }
-      } catch { /* folders optional — fall back to type-based grouping */ }
+        tgFolderCache = { at: Date.now(), map };
+        return map;
+      }).catch(() => folderMap);
+      // First call after boot has no cache — wait briefly; otherwise serve stale.
+      if (!tgFolderCache) {
+        folderMap = await Promise.race([
+          refresh,
+          new Promise<typeof folderMap>((r) => setTimeout(() => r(folderMap), 1500)),
+        ]);
+      } else {
+        folderMap = tgFolderCache.map;
+      }
     }
 
     // Build per-folder and type-based buckets
@@ -502,8 +614,6 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
       // Skip chats not in the allowlist
       if (allowedTgChats?.length && !allowedTgChats.includes(String(chatIdNum))) continue;
 
-      const stats = tgStatsMap.get(chatIdNum);
-
       const contact = tgCache.contacts.get(String(chatIdNum));
       let name = ch.chatName || String(chatIdNum);
       let avatarUrl: string | null = null;
@@ -513,9 +623,10 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
         id: String(chatIdNum),
         name,
         source: 'telegram',
-        messageCount: stats?.count || 0,
-        lastTs: stats?.latestTs || undefined,   // MAX(timestamp) — always correct recency
-        lastMessageId: stats?.lastMessageId ?? null,
+        messageCount: ch.cnt,
+        lastTs: ch.latestTs || undefined,   // MAX(timestamp) — always correct recency
+        lastMessageId: ch.lastMessageId ?? null,
+        unread: ch.unread,
         avatarUrl,
       };
 
@@ -568,84 +679,128 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
   }
 
   // ── Twitter ─────────────────────────────────────────────────────────────────
-  {
+  if (enabledChatSources.has('twitter')) {
     const { readDms: twitterReadDms } = resolveTwitterReadPerms(apiKeyId);
-    const twCache = buildContactCache(db, 'twitter');
-    const twConvs = twitterReadDms
-      ? db.selectDistinct({ conversationId: twitterDms.conversationId }).from(twitterDms).all()
-      : [];
-    if (twConvs.length) {
-      const dmChats: ChatEntry[] = twConvs.map((c) => {
-        const allMsgs = db.select().from(twitterDms)
-          .where(eq(twitterDms.conversationId, c.conversationId))
-          .orderBy(desc(twitterDms.createdAt)).all();
-        const lastMsg = allMsgs[0];
-        // Find the other participant: first message not sent by me with a handle/name
-        const otherMsg = allMsgs.find((m) =>
-          !twCache.myAccountIds.has(m.senderId) && (m.senderHandle || m.senderName)
-        );
-        // If all messages are sent by me, try to find the recipient from any message
-        const otherIdFallback = allMsgs.find((m) =>
-          m.recipientId && !twCache.myAccountIds.has(m.recipientId)
-        )?.recipientId ?? allMsgs.find((m) =>
-          !twCache.myAccountIds.has(m.senderId)
-        )?.senderId;
-        const otherId = otherMsg?.senderId ?? otherIdFallback;
-        const contact = otherId ? twCache.contacts.get(otherId) : null;
-        const otherHandle = otherMsg?.senderHandle || '';
-        const otherName = otherMsg?.senderName || '';
-        // Last-resort fallback: pick a senderHandle that isn't the logged-in user
-        const fallbackHandle = allMsgs.find((m) => !twCache.myAccountIds.has(m.senderId))?.senderHandle;
-        return {
-          id: c.conversationId,
-          name: contact?.displayName || otherName || (otherHandle ? `@${otherHandle}` : (fallbackHandle ? `@${fallbackHandle}` : c.conversationId)),
+    if (twitterReadDms) {
+      const twCache = buildContactCache(db, 'twitter');
+      const unreadEpoch = getUnreadEpoch(db);
+      const twMyIds = JSON.stringify([...twCache.myAccountIds]);
+
+      // Latest message + stats per conversation in one pass, plus one distinct
+      // participants query — instead of a full-table scan per conversation.
+      const twRows = db.all<{
+        conversationId: string; latestTs: string; cnt: number; unread: number;
+      }>(sql`
+        WITH own AS (
+          SELECT conversation_id AS ch, MAX(created_at) AS last_own_ts
+          FROM twitter_dms
+          WHERE sender_id IN (SELECT value FROM json_each(${twMyIds}))
+          GROUP BY conversation_id
+        )
+        SELECT m.conversation_id AS conversationId,
+               MAX(m.created_at) AS latestTs,
+               COUNT(*) AS cnt,
+               SUM(CASE WHEN m.created_at > MAX(COALESCE(r.last_read_at, ${unreadEpoch}), COALESCE(o.last_own_ts, ''))
+                         AND m.sender_id NOT IN (SELECT value FROM json_each(${twMyIds}))
+                        THEN 1 ELSE 0 END) AS unread
+        FROM twitter_dms m
+        LEFT JOIN chat_read_state r ON r.source = 'twitter' AND r.chat_id = m.conversation_id
+        LEFT JOIN own o ON o.ch = m.conversation_id
+        GROUP BY m.conversation_id
+      `);
+      const twParticipants = db.all<{
+        conversationId: string; senderId: string; senderHandle: string | null;
+        senderName: string | null; recipientId: string | null;
+      }>(sql`
+        SELECT DISTINCT conversation_id AS conversationId, sender_id AS senderId,
+               sender_handle AS senderHandle, sender_name AS senderName, recipient_id AS recipientId
+        FROM twitter_dms
+      `);
+      const participantsByConv = new Map<string, typeof twParticipants>();
+      for (const p of twParticipants) {
+        const list = participantsByConv.get(p.conversationId) ?? [];
+        list.push(p);
+        participantsByConv.set(p.conversationId, list);
+      }
+
+      if (twRows.length) {
+        const dmChats: ChatEntry[] = twRows.map((c) => {
+          const parts = participantsByConv.get(c.conversationId) ?? [];
+          // The other participant: prefer a non-self sender with a handle/name,
+          // fall back to a non-self recipient (conversations we started).
+          const otherMsg = parts.find((m) => !twCache.myAccountIds.has(m.senderId) && (m.senderHandle || m.senderName));
+          const otherIdFallback = parts.find((m) => m.recipientId && !twCache.myAccountIds.has(m.recipientId))?.recipientId
+            ?? parts.find((m) => !twCache.myAccountIds.has(m.senderId))?.senderId;
+          const otherId = otherMsg?.senderId ?? otherIdFallback;
+          const contact = otherId ? twCache.contacts.get(otherId) : null;
+          const otherHandle = otherMsg?.senderHandle || '';
+          const otherName = otherMsg?.senderName || '';
+          const fallbackHandle = parts.find((m) => !twCache.myAccountIds.has(m.senderId))?.senderHandle;
+          return {
+            id: c.conversationId,
+            name: contact?.displayName || otherName || (otherHandle ? `@${otherHandle}` : (fallbackHandle ? `@${fallbackHandle}` : c.conversationId)),
+            source: 'twitter',
+            messageCount: c.cnt,
+            lastTs: c.latestTs || undefined,
+            unread: c.unread,
+            avatarUrl: contact?.avatarUrl || null,
+          };
+        });
+        result['twitter'] = {
           source: 'twitter',
-          messageCount: 0,
-          lastTs: lastMsg?.createdAt || undefined,
-          avatarUrl: contact?.avatarUrl || null,
+          sections: [{ id: 'tw-dms', label: 'Direct Messages', type: 'dms', chats: dmChats.sort((a, b) => (b.lastTs || '').localeCompare(a.lastTs || '')) }],
         };
-      });
-      result['twitter'] = {
-        source: 'twitter',
-        sections: [{ id: 'tw-dms', label: 'Direct Messages', type: 'dms', chats: dmChats.sort((a, b) => (b.lastTs || '').localeCompare(a.lastTs || '')) }],
-      };
+      }
     }
   }
 
   // ── Gmail ───────────────────────────────────────────────────────────────────
-  {
+  if (enabledChatSources.has('gmail')) {
     const gmailFg = apiKeyId
       ? resolveEffectiveFineGrained('gmail', apiKeyId) as import('../db/schema.js').GmailFineGrained | null
       : null;
     const allowedGmailLabels = gmailFg?.readLabelIds;
 
-    const allGmThreads = db.selectDistinct({ threadId: gmailMessages.threadId }).from(gmailMessages).all();
-    // For Gmail, label filtering is applied per-thread (not per thread ID)
-    const gmThreads = allGmThreads.filter((t) => {
+    // Latest message + counts per thread in one pass, capped to the 200 most
+    // recent threads (the previous version returned EVERY thread with two
+    // queries each — thousands of entries on a real mailbox). Gmail's unread
+    // comes from real is_read state, not chat_read_state.
+    const gmRows = db.all<{
+      threadId: string; subject: string | null; latestTs: string | null;
+      labels: string | null; cnt: number; unread: number;
+    }>(sql`
+      SELECT thread_id AS threadId, subject, internal_date AS latestTs, labels,
+             cnt, unread
+      FROM (
+        SELECT thread_id, subject, internal_date, labels,
+               ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY internal_date DESC) AS rn,
+               COUNT(*) OVER (PARTITION BY thread_id) AS cnt,
+               SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) OVER (PARTITION BY thread_id) AS unread
+        FROM gmail_messages
+      )
+      WHERE rn = 1
+      ORDER BY internal_date DESC
+      LIMIT 200
+    `);
+
+    const gmThreads = gmRows.filter((t) => {
       if (!apiKeyId || !allowedGmailLabels?.length) return true;
-      // Fetch labels for the first/last message in this thread
-      const msgLabels = db.select({ labels: gmailMessages.labels })
-        .from(gmailMessages).where(eq(gmailMessages.threadId, t.threadId)).limit(1).get();
-      if (!msgLabels?.labels) return false;
+      if (!t.labels) return false;
       try {
-        const labelArr = JSON.parse(msgLabels.labels) as string[];
+        const labelArr = JSON.parse(t.labels) as string[];
         return labelArr.some((l) => allowedGmailLabels.includes(l));
       } catch { return false; }
     });
 
     if (gmThreads.length) {
-      const flatChats: ChatEntry[] = gmThreads.map((t) => {
-        const lastMsg = db.select().from(gmailMessages)
-          .where(eq(gmailMessages.threadId, t.threadId))
-          .orderBy(desc(gmailMessages.internalDate)).limit(1).get();
-        return {
-          id: t.threadId,
-          name: lastMsg?.subject || t.threadId,
-          source: 'gmail',
-          messageCount: 1,
-          lastTs: lastMsg?.internalDate || undefined,
-        };
-      });
+      const flatChats: ChatEntry[] = gmThreads.map((t) => ({
+        id: t.threadId,
+        name: t.subject || t.threadId,
+        source: 'gmail',
+        messageCount: t.cnt,
+        lastTs: t.latestTs || undefined,
+        unread: t.unread,
+      }));
       result['gmail'] = {
         source: 'gmail',
         sections: [{ id: 'gmail-threads', label: 'Inbox', type: 'flat', chats: flatChats.sort((a, b) => (b.lastTs || '').localeCompare(a.lastTs || '')) }],
@@ -688,57 +843,69 @@ router.get('/messages', optionalAuth, trackAiCall, (req, res) => {
   }
 
   const results: unknown[] = [];
+  let total = 0;
 
-  function queryMsgs(table: typeof telegramMessages | typeof discordMessages | typeof slackMessages, src: string) {
-    // When `around` is specified, fetch half before + half after the target timestamp
-    // to produce a window centred on that point (for scroll-to-message navigation).
-    if (around) {
-      const beforeRows = (() => {
-        let q = db.select().from(table as typeof telegramMessages);
-        if (chat_id) {
-          // @ts-ignore
-          if (src === 'telegram') q = q.where(eq(table.chatId, parseInt(chat_id)));
-          // @ts-ignore
-          else q = q.where(eq(table.channelId, chat_id));
-        }
-        // @ts-ignore
-        q = q.where(lte(table.timestamp, around));
-        // @ts-ignore
-        return q.orderBy(desc(table.timestamp)).limit(half + 1).all();
-      })();
-      const afterRows = (() => {
-        let q = db.select().from(table as typeof telegramMessages);
-        if (chat_id) {
-          // @ts-ignore
-          if (src === 'telegram') q = q.where(eq(table.chatId, parseInt(chat_id)));
-          // @ts-ignore
-          else q = q.where(eq(table.channelId, chat_id));
-        }
-        // @ts-ignore
-        q = q.where(sql`timestamp > ${around}`);
-        // @ts-ignore
-        return q.orderBy(table.timestamp).limit(lim - half).all();
-      })();
-      // Combine: beforeRows are desc, reverse them, then append afterRows
-      return [...beforeRows.reverse(), ...afterRows];
-    }
+  // NOTE: drizzle's chained .where() calls REPLACE each other rather than AND
+  // — the old implementation silently dropped `after` whenever `before` was
+  // also given. Conditions are now collected and combined once.
+  type ChatMsgTable = typeof telegramMessages | typeof discordMessages | typeof slackMessages;
 
-    let q = db.select().from(table as typeof telegramMessages);
+  function buildMsgConds(table: ChatMsgTable, src: string) {
+    const t = table as typeof telegramMessages;
+    const conds = [] as ReturnType<typeof eq>[];
     if (chat_id) {
-      // @ts-ignore
-      if (src === 'telegram') q = q.where(eq(table.chatId, parseInt(chat_id)));
-      // @ts-ignore
-      else q = q.where(eq(table.channelId, chat_id));
+      if (src === 'telegram') conds.push(eq(t.chatId, parseInt(chat_id)));
+      else conds.push(eq((table as typeof discordMessages).channelId, chat_id));
     }
-    // @ts-ignore
-    if (after)  q = q.where(gte(table.timestamp, after));
-    // @ts-ignore
-    if (before) q = q.where(lte(table.timestamp, before));
-    // @ts-ignore
-    return q.orderBy(desc(table.timestamp)).limit(lim).all();
+    if (after)  conds.push(gte(t.timestamp, after));
+    if (before) conds.push(lte(t.timestamp, before));
+    return conds;
   }
 
-  const sources = source ? [source] : [...MSG_SOURCES];
+  function queryMsgs(table: ChatMsgTable, src: string) {
+    const t = table as typeof telegramMessages;
+    const conds = buildMsgConds(table, src);
+    // When `around` is specified, fetch half before + half after the target
+    // timestamp for a window centred on that point (scroll-to-message).
+    if (around) {
+      const beforeRows = db.select().from(t)
+        .where(and(...conds, lte(t.timestamp, around)))
+        .orderBy(desc(t.timestamp)).limit(half + 1).all();
+      const afterRows = db.select().from(t)
+        .where(and(...conds, sql`timestamp > ${around}`))
+        .orderBy(t.timestamp).limit(lim - half).all();
+      return [...beforeRows.reverse(), ...afterRows];
+    }
+    return db.select().from(t)
+      .where(conds.length ? and(...conds) : undefined)
+      .orderBy(desc(t.timestamp)).limit(lim).all();
+  }
+
+  function countMsgs(table: ChatMsgTable, src: string): number {
+    const t = table as typeof telegramMessages;
+    const conds = buildMsgConds(table, src);
+    const row = db.select({ c: sql<number>`count(*)` }).from(t)
+      .where(conds.length ? and(...conds) : undefined).get();
+    return row?.c ?? 0;
+  }
+
+  // rawJson is the full serialised platform payload — 5-20x the useful tokens;
+  // no client feature reads it from list responses. API actors additionally
+  // drop attachments/embeds (UI needs them for media rendering).
+  function projectRow<T extends { rawJson?: string | null }>(raw: T): Omit<T, 'rawJson'> {
+    const { rawJson: _rawJson, ...rest } = raw;
+    if (apiKeyId) {
+      delete (rest as Record<string, unknown>)['attachments'];
+      delete (rest as Record<string, unknown>)['embeds'];
+    }
+    return rest;
+  }
+
+  const sources = filterEnabledSources(source ? [source] : [...MSG_SOURCES], apiKeyId);
+  if (source && sources.length === 0) {
+    res.status(403).json({ error: `Read access to ${source} is not permitted for this API key` });
+    return;
+  }
 
   for (const src of sources) {
     // Build contact cache once per source
@@ -746,6 +913,7 @@ router.get('/messages', optionalAuth, trackAiCall, (req, res) => {
 
     if (src === 'telegram') {
       const rows = queryMsgs(telegramMessages, src);
+      total += countMsgs(telegramMessages, src);
       results.push(...rows.map((m) => {
         const raw = m as typeof telegramMessages.$inferSelect;
         const { senderName, avatarUrl, isMe } = enrichSender(
@@ -754,28 +922,33 @@ router.get('/messages', optionalAuth, trackAiCall, (req, res) => {
           cache,
           src,
         );
-        return { source: src, ...raw, senderName, avatarUrl, isMe };
+        return { source: src, ...projectRow(raw), senderName, avatarUrl, isMe };
       }));
     } else if (src === 'discord') {
       const rows = queryMsgs(discordMessages, src);
+      total += countMsgs(discordMessages, src);
       results.push(...rows.map((m) => {
         const raw = m as unknown as typeof discordMessages.$inferSelect;
         const { senderName, avatarUrl, isMe } = enrichSender(raw.authorId, raw.authorName, cache, src);
-        return { source: src, ...raw, senderName, avatarUrl, isMe };
+        return { source: src, ...projectRow(raw), senderName, avatarUrl, isMe };
       }));
     } else if (src === 'slack') {
       const rows = queryMsgs(slackMessages, src);
+      total += countMsgs(slackMessages, src);
       results.push(...rows.map((m) => {
         const raw = m as unknown as typeof slackMessages.$inferSelect;
         const { senderName, avatarUrl, isMe } = enrichSender(raw.userId, raw.userName, cache, src);
-        return { source: src, ...raw, senderName, avatarUrl, isMe };
+        return { source: src, ...projectRow(raw), senderName, avatarUrl, isMe };
       }));
     } else if (src === 'twitter') {
-      let q = db.select().from(twitterDms);
-      if (chat_id) q = q.where(eq(twitterDms.conversationId, chat_id)) as typeof q;
-      if (after)   q = q.where(gte(twitterDms.createdAt, after)) as typeof q;
-      if (before)  q = q.where(lte(twitterDms.createdAt, before)) as typeof q;
-      const msgs = q.orderBy(desc(twitterDms.createdAt)).limit(lim).all();
+      const conds = [] as ReturnType<typeof eq>[];
+      if (chat_id) conds.push(eq(twitterDms.conversationId, chat_id));
+      if (after)   conds.push(gte(twitterDms.createdAt, after));
+      if (before)  conds.push(lte(twitterDms.createdAt, before));
+      const where = conds.length ? and(...conds) : undefined;
+      const msgs = db.select().from(twitterDms).where(where)
+        .orderBy(desc(twitterDms.createdAt)).limit(lim).all();
+      total += db.select({ c: sql<number>`count(*)` }).from(twitterDms).where(where).get()?.c ?? 0;
       results.push(...msgs.map((m) => {
         const { senderName, avatarUrl, isMe } = enrichSender(m.senderId, m.senderName || m.senderHandle, cache);
         return {
@@ -786,11 +959,14 @@ router.get('/messages', optionalAuth, trackAiCall, (req, res) => {
         };
       }));
     } else if (src === 'gmail') {
-      let q = db.select().from(gmailMessages);
-      if (chat_id) q = q.where(eq(gmailMessages.threadId, chat_id)) as typeof q;
-      if (after)   q = q.where(gte(gmailMessages.internalDate, after)) as typeof q;
-      if (before)  q = q.where(lte(gmailMessages.internalDate, before)) as typeof q;
-      const msgs = q.orderBy(desc(gmailMessages.internalDate)).limit(lim).all();
+      const conds = [] as ReturnType<typeof eq>[];
+      if (chat_id) conds.push(eq(gmailMessages.threadId, chat_id));
+      if (after)   conds.push(gte(gmailMessages.internalDate, after));
+      if (before)  conds.push(lte(gmailMessages.internalDate, before));
+      const where = conds.length ? and(...conds) : undefined;
+      const msgs = db.select().from(gmailMessages).where(where)
+        .orderBy(desc(gmailMessages.internalDate)).limit(lim).all();
+      total += db.select({ c: sql<number>`count(*)` }).from(gmailMessages).where(where).get()?.c ?? 0;
       results.push(...msgs.map((m) => ({
         source: 'gmail', messageId: m.gmailId,
         chatId: m.threadId, chatName: m.subject || m.threadId,
@@ -823,7 +999,65 @@ router.get('/messages', optionalAuth, trackAiCall, (req, res) => {
     ) ?? undefined;
   }
 
-  res.json({ messages: page, total: results.length, ...(conversationMeta ? { conversationMeta } : {}) });
+  // `total` is the true count of matching rows across the queried sources —
+  // the old value was capped at min(sources × limit) and useless for paging.
+  res.json({ messages: page, total, ...(conversationMeta ? { conversationMeta } : {}) });
+});
+
+// ── Read-state (unread model) ─────────────────────────────────────────────────
+
+// POST /chats/:source/:chatId/read — set the chat's read cursor (default: now).
+router.post('/chats/:source/:chatId/read', uiOnlyAuth, (req, res) => {
+  const { source, chatId } = req.params as { source: string; chatId: string };
+  if (!(MSG_SOURCES as readonly string[]).includes(source)) {
+    res.status(400).json({ error: `Unknown source: ${source}` });
+    return;
+  }
+  const at = (req.body as { at?: string } | undefined)?.at || new Date().toISOString();
+  const db = getDb();
+  const now = new Date().toISOString();
+  db.insert(chatReadState)
+    .values({ source, chatId, lastReadAt: at, updatedAt: now })
+    .onConflictDoUpdate({
+      target: [chatReadState.source, chatReadState.chatId],
+      set: { lastReadAt: at, updatedAt: now },
+    }).run();
+  broadcast({ type: 'chat:read', data: { source, chatId, lastReadAt: at } });
+  res.json({ success: true, source, chatId, lastReadAt: at });
+});
+
+// POST /chats/read-all — mark every known chat read (optionally one source).
+router.post('/chats/read-all', uiOnlyAuth, (req, res) => {
+  const { source } = (req.body ?? {}) as { source?: string };
+  const chatSources = source ? [source] : ['telegram', 'discord', 'slack', 'twitter'];
+  const db = getDb();
+  const now = new Date().toISOString();
+  let marked = 0;
+
+  for (const src of chatSources) {
+    let ids: string[] = [];
+    if (src === 'telegram') {
+      ids = db.selectDistinct({ id: telegramMessages.chatId }).from(telegramMessages).all().map((r) => String(r.id));
+    } else if (src === 'discord') {
+      ids = db.selectDistinct({ id: discordMessages.channelId }).from(discordMessages).all().map((r) => r.id);
+    } else if (src === 'slack') {
+      ids = db.selectDistinct({ id: slackMessages.channelId }).from(slackMessages).all().map((r) => r.id);
+    } else if (src === 'twitter') {
+      ids = db.selectDistinct({ id: twitterDms.conversationId }).from(twitterDms).all().map((r) => r.id);
+    }
+    for (const chatId of ids) {
+      db.insert(chatReadState)
+        .values({ source: src, chatId, lastReadAt: now, updatedAt: now })
+        .onConflictDoUpdate({
+          target: [chatReadState.source, chatReadState.chatId],
+          set: { lastReadAt: now, updatedAt: now },
+        }).run();
+      marked++;
+    }
+    broadcast({ type: 'chat:read', data: { source: src, chatId: '*', lastReadAt: now } });
+  }
+
+  res.json({ success: true, marked });
 });
 
 router.get('/search', optionalAuth, trackAiCall, (req, res) => {
@@ -834,37 +1068,57 @@ router.get('/search', optionalAuth, trackAiCall, (req, res) => {
 
   const lim = Math.min(parseInt(limit) || 50, 200);
   const results: unknown[] = [];
-  const sources = source ? [source] : [...MSG_SOURCES];
+  const apiKeyId = authedReq.apiKey?.id ?? null;
+
+  // Same read enforcement as /messages: service toggles + per-chat allowlists.
+  // Search must not be a side door around channel-scoped keys.
+  const sources = filterEnabledSources(source ? [source] : [...MSG_SOURCES], apiKeyId);
+  if (source && sources.length === 0) {
+    res.status(403).json({ error: `Read access to ${source} is not permitted for this API key` });
+    return;
+  }
+
+  /** Filter rows to chats the key may read (no-op for the UI actor). */
+  function permittedRows<T>(svc: string, rows: T[], chatIdOf: (r: T) => string): T[] {
+    if (!apiKeyId) return rows;
+    const ids = [...new Set(rows.map(chatIdOf))];
+    const allowed = new Set(filterReadIds(svc, ids, apiKeyId));
+    return rows.filter((r) => allowed.has(chatIdOf(r)));
+  }
 
   if (sources.includes('telegram')) {
-    results.push(...db.select().from(telegramMessages)
+    const rows = permittedRows('telegram', db.select().from(telegramMessages)
       .where(like(telegramMessages.content, `%${q}%`))
-      .orderBy(desc(telegramMessages.timestamp)).limit(lim).all()
-      .map((m) => ({ source: 'telegram', ...m })));
+      .orderBy(desc(telegramMessages.timestamp)).limit(lim).all(), (m) => String(m.chatId));
+    results.push(...rows.map((m) => ({ source: 'telegram', ...m })));
   }
   if (sources.includes('discord')) {
-    results.push(...db.select().from(discordMessages)
+    const rows = permittedRows('discord', db.select().from(discordMessages)
       .where(like(discordMessages.content, `%${q}%`))
-      .orderBy(desc(discordMessages.timestamp)).limit(lim).all()
-      .map((m) => ({ source: 'discord', ...m })));
+      .orderBy(desc(discordMessages.timestamp)).limit(lim).all(), (m) => m.channelId);
+    results.push(...rows.map((m) => ({ source: 'discord', ...m })));
   }
   if (sources.includes('slack')) {
-    results.push(...db.select().from(slackMessages)
+    const rows = permittedRows('slack', db.select().from(slackMessages)
       .where(like(slackMessages.content, `%${q}%`))
-      .orderBy(desc(slackMessages.timestamp)).limit(lim).all()
-      .map((m) => ({ source: 'slack', ...m })));
+      .orderBy(desc(slackMessages.timestamp)).limit(lim).all(), (m) => m.channelId);
+    results.push(...rows.map((m) => ({ source: 'slack', ...m })));
   }
-  if (sources.includes('twitter')) {
+  if (sources.includes('twitter') && (!apiKeyId || resolveTwitterReadPerms(apiKeyId).readDms)) {
     results.push(...db.select().from(twitterDms)
       .where(like(twitterDms.text, `%${q}%`))
       .orderBy(desc(twitterDms.createdAt)).limit(lim).all()
       .map((m) => ({ source: 'twitter', messageId: m.messageId, chatId: m.conversationId, content: m.text || '', timestamp: m.createdAt, senderName: m.senderHandle })));
   }
   if (sources.includes('gmail')) {
-    results.push(...db.select().from(gmailMessages)
-      .where(like(gmailMessages.snippet, `%${q}%`))
-      .orderBy(desc(gmailMessages.internalDate)).limit(lim).all()
-      .map((m) => ({ source: 'gmail', messageId: m.gmailId, chatId: m.threadId, content: m.snippet || '', timestamp: m.internalDate, senderName: m.fromName })));
+    const rows = filterGmailByLabels(
+      db.select().from(gmailMessages)
+        .where(like(gmailMessages.snippet, `%${q}%`))
+        .orderBy(desc(gmailMessages.internalDate)).limit(lim).all(),
+      (m) => { try { return JSON.parse(m.labels || '[]') as string[]; } catch { return []; } },
+      apiKeyId,
+    );
+    results.push(...rows.map((m) => ({ source: 'gmail', messageId: m.gmailId, chatId: m.threadId, content: m.snippet || '', timestamp: m.internalDate, senderName: m.fromName })));
   }
 
   results.sort((a, b) =>
@@ -905,9 +1159,23 @@ router.get('/activity', optionalAuth, trackAiCall, (req, res) => {
   } = req.query as Record<string, string>;
 
   const lim = Math.min(parseInt(limit) || 50, 200);
-  const requestedSources = sourcesParam
-    ? sourcesParam.split(',').map((s) => s.trim())
-    : ['telegram', 'discord', 'slack', 'twitter', 'gmail'];
+  const apiKeyId = authedReq.apiKey?.id ?? null;
+  // Enforce the same service toggles + per-chat allowlists as /messages —
+  // the activity feed must not be a side door around scoped keys.
+  const requestedSources = filterEnabledSources(
+    sourcesParam
+      ? sourcesParam.split(',').map((s) => s.trim())
+      : ['telegram', 'discord', 'slack', 'twitter', 'gmail'],
+    apiKeyId,
+  );
+
+  /** Filter rows to chats the key may read (no-op for the UI actor). */
+  function permittedActivityRows<T>(svc: string, rows: T[], chatIdOf: (r: T) => string): T[] {
+    if (!apiKeyId) return rows;
+    const ids = [...new Set(rows.map(chatIdOf))];
+    const allowed = new Set(filterReadIds(svc, ids, apiKeyId));
+    return rows.filter((r) => allowed.has(chatIdOf(r)));
+  }
 
   type ActivityItem = {
     type: 'message' | 'email';
@@ -957,11 +1225,11 @@ router.get('/activity', optionalAuth, trackAiCall, (req, res) => {
     const cache = buildContactCache(db, src);
 
     if (src === 'telegram') {
-      const rows = db.select().from(telegramMessages)
+      const rows = permittedActivityRows('telegram', db.select().from(telegramMessages)
         .where(and(gte(telegramMessages.timestamp, since), lte(telegramMessages.timestamp, until)))
         .orderBy(desc(telegramMessages.timestamp))
         .limit(lim)
-        .all();
+        .all(), (r) => String(r.chatId));
       for (const r of rows) {
         const { senderName, avatarUrl, isMe } = enrichSender(
           r.senderId ? String(r.senderId) : null, r.senderName, cache, src,
@@ -980,11 +1248,11 @@ router.get('/activity', optionalAuth, trackAiCall, (req, res) => {
     }
 
     if (src === 'discord') {
-      const rows = db.select().from(discordMessages)
+      const rows = permittedActivityRows('discord', db.select().from(discordMessages)
         .where(and(gte(discordMessages.timestamp, since), lte(discordMessages.timestamp, until)))
         .orderBy(desc(discordMessages.timestamp))
         .limit(lim)
-        .all();
+        .all(), (r) => r.channelId);
       for (const r of rows) {
         const { senderName, avatarUrl, isMe } = enrichSender(r.authorId, r.authorName, cache, src);
         items.push({
@@ -1001,11 +1269,11 @@ router.get('/activity', optionalAuth, trackAiCall, (req, res) => {
     }
 
     if (src === 'slack') {
-      const rows = db.select().from(slackMessages)
+      const rows = permittedActivityRows('slack', db.select().from(slackMessages)
         .where(and(gte(slackMessages.timestamp, since), lte(slackMessages.timestamp, until)))
         .orderBy(desc(slackMessages.timestamp))
         .limit(lim)
-        .all();
+        .all(), (r) => r.channelId);
       for (const r of rows) {
         const { senderName, avatarUrl, isMe } = enrichSender(r.userId, r.userName, cache, src);
         items.push({
@@ -1022,6 +1290,7 @@ router.get('/activity', optionalAuth, trackAiCall, (req, res) => {
     }
 
     if (src === 'twitter') {
+      if (apiKeyId && !resolveTwitterReadPerms(apiKeyId).readDms) continue;
       const rows = db.select().from(twitterDms)
         .where(and(gte(twitterDms.createdAt, since), lte(twitterDms.createdAt, until)))
         .orderBy(desc(twitterDms.createdAt))
@@ -1056,14 +1325,18 @@ router.get('/activity', optionalAuth, trackAiCall, (req, res) => {
 
   // Gmail — surfaces as 'email' type items
   if (includeGmail) {
-    const rows = db.select().from(gmailMessages)
-      .where(and(
-        gte(gmailMessages.internalDate, since),
-        lte(gmailMessages.internalDate, until),
-      ))
-      .orderBy(desc(gmailMessages.internalDate))
-      .limit(lim)
-      .all();
+    const rows = filterGmailByLabels(
+      db.select().from(gmailMessages)
+        .where(and(
+          gte(gmailMessages.internalDate, since),
+          lte(gmailMessages.internalDate, until),
+        ))
+        .orderBy(desc(gmailMessages.internalDate))
+        .limit(lim)
+        .all(),
+      (m) => { try { return JSON.parse(m.labels || '[]') as string[]; } catch { return []; } },
+      apiKeyId,
+    );
     for (const r of rows) {
       items.push({
         type: 'email', source: 'gmail',

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -14,7 +14,8 @@ import { api, type Message, type ChatEntry, type ChatSection, type ServiceTree, 
 import { useMessageStreamStore } from '@/store';
 import { ServiceFilterChip, AllFilterChip } from '@/components/shared/ServiceBadge';
 import { Skeleton } from '@/components/shared/Skeleton';
-import { cn, timeAgo, formatDate, SERVICE_ACCENT } from '@/lib/utils';
+import { cn, timeAgo, formatDate, stringToHue } from '@/lib/utils';
+import { SERVICE_THEME } from '@/lib/serviceTheme';
 import { toast } from '@/store';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -40,12 +41,6 @@ function bubbleTimestamp(ts: string): string {
   return formatDate(ts, 'MMM d, h:mm a');
 }
 
-function stringToHue(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) & 0xffff;
-  return h % 360;
-}
-
 function getSender(msg: Message): string {
   return msg.senderName || msg.authorName || msg.userName || 'Unknown';
 }
@@ -62,10 +57,8 @@ const SERVICE_LABEL: Record<string, string> = {
   slack: 'Slack', discord: 'Discord', telegram: 'Telegram', twitter: 'Twitter / X',
 };
 
-const SERVICE_COLOR: Record<string, string> = {
-  slack: 'text-violet-400', discord: 'text-indigo-400', telegram: 'text-sky-400',
-  twitter: 'text-sky-300',
-};
+/** Accent text class for a service (canonical theme). */
+const serviceAccent = (source: string): string => SERVICE_THEME[source]?.text ?? 'text-primary';
 
 // ─── Platform deep-link URL ────────────────────────────────────────────────────
 
@@ -270,7 +263,7 @@ function MessageContent({ content, source, isMe }: { content: string; source: st
       <p className={cn('text-sm leading-relaxed break-words whitespace-pre-wrap', isMe ? 'text-primary-foreground/95' : 'text-foreground/90')}>
         {parts.map((part, i) =>
           part.startsWith('@') ? (
-            <span key={i} className={cn('font-semibold rounded px-0.5', isMe ? 'text-primary-foreground' : (SERVICE_ACCENT[source] || 'text-primary'))}>
+            <span key={i} className={cn('font-semibold rounded px-0.5', isMe ? 'text-primary-foreground' : (serviceAccent(source)))}>
               {part}
             </span>
           ) : part,
@@ -498,7 +491,7 @@ function BubbleRow({ msg, prevMsg, nextMsg, highlighted = false }: {
             {isFirstInRun && (
               <button
                 onClick={openContact}
-                className={cn('text-[11px] font-semibold mb-1 ml-1 hover:underline cursor-pointer', SERVICE_ACCENT[msg.source] || 'text-muted-foreground')}
+                className={cn('text-[11px] font-semibold mb-1 ml-1 hover:underline cursor-pointer', serviceAccent(msg.source))}
                 title={`View ${sender} in Contacts`}
               >{sender}</button>
             )}
@@ -540,12 +533,20 @@ function ChatLeaf({ entry, section, selected, onClick }: {
       {selected && <span className="absolute left-0 inset-y-1 w-0.5 bg-primary rounded-r-full" />}
 
       <EntryAvatar type={section.type} name={entry.name} avatarUrl={entry.avatarUrl} />
-      <span className={cn('flex-1 text-xs truncate', selected && 'font-semibold text-foreground')}>
+      <span className={cn(
+        'flex-1 text-xs truncate',
+        selected && 'font-semibold text-foreground',
+        !selected && (entry.unread ?? 0) > 0 && 'font-semibold text-foreground',
+      )}>
         {entry.name}
       </span>
-      {entry.messageCount > 0 && !selected && (
+      {(entry.unread ?? 0) > 0 && !selected ? (
+        <span className="flex-shrink-0 min-w-[18px] h-[18px] px-1 rounded-full bg-primary text-primary-foreground text-[10px] font-bold flex items-center justify-center">
+          {(entry.unread ?? 0) > 99 ? '99+' : entry.unread}
+        </span>
+      ) : entry.messageCount > 0 && !selected ? (
         <span className="text-[10px] text-muted-foreground/35 flex-shrink-0">{entry.messageCount.toLocaleString()}</span>
-      )}
+      ) : null}
     </button>
   );
 }
@@ -631,7 +632,7 @@ function ServiceNode({ tree, selectedId, onSelect, search, collapsed }: {
         className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-white/[0.02] transition-colors group"
       >
         <ChevronDown className={cn('w-3.5 h-3.5 text-muted-foreground/50 transition-transform duration-150 flex-shrink-0', !open && '-rotate-90')} />
-        <span className={cn('text-xs font-bold tracking-tight flex-1', SERVICE_COLOR[source] || 'text-foreground')}>
+        <span className={cn('text-xs font-bold tracking-tight flex-1', serviceAccent(source))}>
           {SERVICE_LABEL[source] || source}
         </span>
         <span className="text-[10px] text-muted-foreground/30 ml-1">{totalChats}</span>
@@ -683,13 +684,6 @@ export default function Chat() {
   // navApplied is set to true by the auto-select effect
   const pendingNavState = useRef<ChatNavState | null>(null);
 
-  // ── Pagination state ──────────────────────────────────────────────────────────
-  // All loaded message pages, oldest first. Each page is a sorted array.
-  const [pages, setPages] = useState<Message[][]>([]);
-  const [hasOlderMessages, setHasOlderMessages] = useState(false);
-  const [loadingOlder, setLoadingOlder] = useState(false);
-  // Virtuoso offset — grows as pages are prepended so the viewport doesn't jump
-  const [firstItemIndex, setFirstItemIndex] = useState(0);
   // Message to scroll-to and highlight — set after messages load, consumed once
   const [scrollTarget, setScrollTarget] = useState<{ id: string; done: boolean } | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
@@ -711,49 +705,56 @@ export default function Chat() {
     return SERVICE_ORDER.filter((s) => treeData[s]).map((s) => treeData[s]);
   }, [treeData]);
 
-  // Reset pagination when conversation changes
+  // Reset scroll/highlight state when the conversation changes, and arm the
+  // scroll-to-message target when arriving via navigation.
   useEffect(() => {
-    setPages([]);
-    setFirstItemIndex(0);
-    setHasOlderMessages(false);
-    setScrollTarget(null);
     setHighlightedMessageId(null);
     if (highlightTimer.current) clearTimeout(highlightTimer.current);
-  }, [selected?.id, selected?.source]);
-
-  // Load the initial page for a conversation (or the "around" page if scrolling to a message)
-  useEffect(() => {
-    if (!selected) return;
-    // Use pendingNavState ref so this works even after navApplied is set to true
     const navState = pendingNavState.current;
-
-    const fetchInitial = async () => {
-      try {
-        const params = navState?.scrollToTimestamp
-          ? { source: selected.source, chat_id: selected.id, limit: PAGE_SIZE, around: navState.scrollToTimestamp }
-          : { source: selected.source, chat_id: selected.id, limit: PAGE_SIZE };
-
-        const data = await api.messages(params);
-        const sorted = [...data.messages].sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
-        setPages([sorted]);
-        setFirstItemIndex(0);
-        setHasOlderMessages(data.total > PAGE_SIZE || !!navState?.scrollToTimestamp);
-
-        if (navState?.scrollToMessageId) {
-          // Set the scroll target — a separate effect will execute the scroll
-          // once messages are actually rendered in the DOM
-          setScrollTarget({ id: navState.scrollToMessageId, done: false });
-          // Don't pin to bottom when navigating to a specific message
-          setAtBottom(false);
-        } else {
-          setAtBottom(true);
-        }
-      } catch { /* ignore */ }
-    };
-
-    fetchInitial();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (selected && navState?.scrollToMessageId) {
+      setScrollTarget({ id: navState.scrollToMessageId, done: false });
+      setAtBottom(false);
+    } else {
+      setScrollTarget(null);
+      setAtBottom(true);
+    }
   }, [selected?.id, selected?.source]);
+
+  // Messages, paged backwards with useInfiniteQuery. Replaces the hand-rolled
+  // pages/loadingOlder state, which (a) refetched from scratch on every
+  // conversation switch and (b) had an un-aborted fetch race that could render
+  // chat A's messages inside chat B on rapid switching — the query key makes
+  // responses land in the right cache entry no matter when they resolve.
+  const aroundTs = pendingNavState.current?.scrollToTimestamp ?? null;
+  const {
+    data: messagesData,
+    isPending: msgsPending,
+    hasPreviousPage: hasOlderMessages,
+    isFetchingPreviousPage: loadingOlder,
+    fetchPreviousPage,
+  } = useInfiniteQuery({
+    queryKey: ['messages', selected?.source ?? '', selected?.id ?? '', aroundTs],
+    enabled: !!selected,
+    staleTime: 60_000,
+    queryFn: async ({ pageParam }) => {
+      const base = { source: selected!.source, chat_id: selected!.id, limit: PAGE_SIZE };
+      const params = pageParam
+        ? { ...base, before: pageParam }
+        : aroundTs
+          ? { ...base, around: aroundTs }
+          : base;
+      const data = await api.messages(params);
+      return {
+        messages: [...data.messages].sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || '')),
+        total: data.total,
+      };
+    },
+    initialPageParam: null as string | null,
+    // "Previous" = older messages: page backwards from the oldest loaded one.
+    getPreviousPageParam: (firstPage) =>
+      firstPage.messages.length >= PAGE_SIZE ? (firstPage.messages[0]?.timestamp ?? null) : null,
+    getNextPageParam: () => null,
+  });
 
   // Auto-select when navigated from Contacts
   useEffect(() => {
@@ -779,28 +780,9 @@ export default function Chat() {
   }, [location.state, serviceTrees]);
 
   // Load older messages when user reaches the top
-  const loadOlderMessages = useCallback(async () => {
-    if (!selected || loadingOlder || !hasOlderMessages || pages.length === 0) return;
-    const oldest = pages[0]?.[0];
-    if (!oldest?.timestamp) return;
-
-    setLoadingOlder(true);
-    try {
-      const data = await api.messages({
-        source: selected.source,
-        chat_id: selected.id,
-        limit: PAGE_SIZE,
-        before: oldest.timestamp,
-      });
-      if (data.messages.length === 0) { setHasOlderMessages(false); return; }
-      const sorted = [...data.messages].sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
-
-      setFirstItemIndex((prev) => prev - sorted.length);
-      setPages((prev) => [sorted, ...prev]);
-      setHasOlderMessages(data.messages.length >= PAGE_SIZE);
-    } catch { /* ignore */ }
-    setLoadingOlder(false);
-  }, [selected, loadingOlder, hasOlderMessages, pages]);
+  const loadOlderMessages = useCallback(() => {
+    if (!loadingOlder && hasOlderMessages) fetchPreviousPage();
+  }, [loadingOlder, hasOlderMessages, fetchPreviousPage]);
 
   // Flatten all pages + live messages, deduplicated
   const messages = useMemo(() => {
@@ -809,7 +791,7 @@ export default function Chat() {
       (m) => m.source === selected.source &&
         (String(m.chatId) === selected.id || String(m.channelId ?? '') === selected.id),
     );
-    const flat = pages.flat();
+    const flat = (messagesData?.pages ?? []).flatMap((p) => p.messages);
     const all = [...flat, ...live];
     const seen = new Set<string>();
     const deduped: Message[] = [];
@@ -818,9 +800,31 @@ export default function Chat() {
       if (!seen.has(key)) { seen.add(key); deduped.push(m); }
     }
     return deduped.sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
-  }, [pages, recentMessages, selected]);
+  }, [messagesData, recentMessages, selected]);
 
-  const msgsLoading = pages.length === 0 && !!selected;
+  // Virtuoso offset: decreases only as OLDER pages are prepended (live appends
+  // at the bottom must not shift it). The last page in the array is the initial
+  // fetch; everything before it was prepended via fetchPreviousPage.
+  const firstItemIndex = useMemo(() => {
+    const START_INDEX = 500_000;
+    const pagesArr = messagesData?.pages ?? [];
+    const prepended = pagesArr.slice(0, -1).reduce((n, p) => n + p.messages.length, 0);
+    return START_INDEX - prepended;
+  }, [messagesData]);
+
+  const msgsLoading = msgsPending && !!selected;
+
+  // Keep the read cursor advancing while the user is actively viewing the
+  // chat (focused + pinned to bottom), throttled to one write per 10s.
+  const lastMarkRead = useRef(0);
+  useEffect(() => {
+    if (!selected || !atBottom || messages.length === 0) return;
+    if (!document.hasFocus()) return;
+    const now = Date.now();
+    if (now - lastMarkRead.current < 10_000) return;
+    lastMarkRead.current = now;
+    api.markChatRead(selected.source, selected.id).catch(() => { /* non-fatal */ });
+  }, [messages.length, selected, atBottom]);
 
   // ── Scroll-to-message ─────────────────────────────────────────────────────────
   // Executes once messages are rendered — uses double-rAF to wait for Virtuoso's
@@ -944,7 +948,14 @@ export default function Chat() {
                 key={tree.source}
                 tree={tree}
                 selectedId={selected?.id ?? null}
-                onSelect={(entry) => setSelected(entry)}
+                onSelect={(entry) => {
+                  setSelected(entry);
+                  // Opening a chat marks it read — fire-and-forget; the
+                  // chat:read broadcast refreshes unread badges everywhere.
+                  if ((entry.unread ?? 0) > 0) {
+                    api.markChatRead(entry.source, entry.id).catch(() => { /* non-fatal */ });
+                  }
+                }}
                 search={search}
                 collapsed={filter !== 'all' && filter !== tree.source}
               />
@@ -966,7 +977,7 @@ export default function Chat() {
               <ChatBreadcrumb
                 treeData={treeData}
                 selected={selected}
-                serviceColor={SERVICE_COLOR[selected.source] || 'text-muted-foreground/60'}
+                serviceColor={serviceAccent(selected.source)}
               />
             </div>
             <span className="text-xs text-muted-foreground/50 hidden sm:block flex-shrink-0">

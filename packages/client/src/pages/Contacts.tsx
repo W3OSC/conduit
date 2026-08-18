@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
+import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -9,7 +10,7 @@ import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { api, type Contact, type ContactMessage, type ChatTreeMap } from '@/lib/api';
 import { ServiceIcon } from '@/components/shared/ServiceBadge';
 import { Skeleton } from '@/components/shared/Skeleton';
-import { cn, timeAgo, formatDate } from '@/lib/utils';
+import { cn, timeAgo, formatDate, stringToHue } from '@/lib/utils';
 import { toast } from '@/store';
 
 // ─── Google contact helpers ───────────────────────────────────────────────────
@@ -54,7 +55,7 @@ function mergeGoogleContacts(contacts: Contact[]): MergedContact[] {
 function ContactAvatar({ contact, size = 10 }: { contact: Contact; size?: number }) {
   const [imgErr, setImgErr] = useState(false);
   const name = contact.displayName || contact.username || contact.platformId;
-  const hue = name.split('').reduce((h, c) => (h * 31 + c.charCodeAt(0)) & 0xffff, 0) % 360;
+  const hue = stringToHue(name);
 
   if (contact.avatarUrl && !imgErr) {
     return (
@@ -461,22 +462,28 @@ export default function Contacts() {
 
   // When filtering by 'google', fetch both gmail and calendar, then merge client-side
   const isGoogleFilter = source === 'google';
+  const debouncedSearch = useDebouncedValue(search);
 
+  // Distinct 'google-merge' namespace: with the old ['contacts','gmail',…] key,
+  // selecting source='gmail' produced the SAME key as this query but a
+  // different queryFn (no criteria param) — a silent wrong-results collision.
+  // These merge queries also only run for the google filter now; 'all' already
+  // includes gmail+calendar rows in the regular query.
   const { data: gmailData, isLoading: gmailLoading } = useQuery({
-    queryKey: ['contacts', 'gmail', search, criteriaFilter, page],
-    queryFn: () => api.contacts({ source: 'gmail', q: search || undefined, limit: LIMIT, offset: page * LIMIT }),
-    enabled: isGoogleFilter || source === 'all',
+    queryKey: ['contacts', 'google-merge', 'gmail', debouncedSearch, criteriaFilter, page],
+    queryFn: () => api.contacts({ source: 'gmail', q: debouncedSearch || undefined, limit: LIMIT, offset: page * LIMIT }),
+    enabled: isGoogleFilter,
   });
   const { data: calData, isLoading: calLoading } = useQuery({
-    queryKey: ['contacts', 'calendar', search, criteriaFilter, page],
-    queryFn: () => api.contacts({ source: 'calendar', q: search || undefined, limit: LIMIT, offset: page * LIMIT }),
-    enabled: isGoogleFilter || source === 'all',
+    queryKey: ['contacts', 'google-merge', 'calendar', debouncedSearch, criteriaFilter, page],
+    queryFn: () => api.contacts({ source: 'calendar', q: debouncedSearch || undefined, limit: LIMIT, offset: page * LIMIT }),
+    enabled: isGoogleFilter,
   });
   const { data: regularData, isLoading: regularLoading } = useQuery({
-    queryKey: ['contacts', source, search, criteriaFilter, page],
+    queryKey: ['contacts', 'list', source, debouncedSearch, criteriaFilter, page],
     queryFn: () => api.contacts({
       source: source === 'all' ? undefined : source,
-      q: search || undefined,
+      q: debouncedSearch || undefined,
       criteria: (criteriaFilter || undefined) as 'dm' | 'owned' | 'small' | 'native' | undefined,
       limit: LIMIT,
       offset: page * LIMIT,

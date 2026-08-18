@@ -6,17 +6,29 @@
 
 import { Router } from 'express';
 import { getDb } from '../db/client.js';
-import { gmailMessages, outbox, permissions } from '../db/schema.js';
-import { desc, eq, and, like, inArray, sql } from 'drizzle-orm';
+import { gmailMessages, outbox } from '../db/schema.js';
+import { desc, eq, and, or, like, sql, type SQL } from 'drizzle-orm';
 import { optionalAuth, writeAuditLog, trackAiCall, type AuthedRequest } from '../auth/middleware.js';
+import { requireRead, isSendEnabled, isApprovalRequired, filterGmailByLabels } from './permissions-utils.js';
 import { getConnectionManager } from '../connections/manager.js';
 import { broadcast } from '../websocket/hub.js';
 import type { GmailAction } from '../sync/gmail.js';
 
 const router = Router();
 
+type GmailRow = typeof gmailMessages.$inferSelect;
+
+function rowLabels(m: GmailRow): string[] {
+  try { return JSON.parse(m.labels || '[]') as string[]; } catch { return []; }
+}
+
+/** Per-key label allowlist check for a single message row. */
+function canReadMessage(row: GmailRow, apiKeyId: number | null | undefined): boolean {
+  return filterGmailByLabels([row], rowLabels, apiKeyId).length > 0;
+}
+
 // GET /api/gmail/status
-router.get('/status', optionalAuth, (req, res) => {
+router.get('/status', optionalAuth, requireRead('gmail'), (req, res) => {
   const manager = getConnectionManager();
   const status = manager.getStatus('gmail');
   const db = getDb();
@@ -33,55 +45,92 @@ router.get('/status', optionalAuth, (req, res) => {
 });
 
 // GET /api/gmail/messages
-router.get('/messages', optionalAuth, trackAiCall, (req, res) => {
+router.get('/messages', optionalAuth, requireRead('gmail'), trackAiCall, (req, res) => {
   const {
     q, label, unread, starred,
     limit = '50', offset = '0', thread_id,
   } = req.query as Record<string, string>;
 
   const db = getDb();
-  let rows = db.select().from(gmailMessages)
-    .orderBy(desc(gmailMessages.internalDate))
-    .all();
+  const apiKeyId = (req as AuthedRequest).apiKey?.id ?? null;
 
-  // Filters
-  if (thread_id) rows = rows.filter((m) => m.threadId === thread_id);
-  if (unread === 'true') rows = rows.filter((m) => !m.isRead);
-  if (starred === 'true') rows = rows.filter((m) => m.isStarred);
-  if (label) rows = rows.filter((m) => {
-    try { return (JSON.parse(m.labels || '[]') as string[]).includes(label); } catch { return false; }
-  });
+  // Push filters into SQL — the previous implementation materialised the whole
+  // table into JS on every request (and better-sqlite3 is synchronous, so that
+  // stalled the entire server).
+  const conds: SQL[] = [];
+  if (thread_id) conds.push(eq(gmailMessages.threadId, thread_id));
+  if (unread === 'true') conds.push(eq(gmailMessages.isRead, false));
+  if (starred === 'true') conds.push(eq(gmailMessages.isStarred, true));
+  if (label) conds.push(like(gmailMessages.labels, `%"${label.replace(/[%_"]/g, '')}"%`));
   if (q) {
-    const term = q.toLowerCase();
-    rows = rows.filter((m) =>
-      [m.subject, m.fromName, m.fromAddress, m.snippet]
-        .some((f) => f?.toLowerCase().includes(term)),
+    const term = `%${q.replace(/[%_]/g, '')}%`;
+    const c = or(
+      like(gmailMessages.subject, term),
+      like(gmailMessages.fromName, term),
+      like(gmailMessages.fromAddress, term),
+      like(gmailMessages.snippet, term),
     );
+    if (c) conds.push(c);
   }
+  const where = conds.length > 0 ? and(...conds) : undefined;
 
-  const total = rows.length;
   const lim = Math.min(parseInt(limit) || 50, 200);
   const off = parseInt(offset) || 0;
-  const page = rows.slice(off, off + lim);
+
+  let baseQuery = db.select().from(gmailMessages).orderBy(desc(gmailMessages.internalDate)).$dynamic();
+  if (where) baseQuery = baseQuery.where(where);
+
+  let page: GmailRow[];
+  let total: number;
+  if (apiKeyId) {
+    // Label-allowlisted keys need post-filtering; page after the filter so
+    // restricted keys still get correct pagination.
+    const rows = filterGmailByLabels(baseQuery.all(), rowLabels, apiKeyId);
+    total = rows.length;
+    page = rows.slice(off, off + lim);
+  } else {
+    const countRow = (() => {
+      let cq = db.select({ count: sql<number>`count(*)` }).from(gmailMessages).$dynamic();
+      if (where) cq = cq.where(where);
+      return cq.get();
+    })();
+    total = countRow?.count ?? 0;
+    page = baseQuery.limit(lim).offset(off).all();
+  }
 
   res.json({ messages: page, total, limit: lim, offset: off });
 });
 
 // GET /api/gmail/messages/:id
-router.get('/messages/:id', optionalAuth, trackAiCall, (req, res) => {
+router.get('/messages/:id', optionalAuth, requireRead('gmail'), trackAiCall, (req, res) => {
   const db = getDb();
   const msg = db.select().from(gmailMessages)
     .where(eq(gmailMessages.gmailId, req.params['id'] as string))
     .get();
   if (!msg) return res.status(404).json({ error: 'Message not found' });
+  if (!canReadMessage(msg, (req as AuthedRequest).apiKey?.id)) {
+    return res.status(403).json({ error: 'Reading this message is not permitted for this API key' });
+  }
   res.json(msg);
 });
 
 // GET /api/gmail/messages/:id/body — live fetch from Gmail API
-router.get('/messages/:id/body', optionalAuth, trackAiCall, async (req, res) => {
+router.get('/messages/:id/body', optionalAuth, requireRead('gmail'), trackAiCall, async (req, res) => {
   const manager = getConnectionManager();
   const gmail = manager.getGmail();
   if (!gmail) return res.status(503).json({ error: 'Gmail not connected' });
+
+  // Label-restricted keys may only fetch bodies of messages they can see locally.
+  const apiKeyId = (req as AuthedRequest).apiKey?.id;
+  if (apiKeyId) {
+    const db = getDb();
+    const msg = db.select().from(gmailMessages)
+      .where(eq(gmailMessages.gmailId, req.params['id'] as string))
+      .get();
+    if (!msg || !canReadMessage(msg, apiKeyId)) {
+      return res.status(403).json({ error: 'Reading this message is not permitted for this API key' });
+    }
+  }
 
   try {
     const body = await gmail.fetchBody(req.params['id'] as string);
@@ -92,17 +141,18 @@ router.get('/messages/:id/body', optionalAuth, trackAiCall, async (req, res) => 
 });
 
 // GET /api/gmail/threads/:threadId
-router.get('/threads/:threadId', optionalAuth, trackAiCall, (req, res) => {
+router.get('/threads/:threadId', optionalAuth, requireRead('gmail'), trackAiCall, (req, res) => {
   const db = getDb();
-  const messages = db.select().from(gmailMessages)
+  let messages = db.select().from(gmailMessages)
     .where(eq(gmailMessages.threadId, req.params['threadId'] as string))
     .orderBy(gmailMessages.internalDate)
     .all();
+  messages = filterGmailByLabels(messages, rowLabels, (req as AuthedRequest).apiKey?.id);
   res.json({ messages, threadId: req.params['threadId'] });
 });
 
 // GET /api/gmail/labels — live from Gmail API
-router.get('/labels', optionalAuth, trackAiCall, async (req, res) => {
+router.get('/labels', optionalAuth, requireRead('gmail'), trackAiCall, async (req, res) => {
   const manager = getConnectionManager();
   const gmail = manager.getGmail();
   if (!gmail) return res.status(503).json({ error: 'Gmail not connected' });
@@ -123,12 +173,12 @@ router.post('/actions', optionalAuth, (req, res) => {
   if (!action?.action) return res.status(400).json({ error: 'action is required' });
 
   const db = getDb();
-  const perm = db.select().from(permissions).where(eq(permissions.service, 'gmail')).get();
-  if (!perm?.sendEnabled) {
+  const apiKeyId = authedReq.apiKey?.id ?? null;
+  if (!isSendEnabled('gmail', apiKeyId)) {
     return res.status(403).json({ error: 'Gmail actions are not enabled' });
   }
 
-  const status = perm.requireApproval ? 'pending' : 'approved';
+  const status = isApprovalRequired('gmail', apiKeyId) ? 'pending' : 'approved';
 
   const insertResult = db.insert(outbox).values({
     source: 'gmail',
@@ -167,7 +217,7 @@ router.post('/actions', optionalAuth, (req, res) => {
 });
 
 // POST /api/gmail/sync
-router.post('/sync', optionalAuth, async (req, res) => {
+router.post('/sync', optionalAuth, requireRead('gmail'), async (req, res) => {
   const manager = getConnectionManager();
   manager.triggerSync('gmail').catch(console.error);
   res.json({ success: true, message: 'Gmail sync started' });

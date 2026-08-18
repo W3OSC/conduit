@@ -82,18 +82,8 @@
   --animate-pulse-soft: pulse 2.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   --animate-shimmer:    shimmer 1.4s ease-in-out infinite;
 
-  @keyframes fadeIn {
-    from { opacity: 0; }
-    to   { opacity: 1; }
-  }
-  @keyframes slideUp {
-    from { opacity: 0; transform: translateY(10px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
-  @keyframes shimmer {
-    0%   { background-position: -400px 0; }
-    100% { background-position:  400px 0; }
-  }
+  /* Keyframes are defined once at top level below — the @theme block only
+     declares the --animate-* variables that reference them. */
 }
 
 @layer base {
@@ -260,6 +250,16 @@
   }
 
   /* Primary button */
+  /* Shared keyboard focus ring for every button class — the app previously
+     had no :focus-visible styling anywhere. */
+  .btn-primary:focus-visible,
+  .btn-secondary:focus-visible,
+  .btn-ghost:focus-visible,
+  .btn-danger:focus-visible {
+    outline: 2px solid hsl(var(--primary) / 0.6);
+    outline-offset: 1px;
+  }
+
   .btn-primary {
     @apply inline-flex items-center justify-center gap-2 rounded-xl text-sm font-semibold
            transition-all duration-150 select-none
@@ -526,60 +526,6 @@
 }
 .prose-chat strong  { color: hsl(var(--foreground)); }
 .prose-chat ul, .prose-chat ol { padding-left: 1.25em; margin: 0.25em 0; }
-
-/* ─────────────────────────────────────────────────────────── */
-/* Prose for AI chat markdown — richer, premium rendering */
-.prose-ai {
-  color: hsl(var(--foreground) / 0.9);
-  font-size: 0.875rem;
-  line-height: 1.7;
-}
-.prose-ai p  { margin: 0.4em 0; }
-.prose-ai p:first-child { margin-top: 0; }
-.prose-ai p:last-child  { margin-bottom: 0; }
-.prose-ai h1, .prose-ai h2, .prose-ai h3, .prose-ai h4 {
-  color: hsl(var(--foreground));
-  font-weight: 600;
-  margin: 0.75em 0 0.35em;
-  line-height: 1.3;
-}
-.prose-ai h1 { font-size: 1.15em; }
-.prose-ai h2 { font-size: 1.05em; }
-.prose-ai h3 { font-size: 0.95em; }
-.prose-ai ul, .prose-ai ol { padding-left: 1.4em; margin: 0.4em 0; }
-.prose-ai li { margin: 0.2em 0; }
-.prose-ai li > p { margin: 0; }
-.prose-ai blockquote {
-  border-left: 2px solid hsl(var(--primary) / 0.4);
-  padding-left: 0.875rem;
-  color: hsl(var(--muted-foreground));
-  margin: 0.5em 0;
-  font-style: italic;
-}
-.prose-ai strong { color: hsl(var(--foreground)); font-weight: 600; }
-.prose-ai em     { color: hsl(var(--foreground) / 0.8); }
-.prose-ai hr {
-  border: none;
-  border-top: 1px solid hsl(var(--border));
-  margin: 0.75em 0;
-}
-.prose-ai table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.85em;
-  margin: 0.5em 0;
-}
-.prose-ai th, .prose-ai td {
-  border: 1px solid hsl(var(--border));
-  padding: 0.35em 0.7em;
-  text-align: left;
-}
-.prose-ai th {
-  background: hsl(var(--muted));
-  color: hsl(var(--foreground));
-  font-weight: 600;
-}
-.prose-ai tr:nth-child(even) td { background: hsl(var(--card)); }
 
 /* ─────────────────────────────────────────────────────────── */
 /* Font size scale — toggled by ThemeProvider via data-font-size */

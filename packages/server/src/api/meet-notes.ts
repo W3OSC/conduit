@@ -12,16 +12,17 @@
 import { Router } from 'express';
 import { getDb } from '../db/client.js';
 import { meetNotes, settings } from '../db/schema.js';
-import { eq, desc, like, and, or } from 'drizzle-orm';
-import { optionalAuth } from '../auth/middleware.js';
+import { eq, desc, gte, like, lte, and, or, sql } from 'drizzle-orm';
+import { optionalAuth, uiOnlyAuth, trackAiCall } from '../auth/middleware.js';
+import { requireRead } from './permissions-utils.js';
 
 const router = Router();
 const DRIVE_SEARCH_SETTING = 'meet_notes.drive_search_enabled';
 
 // ─── List notes ───────────────────────────────────────────────────────────────
 
-router.get('/', optionalAuth, (req, res) => {
-  const { limit = '50', offset = '0', q, account_id } = req.query as Record<string, string>;
+router.get('/', optionalAuth, requireRead('calendar'), trackAiCall, (req, res) => {
+  const { limit = '50', offset = '0', q, account_id, from, to } = req.query as Record<string, string>;
   const db = getDb();
   const lim = Math.min(parseInt(limit) || 50, 200);
   const off = parseInt(offset) || 0;
@@ -38,6 +39,10 @@ router.get('/', optionalAuth, (req, res) => {
   if (account_id) {
     conditions.push(eq(meetNotes.accountId, account_id));
   }
+  // Date-range filtering (ISO timestamps) — without this, "meetings from the
+  // past two weeks" forces agents to page through full transcripts.
+  if (from) conditions.push(gte(meetNotes.meetingDate, from));
+  if (to)   conditions.push(lte(meetNotes.meetingDate, to));
 
   if (conditions.length > 0) {
     query = query.where(and(...conditions));
@@ -49,26 +54,23 @@ router.get('/', optionalAuth, (req, res) => {
     .offset(off)
     .all();
 
-  // Count total
-  const countQuery = db.select().from(meetNotes).$dynamic();
-  const total = (conditions.length > 0
-    ? countQuery.where(and(...conditions)).all()
-    : countQuery.all()
-  ).length;
+  let countQuery = db.select({ count: sql<number>`count(*)` }).from(meetNotes).$dynamic();
+  if (conditions.length > 0) countQuery = countQuery.where(and(...conditions));
+  const total = countQuery.get()?.count ?? 0;
 
   res.json({ notes, total, limit: lim, offset: off });
 });
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
-router.get('/settings', optionalAuth, (req, res) => {
+router.get('/settings', optionalAuth, requireRead('calendar'), (req, res) => {
   const db = getDb();
   const row = db.select().from(settings).where(eq(settings.key, DRIVE_SEARCH_SETTING)).get();
   const driveSearchEnabled = !row || row.value !== 'false';
   res.json({ driveSearchEnabled });
 });
 
-router.put('/settings', optionalAuth, (req, res) => {
+router.put('/settings', uiOnlyAuth, (req, res) => {
   const { driveSearchEnabled } = req.body as { driveSearchEnabled?: boolean };
   if (typeof driveSearchEnabled !== 'boolean') {
     return res.status(400).json({ error: 'driveSearchEnabled must be a boolean' });
@@ -84,7 +86,7 @@ router.put('/settings', optionalAuth, (req, res) => {
 
 // ─── Trigger sync ─────────────────────────────────────────────────────────────
 
-router.post('/sync', optionalAuth, async (_req, res) => {
+router.post('/sync', optionalAuth, requireRead('calendar'), async (_req, res) => {
   try {
     const { getConnectionManager } = await import('../connections/manager.js');
     const manager = getConnectionManager();
@@ -105,7 +107,7 @@ router.post('/sync', optionalAuth, async (_req, res) => {
 
 // ─── Single note ──────────────────────────────────────────────────────────────
 
-router.get('/:id', optionalAuth, (req, res) => {
+router.get('/:id', optionalAuth, requireRead('calendar'), trackAiCall, (req, res) => {
   const db  = getDb();
   const id  = parseInt(req.params['id'] as string);
   const note = db.select().from(meetNotes).where(eq(meetNotes.id, id)).get();
@@ -115,7 +117,7 @@ router.get('/:id', optionalAuth, (req, res) => {
 
 // ─── Refresh content from Drive ───────────────────────────────────────────────
 
-router.post('/:id/refresh', optionalAuth, async (req, res) => {
+router.post('/:id/refresh', optionalAuth, requireRead('calendar'), async (req, res) => {
   const db   = getDb();
   const id   = parseInt(req.params['id'] as string);
   const note = db.select().from(meetNotes).where(eq(meetNotes.id, id)).get();

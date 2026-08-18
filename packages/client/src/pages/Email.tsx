@@ -5,6 +5,7 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Search, RefreshCw, Archive, Trash2, Star, StarOff, Mail, MailOpen,
@@ -169,8 +170,20 @@ function ComposeModal({ mode, original, onClose }: ComposeModalProps) {
 
   const titles = { compose: 'New Message', reply: 'Reply', reply_all: 'Reply All', forward: 'Forward' };
 
+  // Escape closes — modals were previously mouse-only.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   return (
-    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-end sm:items-center justify-center z-50 p-4">
+    <div
+      className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-end sm:items-center justify-center z-50 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={titles[mode]}
+    >
       <motion.div
         initial={{ opacity: 0, y: 20, scale: 0.97 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -465,14 +478,16 @@ export default function Email() {
 
   const { data: statusData, isLoading: statusLoading } = useQuery({ queryKey: ['gmail-status'], queryFn: api.gmailStatus, staleTime: 30000, refetchInterval: 30000 });
 
+  const debouncedSearch = useDebouncedValue(search);
   const { data, isLoading } = useQuery({
-    queryKey: ['gmail-messages', activeLabel, search],
+    queryKey: ['gmail-messages', activeLabel, debouncedSearch],
     queryFn: () => api.gmailMessages({
       label: activeLabel,
-      q: search || undefined,
+      q: debouncedSearch || undefined,
       limit: 100,
     }),
-    refetchInterval: 60000,
+    // WS email events invalidate this — the interval is only a fallback.
+    refetchInterval: 5 * 60_000,
   });
 
   const messages = data?.messages || [];
@@ -492,15 +507,10 @@ export default function Email() {
     onSuccess: () => { toast({ title: 'Sync started', variant: 'default' }); qc.invalidateQueries({ queryKey: ['gmail-messages'] }); },
   });
 
-  if (statusLoading) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
-        <Loader2 className="w-6 h-6 animate-spin opacity-40" />
-      </div>
-    );
-  }
-
-  if (!statusData?.connected) {
+  // No full-page gate while status loads — the layout renders immediately and
+  // the list shows its own skeletons; the not-connected screen only appears
+  // once we know for sure.
+  if (!statusLoading && !statusData?.connected) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
         <div className="w-20 h-20 rounded-2xl bg-secondary/50 border border-border flex items-center justify-center">

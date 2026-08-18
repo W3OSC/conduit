@@ -84,7 +84,7 @@ router.get('/:service/raw', uiOnlyAuth, (req, res) => {
 });
 
 // GET /api/credentials — returns redacted view of all credentials
-router.get('/', optionalAuth, (_req, res) => {
+router.get('/', uiOnlyAuth, (_req, res) => {
   const result: Record<string, unknown> = {};
   for (const service of Object.keys(CRED_KEYS) as Service[]) {
     const creds = getCreds(service);
