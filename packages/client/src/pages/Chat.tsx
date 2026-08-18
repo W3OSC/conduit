@@ -14,7 +14,8 @@ import { api, type Message, type ChatEntry, type ChatSection, type ServiceTree, 
 import { useMessageStreamStore } from '@/store';
 import { ServiceFilterChip, AllFilterChip } from '@/components/shared/ServiceBadge';
 import { Skeleton } from '@/components/shared/Skeleton';
-import { cn, timeAgo, formatDate, SERVICE_ACCENT } from '@/lib/utils';
+import { cn, timeAgo, formatDate, stringToHue } from '@/lib/utils';
+import { SERVICE_THEME } from '@/lib/serviceTheme';
 import { toast } from '@/store';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -40,12 +41,6 @@ function bubbleTimestamp(ts: string): string {
   return formatDate(ts, 'MMM d, h:mm a');
 }
 
-function stringToHue(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) & 0xffff;
-  return h % 360;
-}
-
 function getSender(msg: Message): string {
   return msg.senderName || msg.authorName || msg.userName || 'Unknown';
 }
@@ -62,10 +57,8 @@ const SERVICE_LABEL: Record<string, string> = {
   slack: 'Slack', discord: 'Discord', telegram: 'Telegram', twitter: 'Twitter / X',
 };
 
-const SERVICE_COLOR: Record<string, string> = {
-  slack: 'text-violet-400', discord: 'text-indigo-400', telegram: 'text-sky-400',
-  twitter: 'text-sky-300',
-};
+/** Accent text class for a service (canonical theme). */
+const serviceAccent = (source: string): string => SERVICE_THEME[source]?.text ?? 'text-primary';
 
 // ─── Platform deep-link URL ────────────────────────────────────────────────────
 
@@ -270,7 +263,7 @@ function MessageContent({ content, source, isMe }: { content: string; source: st
       <p className={cn('text-sm leading-relaxed break-words whitespace-pre-wrap', isMe ? 'text-primary-foreground/95' : 'text-foreground/90')}>
         {parts.map((part, i) =>
           part.startsWith('@') ? (
-            <span key={i} className={cn('font-semibold rounded px-0.5', isMe ? 'text-primary-foreground' : (SERVICE_ACCENT[source] || 'text-primary'))}>
+            <span key={i} className={cn('font-semibold rounded px-0.5', isMe ? 'text-primary-foreground' : (serviceAccent(source)))}>
               {part}
             </span>
           ) : part,
@@ -498,7 +491,7 @@ function BubbleRow({ msg, prevMsg, nextMsg, highlighted = false }: {
             {isFirstInRun && (
               <button
                 onClick={openContact}
-                className={cn('text-[11px] font-semibold mb-1 ml-1 hover:underline cursor-pointer', SERVICE_ACCENT[msg.source] || 'text-muted-foreground')}
+                className={cn('text-[11px] font-semibold mb-1 ml-1 hover:underline cursor-pointer', serviceAccent(msg.source))}
                 title={`View ${sender} in Contacts`}
               >{sender}</button>
             )}
@@ -639,7 +632,7 @@ function ServiceNode({ tree, selectedId, onSelect, search, collapsed }: {
         className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-white/[0.02] transition-colors group"
       >
         <ChevronDown className={cn('w-3.5 h-3.5 text-muted-foreground/50 transition-transform duration-150 flex-shrink-0', !open && '-rotate-90')} />
-        <span className={cn('text-xs font-bold tracking-tight flex-1', SERVICE_COLOR[source] || 'text-foreground')}>
+        <span className={cn('text-xs font-bold tracking-tight flex-1', serviceAccent(source))}>
           {SERVICE_LABEL[source] || source}
         </span>
         <span className="text-[10px] text-muted-foreground/30 ml-1">{totalChats}</span>
@@ -984,7 +977,7 @@ export default function Chat() {
               <ChatBreadcrumb
                 treeData={treeData}
                 selected={selected}
-                serviceColor={SERVICE_COLOR[selected.source] || 'text-muted-foreground/60'}
+                serviceColor={serviceAccent(selected.source)}
               />
             </div>
             <span className="text-xs text-muted-foreground/50 hidden sm:block flex-shrink-0">

@@ -27,16 +27,14 @@ import {
   type TweetAnalytic, type TwitterAnalytics, type TwitterAnalyticsByDay,
 } from '@/lib/api';
 import { Skeleton } from '@/components/shared/Skeleton';
-import { cn, timeAgo, formatDate } from '@/lib/utils';
+import { cn, timeAgo, formatDate, stringToHue } from '@/lib/utils';
+import { ChartTooltip } from '@/components/shared/ChartTooltip';
 import { toast } from '@/store';
 import { useConnectionStore } from '@/store';
 
 // ─── Shared avatar helpers ─────────────────────────────────────────────────────
 
-/** Returns a deterministic hue (0–359) from a string (username/name). */
-function strHue(s: string): number {
-  return s.split('').reduce((h, c) => (h * 31 + c.charCodeAt(0)) & 0xffff, 0) % 360;
-}
+// Deterministic avatar hue comes from the shared stringToHue util.
 
 /**
  * Avatar that shows a real profile image when available and falls back to a
@@ -57,7 +55,7 @@ function TwitterAvatar({
 }) {
   const [imgErr, setImgErr] = useState(false);
   const label = name || username || '?';
-  const hue = strHue(username || name || '?');
+  const hue = stringToHue(username || name || '?');
 
   if (avatarUrl && !imgErr) {
     return (
@@ -659,21 +657,6 @@ function FeedTab() {
 
 const CHART_COLORS = { likes: '#F59E0B', retweets: '#38BDF8', replies: '#8B5CF6' };
 
-const ChartTooltip = ({ active, payload, label }: Record<string, unknown>) => {
-  if (!active || !payload) return null;
-  return (
-    <div className="card-warm border-border/80 p-3 text-xs shadow-warm-lg min-w-[130px]">
-      <p className="text-muted-foreground mb-2 font-medium">{String(label)}</p>
-      {(payload as Array<{ name: string; value: number; color: string }>).map((p) => (
-        <div key={p.name} className="flex items-center justify-between gap-4">
-          <span style={{ color: p.color }} className="capitalize">{p.name}</span>
-          <span className="font-semibold text-foreground">{(p.value ?? 0).toLocaleString()}</span>
-        </div>
-      ))}
-    </div>
-  );
-};
-
 type SortCol = 'date' | 'likes' | 'retweets' | 'replies' | 'totalEngagement';
 type SortDir = 'asc' | 'desc';
 
@@ -857,7 +840,7 @@ function AnalyticsTab({ handle }: { handle: string }) {
               <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
               <XAxis dataKey="date" tick={axisStyle} tickLine={false} axisLine={false} />
               <YAxis tick={axisStyle} tickLine={false} axisLine={false} width={32} />
-              <Tooltip content={<ChartTooltip />} cursor={{ stroke: 'hsl(20 8% 28%)', strokeWidth: 1 }} />
+              <Tooltip content={<ChartTooltip capitalize />} cursor={{ stroke: 'hsl(var(--border))', strokeWidth: 1 }} />
               <Legend wrapperStyle={{ fontSize: 11 }} />
               <Area type="monotone" dataKey="likes"    stroke={CHART_COLORS.likes}    fill={`url(#g-likes)`}    strokeWidth={2} dot={false} />
               <Area type="monotone" dataKey="retweets" stroke={CHART_COLORS.retweets} fill={`url(#g-retweets)`} strokeWidth={2} dot={false} />
@@ -881,7 +864,7 @@ function AnalyticsTab({ handle }: { handle: string }) {
               <CartesianGrid strokeDasharray="3 3" stroke={gridColor} horizontal={false} />
               <XAxis type="number" tick={axisStyle} tickLine={false} axisLine={false} />
               <YAxis type="category" dataKey="name" tick={{ ...axisStyle, textAnchor: 'end' }} width={180} tickLine={false} axisLine={false} />
-              <Tooltip content={<ChartTooltip />} cursor={{ fill: 'hsl(20 8% 18% / 0.5)' }} />
+              <Tooltip content={<ChartTooltip capitalize />} cursor={{ fill: 'hsl(var(--secondary) / 0.5)' }} />
               <Bar dataKey="likes"    stackId="a" fill={CHART_COLORS.likes}    name="Likes"    radius={[0,0,0,0]} />
               <Bar dataKey="retweets" stackId="a" fill={CHART_COLORS.retweets} name="Retweets" radius={[0,0,0,0]} />
               <Bar dataKey="replies"  stackId="a" fill={CHART_COLORS.replies}  name="Replies"  radius={[0,3,3,0]} />

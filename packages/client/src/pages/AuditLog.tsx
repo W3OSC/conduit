@@ -135,11 +135,11 @@ export default function AuditLog() {
       <div className="flex items-center gap-2 flex-wrap">
         <SelectFilter
           value={actionFilter} onChange={setActionFilter} placeholder="All Actions"
-          options={['read','send_request','approve','reject','send','connect','disconnect','key_created','key_revoked','test'].map((a) => ({ label: a.replace(/_/g,' '), value: a }))}
+          options={['read','send_request','approve','reject','retry','send','outbox_deleted','connect','disconnect','key_created','key_revoked','test'].map((a) => ({ label: a.replace(/_/g,' '), value: a }))}
         />
         <SelectFilter
           value={serviceFilter} onChange={setServiceFilter} placeholder="All Services"
-          options={['slack','discord','telegram','gmail','calendar','twitter'].map((s) => ({ label: s, value: s }))}
+          options={['slack','discord','telegram','gmail','calendar','twitter','notion','obsidian','smb','gdrive'].map((s) => ({ label: s, value: s }))}
         />
         <SelectFilter
           value={actorFilter} onChange={setActorFilter} placeholder="All Actors"

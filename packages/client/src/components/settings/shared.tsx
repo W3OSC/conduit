@@ -3,6 +3,7 @@ import {
   Eye, EyeOff, Copy,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { SERVICE_THEME } from '@/lib/serviceTheme';
 import { CopyButton } from '@/components/shared/CopyButton';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -147,10 +148,11 @@ export const SVC_LABEL: Record<string, string> = {
   obsidian: 'Obsidian', smb: 'SMB Share',
 };
 
+// Accent classes come from the canonical theme; calendar keeps its historical
+// primary-accent override in the settings UI.
 export const SVC_COLOR: Record<string, string> = {
-  slack: 'text-violet-400', discord: 'text-indigo-400', telegram: 'text-sky-400',
-  gmail: 'text-red-400', calendar: 'text-primary', twitter: 'text-sky-300', notion: 'text-zinc-300',
-  obsidian: 'text-purple-300', smb: 'text-amber-400',
+  ...Object.fromEntries(Object.entries(SERVICE_THEME).map(([k, t]) => [k, t.text])),
+  calendar: 'text-primary',
 };
 
 export function StepNumber({ n }: { n: number }) {

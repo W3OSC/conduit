@@ -30,7 +30,7 @@ import { api, type GmailMessage, type CalendarEvent, type Tweet, type ChatTreeMa
 import { useConnectionStore } from '@/store';
 import { ServiceIcon } from '@/components/shared/ServiceBadge';
 import { Skeleton } from '@/components/shared/Skeleton';
-import { cn, timeAgo, formatDate } from '@/lib/utils';
+import { cn, timeAgo, formatDate, stringToHue } from '@/lib/utils';
 
 // ─── Animation ────────────────────────────────────────────────────────────────
 
@@ -121,7 +121,7 @@ function ChatRow({
   entry: { chatId: string; source: string; name: string; avatarUrl?: string | null; lastTs?: string };
   onOpen: () => void;
 }) {
-  const hue = entry.name.split('').reduce((h, c) => (h * 31 + c.charCodeAt(0)) & 0xffff, 0) % 360;
+  const hue = stringToHue(entry.name);
 
   return (
     <button
@@ -556,7 +556,7 @@ function InboxCalendarSection() {
 // ─── Section 4: Twitter — horizontal split (Mentions | Latest) ────────────────
 
 function TweetMicroRow({ tweet, onOpen }: { tweet: Tweet; onOpen: () => void }) {
-  const hue = (tweet.username || '').split('').reduce((h, c) => (h * 31 + c.charCodeAt(0)) & 0xffff, 0) % 360;
+  const hue = stringToHue(tweet.username || '');
 
   return (
     <button

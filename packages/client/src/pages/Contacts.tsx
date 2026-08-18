@@ -10,7 +10,7 @@ import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { api, type Contact, type ContactMessage, type ChatTreeMap } from '@/lib/api';
 import { ServiceIcon } from '@/components/shared/ServiceBadge';
 import { Skeleton } from '@/components/shared/Skeleton';
-import { cn, timeAgo, formatDate } from '@/lib/utils';
+import { cn, timeAgo, formatDate, stringToHue } from '@/lib/utils';
 import { toast } from '@/store';
 
 // ─── Google contact helpers ───────────────────────────────────────────────────
@@ -55,7 +55,7 @@ function mergeGoogleContacts(contacts: Contact[]): MergedContact[] {
 function ContactAvatar({ contact, size = 10 }: { contact: Contact; size?: number }) {
   const [imgErr, setImgErr] = useState(false);
   const name = contact.displayName || contact.username || contact.platformId;
-  const hue = name.split('').reduce((h, c) => (h * 31 + c.charCodeAt(0)) & 0xffff, 0) % 360;
+  const hue = stringToHue(name);
 
   if (contact.avatarUrl && !imgErr) {
     return (

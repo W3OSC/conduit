@@ -49,32 +49,15 @@ export type ServiceName = 'slack' | 'discord' | 'telegram' | 'twitter' | 'gmail'
 
 export const ALL_SERVICES: ServiceName[] = ['slack', 'discord', 'telegram', 'twitter', 'gmail', 'calendar'];
 
-export const SERVICE_COLORS: Record<string, string> = {
-  slack:    '#7C3AED',
-  discord:  '#5865F2',
-  telegram: '#0EA5E9',
-  twitter:  '#38BDF8',
-  gmail:    '#EF4444',
-  calendar: '#F59E0B',
-};
-
-export const SERVICE_ACCENT: Record<string, string> = {
-  slack:    'text-violet-400',
-  discord:  'text-indigo-400',
-  telegram: 'text-sky-400',
-  twitter:  'text-sky-300',
-  gmail:    'text-red-400',
-  calendar: 'text-amber-400',
-};
-
-export const SERVICE_BG: Record<string, string> = {
-  slack:    'bg-violet-500/10 border-violet-500/20',
-  discord:  'bg-indigo-500/10 border-indigo-500/20',
-  telegram: 'bg-sky-500/10 border-sky-500/20',
-  twitter:  'bg-sky-400/10 border-sky-400/20',
-  gmail:    'bg-red-500/10 border-red-500/20',
-  calendar: 'bg-amber-500/10 border-amber-500/20',
-};
+/**
+ * Deterministic hue (0–359) from a string — used for avatar fallback colours.
+ * Render with `hsl(hue, 52%, 40%)` for the canonical avatar background.
+ */
+export function stringToHue(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) & 0xffff;
+  return h % 360;
+}
 
 /**
  * Copies text to the clipboard. Works in both secure (HTTPS) and non-secure

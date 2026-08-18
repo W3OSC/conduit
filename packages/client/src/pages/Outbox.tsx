@@ -11,7 +11,7 @@ import { api, type OutboxItem } from '@/lib/api';
 import { ServiceBadge } from '@/components/shared/ServiceBadge';
 import { TableSkeleton } from '@/components/shared/Skeleton';
 import { FileDiffView, type PatchEdit } from '@/components/shared/FileDiffView';
-import { cn, timeAgo, formatDate } from '@/lib/utils';
+import { cn, timeAgo, formatDate, copyToClipboard } from '@/lib/utils';
 import { toast } from '@/store';
 
 type FilterStatus = 'all' | 'pending' | 'approved' | 'sent' | 'rejected' | 'failed';
@@ -437,11 +437,16 @@ function RawRequestPanel({ toolCallId }: { toolCallId: string }) {
 
   const rawText = data ? JSON.stringify(data.input, null, 2) : '';
 
-  function copyToClipboard() {
+  async function copyRawText() {
     if (!rawText) return;
-    navigator.clipboard.writeText(rawText).then(() =>
-      toast({ title: 'Copied to clipboard', variant: 'success' })
-    );
+    // utils.copyToClipboard has the plain-HTTP fallback — navigator.clipboard
+    // is undefined on non-secure LAN origins, the common self-hosted setup.
+    try {
+      await copyToClipboard(rawText);
+      toast({ title: 'Copied to clipboard', variant: 'success' });
+    } catch {
+      toast({ title: 'Copy failed', variant: 'destructive' });
+    }
   }
 
   return (
@@ -475,7 +480,7 @@ function RawRequestPanel({ toolCallId }: { toolCallId: string }) {
               {data && (
                 <>
                   <button
-                    onClick={copyToClipboard}
+                    onClick={copyRawText}
                     title="Copy to clipboard"
                     className="absolute top-2 right-2 p-1 rounded hover:bg-secondary/80 text-muted-foreground hover:text-foreground transition-colors"
                   >

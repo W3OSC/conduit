@@ -6,8 +6,10 @@ import { cn } from '@/lib/utils';
 const CONFIGS = {
   default: {
     icon: Info,
-    classes: 'border-warm-600/50 bg-warm-800/90 text-foreground',
-    iconClass: 'text-warm-300',
+    // Token-driven so the toast reads correctly in light mode too (the old
+    // warm-800 hardcode rendered as a dark-brown box on a light background).
+    classes: 'border-border bg-card/95 text-foreground',
+    iconClass: 'text-muted-foreground',
   },
   destructive: {
     icon: AlertCircle,
