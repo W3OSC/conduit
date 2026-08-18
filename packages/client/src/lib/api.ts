@@ -845,6 +845,9 @@ export interface OutboxItem {
   apiKeyId?: number;
   errorMessage?: string;
   aiToolCallId?: string;
+  /** JSON array recording patch_file edits resolved via fuzzy matching. */
+  fuzzyMatchInfo?: string | null;
+  idempotencyKey?: string | null;
   createdAt: string;
   approvedAt?: string;
   sentAt?: string;
