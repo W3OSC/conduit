@@ -495,15 +495,10 @@ export default function Email() {
     onSuccess: () => { toast({ title: 'Sync started', variant: 'default' }); qc.invalidateQueries({ queryKey: ['gmail-messages'] }); },
   });
 
-  if (statusLoading) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
-        <Loader2 className="w-6 h-6 animate-spin opacity-40" />
-      </div>
-    );
-  }
-
-  if (!statusData?.connected) {
+  // No full-page gate while status loads — the layout renders immediately and
+  // the list shows its own skeletons; the not-connected screen only appears
+  // once we know for sure.
+  if (!statusLoading && !statusData?.connected) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
         <div className="w-20 h-20 rounded-2xl bg-secondary/50 border border-border flex items-center justify-center">

@@ -859,15 +859,9 @@ export default function Calendar() {
     return () => ro.disconnect();
   }, [calendar]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (statusLoading) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
-        <Loader2 className="w-6 h-6 animate-spin opacity-40" />
-      </div>
-    );
-  }
-
-  if (!statusData?.connected) {
+  // No full-page spinner while status loads — render the calendar shell and
+  // let sections skeleton; only show not-connected once status is known.
+  if (!statusLoading && !statusData?.connected) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
         <div className="w-20 h-20 rounded-2xl bg-secondary/50 border border-border flex items-center justify-center">

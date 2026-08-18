@@ -941,15 +941,9 @@ export default function TwitterPage() {
   const [tab, setTab] = useState<'dms' | 'feed' | 'analytics'>('dms');
   const { data: status, isLoading: statusLoading } = useQuery({ queryKey: ['twitter-status'], queryFn: api.twitterStatus, refetchInterval: 30000 });
 
-  if (statusLoading) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
-        <Loader2 className="w-6 h-6 animate-spin opacity-40" />
-      </div>
-    );
-  }
-
-  if (!status?.connected) {
+  // No full-page spinner while status loads — tabs render immediately with
+  // their own loading states; not-connected only shows once status is known.
+  if (!statusLoading && !status?.connected) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
         <div className="w-20 h-20 rounded-2xl bg-secondary/50 border border-border flex items-center justify-center">
@@ -985,11 +979,11 @@ export default function TwitterPage() {
           </button>
         ))}
         <div className="ml-auto flex items-center gap-2">
-          {status.handle && (
-            <span className="chip chip-sky text-xs">@{status.handle}</span>
+          {status?.handle && (
+            <span className="chip chip-sky text-xs">@{status?.handle}</span>
           )}
-          {status.dmCount != null && (
-            <span className="text-xs text-muted-foreground">{status.dmCount} DMs synced</span>
+          {status?.dmCount != null && (
+            <span className="text-xs text-muted-foreground">{status?.dmCount} DMs synced</span>
           )}
         </div>
       </div>
@@ -998,7 +992,7 @@ export default function TwitterPage() {
       <div className="flex-1 overflow-hidden flex">
         {tab === 'dms'       && <DmTab />}
         {tab === 'feed'      && <FeedTab />}
-        {tab === 'analytics' && <AnalyticsTab handle={status.handle || ''} />}
+        {tab === 'analytics' && <AnalyticsTab handle={status?.handle || ''} />}
       </div>
     </div>
   );

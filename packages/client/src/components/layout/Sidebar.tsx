@@ -222,7 +222,10 @@ export function Sidebar() {
 
           const { to, icon: Icon, label } = item;
           const service = 'service' in item ? (item as { service?: string }).service : undefined;
-          if (service && statuses[service]?.status !== 'connected') return null;
+          // Dim rather than hide disconnected services — a menu that changes
+          // shape as connections flap is disorienting, and hiding the entry
+          // made the page's own "not connected" guidance unreachable.
+          const dimmed = !!service && statuses[service]?.status !== 'connected';
           const badge = 'badge' in item ? (item as { badge?: boolean }).badge : false;
           const isActive = to === '/'
             ? location.pathname === '/'
@@ -238,6 +241,7 @@ export function Sidebar() {
                   isActive
                     ? 'bg-primary/12 text-primary'
                     : 'text-sidebar-foreground hover:bg-white/5 hover:text-foreground',
+                  dimmed && !isActive && 'opacity-40 hover:opacity-80',
                 )}>
                   {isActive && (
                     <motion.div
