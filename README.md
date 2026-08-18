@@ -74,6 +74,8 @@ Conduit exposes a complete REST API for AI tool use, accessible at `http://local
 2. Pass `X-API-Key: <your-key>` on every request
 3. Install the skill from **Settings → Agents** — it is served live from `GET /api/skill` so it always matches your server version
 
+**MCP:** tool-native agents can instead run the MCP server in [`packages/mcp-server`](packages/mcp-server), which exposes the same API as ~11 typed tools over stdio (set `CONDUIT_URL` and `CONDUIT_API_KEY`). Both paths hit the same REST API and the same approval outbox.
+
 **Efficient access pattern:** agents should start with `GET /api/digest` — one bounded call covering needs-reply chats, unread email, upcoming events, recent meeting notes, and pending approvals — then drill into specific endpoints. The full OpenAPI spec is at `/api/openapi.json`; a human-readable version is in [`docs/api.md`](docs/api.md).
 
 **Outbox flow:** All AI write actions (send message, reply to email, RSVP, tweet, file write) create an outbox item with `status=pending`. A human approves or rejects it in the UI before anything is sent. Submissions support `Idempotency-Key` headers, failed dispatches can be retried, and every item records which API key produced it.
