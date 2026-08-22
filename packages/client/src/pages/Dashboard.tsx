@@ -390,7 +390,7 @@ export default function Dashboard() {
           className="lg:col-span-3"
           delay={0.06}
           sub={<span className="text-xs text-muted-foreground">{connectedCount}/{SERVICES.length} online</span>}
-          action={<PanelLink to="/settings/connections">Manage</PanelLink>}
+          action={<PanelLink to="/settings/overview">Manage</PanelLink>}
         >
           <div className="flex-1 min-h-0 flex flex-col divide-y divide-border/50 pb-1 overflow-y-auto">
             {SERVICES.map((s) => (

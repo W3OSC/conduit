@@ -934,7 +934,7 @@ export default function TwitterPage() {
         </div>
         <div className="text-center">
           <p className="text-sm font-medium">Twitter / X not connected</p>
-          <p className="text-xs opacity-60 mt-1">Add your credentials in <Link to="/settings/messaging" className="underline underline-offset-2 hover:text-foreground transition-colors">Settings → Connections → Messaging</Link></p>
+          <p className="text-xs opacity-60 mt-1">Add your credentials in <Link to="/settings/twitter" className="underline underline-offset-2 hover:text-foreground transition-colors">Settings → Twitter / X</Link></p>
         </div>
       </div>
     );

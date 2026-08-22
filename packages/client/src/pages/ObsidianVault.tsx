@@ -346,7 +346,7 @@ export default function ObsidianVault() {
               <span className="text-xs font-semibold text-foreground">Obsidian Vaults</span>
             </div>
             <p className="text-xs text-muted-foreground">No vaults connected.</p>
-            <a href="/settings/files" className={connectCtaClass}>
+            <a href="/settings/obsidian" className={connectCtaClass}>
               <Plus className="w-3 h-3" />
               Add a vault
             </a>
@@ -394,7 +394,7 @@ export default function ObsidianVault() {
           <div className="flex-1 flex items-center justify-center p-6">
             <div className="text-center space-y-2">
               <p className="text-xs text-muted-foreground">No file sources configured.</p>
-              <a href="/settings/files" className="inline-flex items-center gap-1 text-xs text-primary hover:underline">
+              <a href="/settings/obsidian" className="inline-flex items-center gap-1 text-xs text-primary hover:underline">
                 <Plus className="w-3 h-3" />
                 Add sources
               </a>

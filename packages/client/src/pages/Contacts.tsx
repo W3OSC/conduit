@@ -546,7 +546,7 @@ export default function Contacts() {
         </div>
         <div className="text-center">
           <p className="text-sm font-medium">No services connected</p>
-          <p className="text-xs opacity-60 mt-1">Connect a service in <Link to="/settings/connections" className="underline underline-offset-2 hover:text-foreground transition-colors">Settings → Connections</Link> to start syncing contacts</p>
+          <p className="text-xs opacity-60 mt-1">Connect a service in <Link to="/settings" className="underline underline-offset-2 hover:text-foreground transition-colors">Settings</Link> to start syncing contacts</p>
         </div>
       </div>
     );

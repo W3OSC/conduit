@@ -193,7 +193,7 @@ export function VaultSection({ vault, selectedItem, onSelect, open, onToggle }: 
           {!isConnected ? (
             <div className="px-4 py-4 space-y-2">
               <p className="text-xs text-muted-foreground">Vault not connected.</p>
-              <a href="/settings/files" className={connectCtaClass}>
+              <a href="/settings/obsidian" className={connectCtaClass}>
                 Set up Vault
               </a>
             </div>

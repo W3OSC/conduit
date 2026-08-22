@@ -191,7 +191,7 @@ export function SmbSection({ share, selectedItem, onSelect, onUpload, uploading,
           {!isConnected ? (
             <div className="px-4 py-4 space-y-2">
               <p className="text-xs text-muted-foreground">Share not connected.</p>
-              <a href="/settings/connections" className={connectCtaClass}>
+              <a href="/settings/smb" className={connectCtaClass}>
                 Connect Share
               </a>
             </div>

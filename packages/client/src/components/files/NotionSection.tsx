@@ -227,7 +227,7 @@ export function NotionSection({ selectedItem, onSelect, open, onToggle }: Notion
           {!notionConnected ? (
             <div className="px-4 py-4 space-y-2">
               <p className="text-xs text-muted-foreground">Notion not connected.</p>
-              <a href="/settings/connections" className={connectCtaClass}>
+              <a href="/settings/notion" className={connectCtaClass}>
                 Connect Notion
               </a>
             </div>
