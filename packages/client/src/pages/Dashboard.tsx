@@ -1,44 +1,68 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
-import { RefreshCw, AlertTriangle, Wifi, MessageSquare, Database, TrendingUp, Activity, Heart, Repeat2, ExternalLink, Bird } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { ArrowUpRight, KeyRound, RefreshCw, ShieldCheck } from 'lucide-react';
 import {
-  AreaChart, Area, BarChart, Bar, LineChart, Line,
+  AreaChart, Area, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
-import { api, type Tweet } from '@/lib/api';
+import { api } from '@/lib/api';
 import { useConnectionStore, useSyncStore } from '@/store';
 import { StatusDot } from '@/components/shared/StatusDot';
 import { ServiceIcon } from '@/components/shared/ServiceBadge';
 import { CardSkeleton } from '@/components/shared/Skeleton';
-import { cn, timeAgo, stringToHue } from '@/lib/utils';
+import { cn, timeAgo } from '@/lib/utils';
 import { SERVICE_THEME } from '@/lib/serviceTheme';
 import { ChartTooltip } from '@/components/shared/ChartTooltip';
 
-const SERVICES = ['slack', 'discord', 'telegram', 'twitter', 'gmail'] as const;
-const SVC_COLORS: Record<string, string> = Object.fromEntries(
-  SERVICES.map((s) => [s, SERVICE_THEME[s]?.hex ?? '#78716C']),
-);
+/**
+ * Stack/legend/rail order and chart hues are one fixed sequence so color →
+ * service stays learnable. Telegram and Twitter are stepped darker than their
+ * badge hues (#0EA5E9 / #38BDF8): the brighter steps fail the dark-surface
+ * lightness band and drop under 3:1 on white. This order keeps the two blues
+ * and the two violets non-adjacent in the stack (worst adjacent CVD ΔE 7.5,
+ * covered by the legend + tooltip identity channel).
+ */
+const SERVICES = ['slack', 'telegram', 'gmail', 'twitter', 'discord'] as const;
+type ServiceKey = typeof SERVICES[number];
+
+const CHART_HEX: Record<ServiceKey, string> = {
+  slack:    '#8B5CF6',
+  telegram: '#0284C7',
+  gmail:    '#EF4444',
+  twitter:  '#0891B2',
+  discord:  '#6366F1',
+};
+
+// Pipeline outcomes are states, not series identities — good/bad wear status
+// colors, "sent" wears the accent.
+const PIPELINE = {
+  approved: '#10B981',
+  rejected: '#EF4444',
+  sent:     'hsl(var(--primary))',
+} as const;
+
+const OK_GREEN = '#10B981';
+const ERR_RED  = '#EF4444';
+
+const gridStroke = 'hsl(var(--border) / 0.55)';
+const axisTick   = { fontSize: 10, fill: 'hsl(var(--muted-foreground))' };
+const compact    = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
+const trimYear   = (d: string) => String(d).replace(/^\d{4}-/, '');
 
 const fade = (delay = 0) => ({
-  initial: { opacity: 0, y: 12 },
+  initial: { opacity: 0, y: 10 },
   animate: { opacity: 1, y: 0 },
   transition: { duration: 0.3, ease: [0.16, 1, 0.3, 1] as [number, number, number, number], delay },
 });
 
-// Token-driven chart chrome — the previous hardcoded dark values were
-// unreadable in light mode.
-const gridColor = 'hsl(var(--border))';
-const axisStyle = { fontSize: 10, fill: 'hsl(var(--muted-foreground))' };
+// ── Small pieces ──────────────────────────────────────────────────────────────
 
-// ── Shared helpers ────────────────────────────────────────────────────────────
-
-function RangeSelector({ value, onChange, options }: {
-  value: number; onChange: (v: number) => void; options: number[];
-}) {
+function RangeSelector({ value, onChange }: { value: number; onChange: (v: number) => void }) {
   return (
     <div className="flex items-center gap-0.5 bg-secondary border border-border rounded-xl p-1">
-      {options.map((d) => (
+      {[7, 14, 30, 90].map((d) => (
         <button key={d} onClick={() => onChange(d)}
           className={cn(
             'px-2.5 py-1 rounded-lg text-xs font-medium transition-all',
@@ -50,407 +74,510 @@ function RangeSelector({ value, onChange, options }: {
   );
 }
 
-const Loader = () => (
-  <div className="flex items-center justify-center h-full">
-    <div className="w-5 h-5 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
-  </div>
-);
-
-// ── Stat card ─────────────────────────────────────────────────────────────────
-
-function StatCard({ title, value, sub, icon: Icon, amber }: {
-  title: string; value: string | number; sub?: string;
-  icon: React.ComponentType<{ className?: string }>; amber?: boolean;
+function Legend({ items, className }: {
+  items: Array<{ label: string; color: string }>; className?: string;
 }) {
   return (
-    <motion.div {...fade()} className={cn(
-      'card-warm p-3 flex flex-col justify-between gap-1.5',
-      amber && 'amber-surface border-primary/20 glow-amber-sm',
-    )}>
-      <div className="flex items-center justify-between">
-        <p className="section-label">{title}</p>
-        <div className={cn(
-          'w-8 h-8 rounded-lg flex items-center justify-center',
-          amber ? 'bg-primary/15' : 'bg-secondary',
-        )}>
-          <Icon className={cn('w-4 h-4', amber ? 'text-primary' : 'text-muted-foreground')} />
-        </div>
-      </div>
-      <p className="text-3xl font-bold text-foreground tracking-tight">{value}</p>
-      {sub && <p className="text-xs text-muted-foreground">{sub}</p>}
-    </motion.div>
-  );
-}
-
-// ── Service card ──────────────────────────────────────────────────────────────
-
-function ServiceCard({ service, avgDuration }: { service: typeof SERVICES[number]; avgDuration?: number | null }) {
-  const status = useConnectionStore((s) => s.statuses[service]);
-  const syncProgress = useSyncStore((s) => s.progress[service]);
-  const { data: statusData } = useQuery({ queryKey: ['status'], queryFn: api.status, refetchInterval: 10000 });
-
-  const msgCount  = statusData?.messageCounts[service] ?? 0;
-  const chatCount = statusData?.chatCounts[service] ?? 0;
-  const lastSync  = (statusData?.lastSync[service] as { startedAt?: string } | null)?.startedAt;
-
-  return (
-    <motion.div {...fade()} className="card-warm p-3 flex flex-col gap-2.5">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <ServiceIcon service={service} size="sm" />
-          <span className="text-sm font-semibold capitalize">{service}</span>
-        </div>
-        <StatusDot
-          status={(status?.status ?? 'disconnected') as 'connected'|'disconnected'|'connecting'|'error'}
-          className="w-2.5 h-2.5"
-        />
-      </div>
-
-      <div className="grid grid-cols-2 gap-2 flex-1">
-        <div className="bg-secondary/50 rounded-xl p-2 flex flex-col items-center justify-center">
-          <p className="text-2xs text-muted-foreground uppercase tracking-wider mb-0.5">Messages</p>
-          <p className="text-xl font-bold">{msgCount.toLocaleString()}</p>
-        </div>
-        <div className="bg-secondary/50 rounded-xl p-2 flex flex-col items-center justify-center">
-          <p className="text-2xs text-muted-foreground uppercase tracking-wider mb-0.5">Chats</p>
-          <p className="text-xl font-bold">{chatCount}</p>
-        </div>
-      </div>
-
-      {syncProgress?.status === 'running' && (
-        <div className="h-1 bg-muted-foreground/25 rounded-full overflow-hidden flex-shrink-0">
-          <motion.div
-            className="h-full bg-primary rounded-full"
-            animate={{ x: ['-100%', '100%'] }}
-            transition={{ duration: 1.6, repeat: Infinity, ease: 'linear' }}
-          />
-        </div>
-      )}
-
-      <div className="flex items-center justify-between flex-shrink-0">
-        <p className="text-xs text-muted-foreground">
-          {lastSync ? timeAgo(lastSync) : 'Never synced'}
-        </p>
-      </div>
-    </motion.div>
-  );
-}
-
-// ── Chart card wrapper ────────────────────────────────────────────────────────
-
-function ChartCard({ title, subtitle, icon: Icon, children, controls, delay = 0 }: {
-  title: string; subtitle?: string;
-  icon?: React.ComponentType<{ className?: string }>;
-  children: React.ReactNode;
-  controls?: React.ReactNode;
-  delay?: number;
-}) {
-  return (
-    <motion.div {...fade(delay)} className="card-warm p-3 flex flex-col min-h-0">
-      <div className="flex items-start justify-between gap-2 mb-2 flex-shrink-0">
-        <div>
-          <h3 className="text-sm font-semibold">{title}</h3>
-          {subtitle && <p className="text-xs text-muted-foreground mt-0.5">{subtitle}</p>}
-        </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          {controls}
-          {Icon && <Icon className="w-4 h-4 text-muted-foreground" />}
-        </div>
-      </div>
-      <div className="flex-1 min-h-0">
-        {children}
-      </div>
-    </motion.div>
-  );
-}
-
-// ── Twitter latest posts card ─────────────────────────────────────────────────
-
-function MiniTweetCard({ tweet }: { tweet: Tweet }) {
-  const avatarUrl = (tweet as unknown as Record<string, unknown>).avatar as string | undefined
-    || (tweet as unknown as Record<string, unknown>).profileImageUrl as string | undefined;
-  const [imgErr, setImgErr] = useState(false);
-  const hue = stringToHue(tweet.username);
-
-  return (
-    <div className="flex-shrink-0 w-56 h-full bg-secondary/40 border border-border/60 rounded-xl p-3.5 flex flex-col gap-2.5 hover:bg-secondary/70 transition-colors">
-      {/* Author */}
-      <div className="flex items-center gap-2 min-w-0">
-        {avatarUrl && !imgErr ? (
-          <img
-            src={avatarUrl}
-            alt={tweet.name}
-            onError={() => setImgErr(true)}
-            className="w-7 h-7 rounded-full flex-shrink-0 object-cover"
-          />
-        ) : (
-          <div
-            className="w-7 h-7 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold text-white"
-            style={{ background: `hsl(${hue}, 52%, 40%)` }}
-          >
-            {(tweet.name || tweet.username || '?').charAt(0).toUpperCase()}
-          </div>
-        )}
-        <div className="min-w-0">
-          <p className="text-xs font-semibold truncate leading-tight">{tweet.name}</p>
-          <p className="text-[10px] text-muted-foreground truncate leading-tight">@{tweet.username}</p>
-        </div>
-        {tweet.permanentUrl && (
-          <a
-            href={tweet.permanentUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="ml-auto flex-shrink-0 text-muted-foreground hover:text-primary transition-colors"
-          >
-            <ExternalLink className="w-3 h-3" />
-          </a>
-        )}
-      </div>
-
-      {/* Text */}
-      <p className="text-xs text-foreground/80 leading-relaxed line-clamp-4 flex-1 break-words">
-        {tweet.text}
-      </p>
-
-      {/* Photo preview */}
-      {tweet.photos.length > 0 && (
-        <img
-          src={tweet.photos[0].url}
-          alt={tweet.photos[0].alt || ''}
-          className="w-full h-20 object-cover rounded-lg flex-shrink-0"
-          loading="lazy"
-        />
-      )}
-
-      {/* Footer: stats + timestamp */}
-      <div className="flex items-center gap-3 text-[10px] text-muted-foreground flex-shrink-0">
-        {tweet.likes > 0 && (
-          <span className="flex items-center gap-0.5">
-            <Heart className="w-3 h-3" />
-            {tweet.likes.toLocaleString()}
-          </span>
-        )}
-        {tweet.retweets > 0 && (
-          <span className="flex items-center gap-0.5">
-            <Repeat2 className="w-3 h-3" />
-            {tweet.retweets.toLocaleString()}
-          </span>
-        )}
-        {tweet.timestamp > 0 && (
-          <span className="ml-auto">
-            {timeAgo(new Date(tweet.timestamp * 1000).toISOString())}
-          </span>
-        )}
-      </div>
+    <div className={cn('flex items-center gap-x-3 gap-y-1 flex-wrap', className)}>
+      {items.map((it) => (
+        <span key={it.label} className="flex items-center gap-1.5 text-2xs text-muted-foreground">
+          <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: it.color }} />
+          {it.label}
+        </span>
+      ))}
     </div>
   );
 }
 
-function LatestPostsCard({ delay = 0 }: { delay?: number }) {
-  const { data, isLoading, refetch, isFetching } = useQuery({
-    queryKey: ['twitter', 'feed', 'dashboard'],
-    queryFn: () => api.twitterFeed(10),
-    staleTime: 5 * 60 * 1000,
-  });
+function Spark({ points, color }: { points: number[]; color: string }) {
+  const w = 68, h = 24, pad = 2.5;
+  const flat = points.length < 2 || points.every((v) => v === 0);
+  const max = Math.max(...points, 1);
+  const step = (w - pad * 2) / Math.max(points.length - 1, 1);
+  const d = points
+    .map((v, i) => `${i === 0 ? 'M' : 'L'}${(pad + i * step).toFixed(1)},${(h - pad - (v / max) * (h - pad * 2)).toFixed(1)}`)
+    .join(' ');
+  return (
+    <svg width={w} height={h} className="flex-shrink-0" aria-hidden>
+      {flat ? (
+        <line x1={pad} y1={h / 2} x2={w - pad} y2={h / 2}
+          stroke="hsl(var(--border))" strokeWidth="1.5" strokeLinecap="round" />
+      ) : (
+        <path d={d} fill="none" stroke={color} strokeWidth="1.5"
+          strokeLinejoin="round" strokeLinecap="round" />
+      )}
+    </svg>
+  );
+}
 
-  const tweets = data?.tweets ?? [];
+function HeroStat({ label, value, to, tone }: {
+  label: string; value: string | number; to?: string; tone?: 'accent' | 'danger';
+}) {
+  const body = (
+    <div className={cn('min-w-0', to && 'group cursor-pointer')}>
+      <p className="text-2xs uppercase tracking-wider text-muted-foreground/70 truncate">{label}</p>
+      <p className={cn(
+        'text-lg font-semibold leading-snug',
+        tone === 'accent' && 'text-primary',
+        tone === 'danger' && 'text-red-400',
+        to && 'group-hover:underline decoration-border underline-offset-4',
+      )}>{value}</p>
+    </div>
+  );
+  return to ? <Link to={to}>{body}</Link> : body;
+}
+
+function Panel({ title, sub, action, children, className, delay = 0 }: {
+  title: string; sub?: React.ReactNode; action?: React.ReactNode;
+  children: React.ReactNode; className?: string; delay?: number;
+}) {
+  return (
+    <motion.div {...fade(delay)} className={cn('card-warm flex flex-col min-h-0 overflow-hidden', className)}>
+      <div className="flex items-center justify-between gap-2 px-4 pt-3.5 pb-2 flex-shrink-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <h3 className="text-sm font-semibold truncate">{title}</h3>
+          {sub}
+        </div>
+        {action}
+      </div>
+      {children}
+    </motion.div>
+  );
+}
+
+function PanelLink({ to, children }: { to: string; children: React.ReactNode }) {
+  return (
+    <Link to={to} className="flex items-center gap-0.5 text-xs font-medium text-muted-foreground hover:text-primary transition-colors flex-shrink-0">
+      {children}
+      <ArrowUpRight className="w-3.5 h-3.5" />
+    </Link>
+  );
+}
+
+function EmptyNote({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+      <p className="text-xs text-muted-foreground/70">{children}</p>
+    </div>
+  );
+}
+
+// ── Channels rail ─────────────────────────────────────────────────────────────
+
+function ChannelRow({ service, series, msgCount, chatCount, lastSync }: {
+  service: ServiceKey; series: number[]; msgCount: number; chatCount: number;
+  lastSync?: string;
+}) {
+  const status = useConnectionStore((s) => s.statuses[service]);
+  const syncing = useSyncStore((s) => s.progress[service]?.status === 'running');
+  const connected = status?.status === 'connected';
 
   return (
-    <motion.div {...fade(delay)} className="card-warm p-3 flex flex-col min-h-0">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-2 mb-2 flex-shrink-0">
-        <div className="flex items-center gap-2">
-          <Bird className="w-4 h-4 text-sky-400" />
-          <h3 className="text-sm font-semibold">Latest Posts</h3>
+    <div className={cn(
+      'flex items-center gap-3 px-4 py-2.5 flex-1 min-h-[52px]',
+      !connected && 'opacity-45',
+    )}>
+      <ServiceIcon service={service} size="sm" />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5">
+          <p className="text-sm font-medium leading-tight truncate">{SERVICE_THEME[service].label}</p>
+          <StatusDot
+            status={(status?.status ?? 'disconnected') as 'connected' | 'disconnected' | 'connecting' | 'error'}
+            className="w-1.5 h-1.5"
+          />
+          {syncing && <RefreshCw className="w-3 h-3 text-primary animate-spin" />}
         </div>
-        <button
-          onClick={() => refetch()}
-          disabled={isFetching}
-          className="text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
-        >
-          <RefreshCw className={cn('w-3.5 h-3.5', isFetching && 'animate-spin')} />
-        </button>
+        <p className="text-2xs text-muted-foreground truncate">
+          {syncing ? 'Syncing…' : lastSync ? `Synced ${timeAgo(lastSync)}` : 'Never synced'}
+        </p>
       </div>
-
-      {/* Horizontal scroll row */}
-      <div className="flex-1 min-h-0 overflow-hidden">
-        {isLoading ? (
-          <div className="flex items-center justify-center h-full">
-            <div className="w-5 h-5 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
-          </div>
-        ) : tweets.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
-            <Bird className="w-6 h-6 opacity-30" />
-            <p className="text-xs">No posts — connect Twitter to see your feed</p>
-          </div>
-        ) : (
-          <div className="flex gap-3 h-full overflow-x-auto pb-1 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
-            {tweets.map((tweet) => (
-              <MiniTweetCard key={tweet.id} tweet={tweet} />
-            ))}
-          </div>
-        )}
+      <Spark points={series} color={CHART_HEX[service]} />
+      <div className="text-right w-14 flex-shrink-0">
+        <p className="text-sm font-semibold tabular-nums leading-tight">{compact.format(msgCount)}</p>
+        <p className="text-2xs text-muted-foreground tabular-nums">{compact.format(chatCount)} chats</p>
       </div>
-    </motion.div>
+    </div>
   );
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
-  const [msgDays, setMsgDays]       = useState(30);
-  const [msgGran, setMsgGran]       = useState<'day'|'hour'>('day');
-  const [syncDays, setSyncDays]     = useState(14);
-  const [outboxDays, setOutboxDays] = useState(30);
-
-  const { data: metricsData } = useQuery({
-    queryKey: ['metrics', 'messages-over-time', msgDays, msgGran],
-    queryFn: () => api.messagesOverTime(msgDays, msgGran),
-    refetchInterval: 60000,
-  });
-
-  const { data: syncData } = useQuery({
-    queryKey: ['metrics', 'sync-runs', syncDays],
-    queryFn: () => api.syncRuns(syncDays),
-    refetchInterval: 60000,
-  });
-
-  const { data: obData, isLoading: obLoading } = useQuery({
-    queryKey: ['metrics', 'outbox', outboxDays],
-    queryFn: () => api.outboxActivity(outboxDays),
-    refetchInterval: 60000,
-  });
+  const [days, setDays] = useState(30);
 
   const { data: statusData, isLoading } = useQuery({
-    queryKey: ['status'],
-    queryFn: api.status,
-    refetchInterval: 10000,
+    queryKey: ['status'], queryFn: api.status, refetchInterval: 10000,
+  });
+  const { data: flowData } = useQuery({
+    queryKey: ['metrics', 'messages-over-time', days, 'day'],
+    queryFn: () => api.messagesOverTime(days, 'day'),
+    refetchInterval: 60000,
+  });
+  const { data: outboxMetrics } = useQuery({
+    queryKey: ['metrics', 'outbox', days],
+    queryFn: () => api.outboxActivity(days),
+    refetchInterval: 60000,
+  });
+  const { data: syncData } = useQuery({
+    queryKey: ['metrics', 'sync-runs', days],
+    queryFn: () => api.syncRuns(days),
+    refetchInterval: 60000,
+  });
+  const { data: usageData } = useQuery({
+    queryKey: ['metrics', 'api-usage', days],
+    queryFn: () => api.apiUsage(days),
+    refetchInterval: 60000,
+  });
+  const { data: pendingData } = useQuery({
+    queryKey: ['outbox', 'pending', 'dashboard'],
+    queryFn: () => api.outbox('pending', undefined, { limit: 5 }),
+    refetchInterval: 30000,
+  });
+  const { data: recentData } = useQuery({
+    queryKey: ['outbox', 'recent', 'dashboard'],
+    queryFn: () => api.outbox(undefined, undefined, { limit: 12 }),
+    refetchInterval: 30000,
   });
 
   const statuses = useConnectionStore((s) => s.statuses);
-  const totalMessages = Object.values(statusData?.messageCounts || {}).reduce((a, b) => a + b, 0);
-  // Count only the services this dashboard actually tracks — statuses holds
-  // all nine services, and the old hardcoded "/6" denominator matched neither.
   const connectedCount = SERVICES.filter((s) => statuses[s]?.status === 'connected').length;
 
-  if (isLoading) {
+  // Normalize the flow series once: every row gets every service key.
+  const flow = useMemo(() => {
+    const rows = (flowData?.data ?? []) as Array<Record<string, number | string>>;
+    return rows.map((r) => ({
+      date: String(r.date),
+      ...Object.fromEntries(SERVICES.map((s) => [s, Number(r[s] ?? 0)])),
+    })) as Array<{ date: string } & Record<ServiceKey, number>>;
+  }, [flowData]);
+
+  const perService = useMemo(() => (
+    Object.fromEntries(SERVICES.map((s) => [s, flow.map((r) => r[s])])) as Record<ServiceKey, number[]>
+  ), [flow]);
+
+  const windowTotal = useMemo(
+    () => flow.reduce((acc, r) => acc + SERVICES.reduce((a, s) => a + r[s], 0), 0),
+    [flow],
+  );
+
+  const usage = useMemo(() => {
+    const daily = usageData?.daily ?? [];
+    return daily.map((d) => ({
+      date: String(d.date),
+      requests: (usageData?.keys ?? []).reduce((a, k) => a + Number(d[k] ?? 0), 0),
+    }));
+  }, [usageData]);
+  const usageTotal = usage.reduce((a, d) => a + d.requests, 0);
+
+  const syncTotals = useMemo(() => {
+    const rows = syncData?.data ?? [];
+    return {
+      ok:  rows.reduce((a, r) => a + (r.success ?? 0), 0),
+      err: rows.reduce((a, r) => a + (r.error ?? 0), 0),
+    };
+  }, [syncData]);
+
+  // The server's "approved" bucket includes items that went on to send; split
+  // them so the stacked bars partition each day's decisions without overlap.
+  const pipeline = useMemo(() => (
+    (outboxMetrics?.data ?? []).map((d) => ({
+      date: d.date,
+      sent: d.sent ?? 0,
+      approved: Math.max(0, (d.approved ?? 0) - (d.sent ?? 0)),
+      rejected: d.rejected ?? 0,
+    }))
+  ), [outboxMetrics]);
+  const pipelineTotal = pipeline.reduce((a, d) => a + d.sent + d.approved + d.rejected, 0);
+
+  const recentDecisions = useMemo(() => (
+    (recentData?.items ?? []).filter((i) => i.status !== 'pending').slice(0, 4)
+  ), [recentData]);
+
+  const pending = pendingData?.pendingCount ?? 0;
+  const errors = statusData?.errorCount ?? 0;
+  const activeChats = Object.values(statusData?.chatCounts ?? {}).reduce((a, b) => a + b, 0);
+
+  // Status headline — the one-line answer to "does anything need me?"
+  const headline = errors > 0
+    ? { dot: 'status-dot-error', text: `${errors} error${errors === 1 ? '' : 's'} in the log — everything else is flowing` }
+    : pending > 0
+      ? { dot: 'status-dot-connecting', text: `${pending} message${pending === 1 ? '' : 's'} waiting for your approval` }
+      : { dot: 'status-dot-connected', text: 'All quiet — nothing needs your attention' };
+
+  if (isLoading && !statusData) {
     return (
-      <div className="p-2 grid grid-cols-4 gap-2">
-        {Array.from({ length: 4 }).map((_, i) => <CardSkeleton key={i} />)}
+      <div className="p-3 grid grid-cols-1 lg:grid-cols-3 gap-3">
+        {Array.from({ length: 6 }).map((_, i) => <CardSkeleton key={i} />)}
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col h-full p-2 gap-2 animate-fade-in overflow-hidden">
+    <div className="flex flex-col h-full p-3 gap-3 overflow-y-auto lg:overflow-hidden animate-fade-in">
 
-      {/* Stat row */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 flex-shrink-0">
-        <StatCard title="Total Messages" value={totalMessages.toLocaleString()} icon={MessageSquare} amber sub="Across all services" />
-        <StatCard title="Active Chats" value={Object.values(statusData?.chatCounts || {}).reduce((a, b) => a + b, 0)} icon={Database} sub="Synced conversations" />
-        <StatCard title="Services Online" value={`${connectedCount}/${SERVICES.length}`} icon={Wifi} sub={connectedCount === SERVICES.length ? 'All connected' : 'Some offline'} />
-        <StatCard title="Errors" value={statusData?.errorCount ?? 0} icon={AlertTriangle} sub="In error log" />
-      </div>
+      {/* Status line + the single time-range filter that scopes every chart below */}
+      <motion.div {...fade()} className="flex items-center justify-between gap-3 px-1 flex-shrink-0">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <span className={cn('status-dot', headline.dot)} />
+          <p className="text-sm font-medium truncate">{headline.text}</p>
+        </div>
+        <RangeSelector value={days} onChange={setDays} />
+      </motion.div>
 
-      {/* Service cards */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 flex-shrink-0">
-        {SERVICES.map((s) => (
-          <ServiceCard key={s} service={s} avgDuration={syncData?.avgDuration?.[s] ?? null} />
-        ))}
-      </div>
+      {/* Hero — message flow through the firewall */}
+      <motion.div {...fade(0.03)} className="card-warm flex flex-col md:flex-row md:h-60 flex-shrink-0 overflow-hidden">
+        <div className="md:w-64 flex-shrink-0 p-5 flex flex-col gap-4 border-b md:border-b-0 md:border-r border-border/60">
+          <div>
+            <p className="section-label">Message flow</p>
+            <p className="text-[40px] font-bold tracking-tight leading-none mt-2">
+              {windowTotal.toLocaleString()}
+            </p>
+            <p className="text-xs text-muted-foreground mt-1.5">
+              messages in the past {days} days
+            </p>
+          </div>
+          <div className="mt-auto grid grid-cols-2 gap-x-4 gap-y-2.5">
+            <HeroStat label="Active chats" value={activeChats.toLocaleString()} />
+            <HeroStat label="Channels" value={`${connectedCount}/${SERVICES.length}`} />
+            <HeroStat label="Pending" value={pending} to="/outbox" tone={pending > 0 ? 'accent' : undefined} />
+            <HeroStat label="Errors" value={errors} to="/audit-log" tone={errors > 0 ? 'danger' : undefined} />
+          </div>
+        </div>
 
-      {/* Charts — 2×2 grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 lg:grid-rows-2 gap-2 flex-1 min-h-0">
+        <div className="flex-1 min-w-0 flex flex-col p-3 pl-1 min-h-44">
+          <Legend
+            className="justify-end pr-3 pt-0.5 flex-shrink-0"
+            items={SERVICES.map((s) => ({ label: SERVICE_THEME[s].label, color: CHART_HEX[s] }))}
+          />
+          <div className="flex-1 min-h-0 relative mt-1">
+            {windowTotal === 0 && <EmptyNote>No message activity in this window yet</EmptyNote>}
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={flow} margin={{ top: 4, right: 12, bottom: 0, left: 0 }}>
+                <defs>
+                  {SERVICES.map((s) => (
+                    <linearGradient key={s} id={`flow-${s}`} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%"   stopColor={CHART_HEX[s]} stopOpacity={0.22} />
+                      <stop offset="100%" stopColor={CHART_HEX[s]} stopOpacity={0.02} />
+                    </linearGradient>
+                  ))}
+                </defs>
+                <CartesianGrid stroke={gridStroke} vertical={false} />
+                <XAxis dataKey="date" tick={axisTick} tickLine={false} axisLine={false}
+                  tickFormatter={trimYear} minTickGap={28} />
+                <YAxis tick={axisTick} tickLine={false} axisLine={false} width={34}
+                  tickFormatter={(v: number) => compact.format(v)} allowDecimals={false} />
+                <Tooltip content={<ChartTooltip capitalize />} cursor={{ stroke: 'hsl(var(--border))', strokeWidth: 1 }} />
+                {SERVICES.map((s) => (
+                  <Area key={s} type="monotone" dataKey={s} stackId="flow"
+                    name={SERVICE_THEME[s].label}
+                    stroke={CHART_HEX[s]} strokeWidth={1.5}
+                    fill={`url(#flow-${s})`} dot={false} />
+                ))}
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </motion.div>
 
-        {/* Message Volume */}
-        <ChartCard
-          title="Message Volume"
-          subtitle="New messages received per period"
-          delay={0.05}
-          controls={
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-0.5 bg-secondary border border-border rounded-xl p-1">
-                {(['day', 'hour'] as const).map((g) => (
-                  <button key={g} onClick={() => setMsgGran(g)}
-                    className={cn('px-2.5 py-1 rounded-lg text-xs font-medium transition-all',
-                      msgGran === g ? 'bg-background text-foreground shadow-warm-sm' : 'text-muted-foreground hover:text-foreground')}
-                  >{g}</button>
+      {/* Control room grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 flex-1 min-h-0">
+
+        {/* Channels */}
+        <Panel
+          title="Channels"
+          className="lg:col-span-3"
+          delay={0.06}
+          sub={<span className="text-xs text-muted-foreground">{connectedCount}/{SERVICES.length} online</span>}
+          action={<PanelLink to="/settings/connections">Manage</PanelLink>}
+        >
+          <div className="flex-1 min-h-0 flex flex-col divide-y divide-border/50 pb-1 overflow-y-auto">
+            {SERVICES.map((s) => (
+              <ChannelRow
+                key={s}
+                service={s}
+                series={perService[s] ?? []}
+                msgCount={statusData?.messageCounts[s] ?? 0}
+                chatCount={statusData?.chatCounts[s] ?? 0}
+                lastSync={(statusData?.lastSync[s] as { startedAt?: string } | null)?.startedAt}
+              />
+            ))}
+          </div>
+        </Panel>
+
+        {/* Approvals — the firewall's decision queue */}
+        <Panel
+          title="Approvals"
+          className="lg:col-span-5"
+          delay={0.09}
+          sub={pending > 0
+            ? <span className="chip chip-amber">{pending} pending</span>
+            : <span className="text-xs text-muted-foreground">queue clear</span>}
+          action={<PanelLink to="/outbox">Outbox</PanelLink>}
+        >
+          <div className="flex-shrink-0 max-h-[55%] overflow-y-auto">
+            {(pendingData?.items?.length ?? 0) > 0 ? (
+              <div className="divide-y divide-border/50">
+                {pendingData!.items.slice(0, 4).map((item) => (
+                  <Link key={item.id} to="/outbox"
+                    className="flex items-center gap-3 px-4 py-2.5 hover:bg-secondary/50 transition-colors">
+                    <ServiceIcon service={item.source} size="sm" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-baseline justify-between gap-2">
+                        <p className="text-sm font-medium truncate">
+                          {item.recipientName || item.recipientId}
+                        </p>
+                        <p className="text-2xs text-muted-foreground flex-shrink-0">{timeAgo(item.createdAt)}</p>
+                      </div>
+                      <p className="text-xs text-muted-foreground truncate">{item.content}</p>
+                    </div>
+                  </Link>
                 ))}
               </div>
-              <RangeSelector value={msgDays} onChange={setMsgDays} options={[7, 14, 30, 90]} />
+            ) : (
+              <div className="flex items-center gap-2.5 px-4 py-4">
+                <ShieldCheck className="w-4 h-4 text-emerald-500/80 flex-shrink-0" />
+                <p className="text-xs text-muted-foreground">
+                  Nothing waiting — agent write requests will queue here for your sign-off.
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className="flex-1 min-h-0 overflow-hidden border-t border-border/50">
+            <p className="text-2xs uppercase tracking-wider text-muted-foreground/70 px-4 pt-2.5 pb-1">
+              Recent decisions
+            </p>
+            {recentDecisions.length === 0 ? (
+              <p className="text-xs text-muted-foreground/70 px-4 py-2">No decisions yet in this window.</p>
+            ) : (
+              <div className="divide-y divide-border/40">
+                {recentDecisions.map((item) => {
+                  const meta = item.status === 'rejected' || item.status === 'failed'
+                    ? { label: item.status === 'failed' ? 'Failed' : 'Rejected', dot: 'bg-red-500', text: 'text-red-500' }
+                    : item.status === 'sent'
+                      ? { label: 'Sent', dot: 'bg-primary', text: 'text-primary' }
+                      : { label: 'Approved', dot: 'bg-emerald-500', text: 'text-emerald-500' };
+                  return (
+                    <div key={item.id} className="flex items-center gap-2.5 px-4 py-2">
+                      <span className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0', meta.dot)} />
+                      <p className="text-xs font-medium flex-shrink-0">{item.recipientName || item.recipientId}</p>
+                      <p className="text-xs text-muted-foreground truncate flex-1">{item.content}</p>
+                      <span className={cn('text-2xs font-medium flex-shrink-0', meta.text)}>{meta.label}</span>
+                      <p className="text-2xs text-muted-foreground flex-shrink-0 whitespace-nowrap">{timeAgo(item.createdAt)}</p>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="flex-shrink-0 h-40 flex flex-col px-3 pt-2.5 pb-2 border-t border-border/50">
+            <div className="flex items-center justify-between flex-shrink-0 pl-1 pr-2">
+              <p className="text-2xs uppercase tracking-wider text-muted-foreground/70">Decisions per day</p>
+              <Legend
+                items={[
+                  { label: 'Sent',     color: PIPELINE.sent },
+                  { label: 'Approved', color: PIPELINE.approved },
+                  { label: 'Rejected', color: PIPELINE.rejected },
+                ]}
+              />
             </div>
-          }
-          icon={TrendingUp}
-        >
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={metricsData?.data || []}>
-              <defs>
-                {SERVICES.map((s) => (
-                  <linearGradient key={s} id={`g-${s}`} x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%"  stopColor={SVC_COLORS[s]} stopOpacity={0.25} />
-                    <stop offset="95%" stopColor={SVC_COLORS[s]} stopOpacity={0}    />
-                  </linearGradient>
-                ))}
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
-              <XAxis dataKey="date" tick={axisStyle} tickLine={false} axisLine={false} />
-              <YAxis tick={axisStyle} tickLine={false} axisLine={false} width={36} />
-              <Tooltip content={<ChartTooltip />} cursor={{ stroke: 'hsl(var(--border))', strokeWidth: 1 }} />
-              {SERVICES.map((s) => (
-                <Area key={s} type="monotone" dataKey={s} stroke={SVC_COLORS[s]}
-                  fill={`url(#g-${s})`} strokeWidth={2} dot={false} />
-              ))}
-            </AreaChart>
-          </ResponsiveContainer>
-        </ChartCard>
+            <div className="flex-1 min-h-0 relative mt-1">
+              {pipelineTotal === 0 && <EmptyNote>No outbox decisions in this window</EmptyNote>}
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={pipeline} margin={{ top: 4, right: 12, bottom: 0, left: 0 }}>
+                  <CartesianGrid stroke={gridStroke} vertical={false} />
+                  <XAxis dataKey="date" tick={axisTick} tickLine={false} axisLine={false}
+                    tickFormatter={trimYear} minTickGap={28} />
+                  <YAxis tick={axisTick} tickLine={false} axisLine={false} width={28}
+                    tickFormatter={(v: number) => compact.format(v)} allowDecimals={false} />
+                  <Tooltip content={<ChartTooltip />} cursor={{ fill: 'hsl(var(--secondary) / 0.5)' }} />
+                  <Bar dataKey="sent" name="Sent" stackId="pipe" fill={PIPELINE.sent}
+                    stroke="hsl(var(--card))" strokeWidth={1} maxBarSize={14} />
+                  <Bar dataKey="approved" name="Approved" stackId="pipe" fill={PIPELINE.approved}
+                    stroke="hsl(var(--card))" strokeWidth={1} maxBarSize={14} />
+                  <Bar dataKey="rejected" name="Rejected" stackId="pipe" fill={PIPELINE.rejected}
+                    stroke="hsl(var(--card))" strokeWidth={1} maxBarSize={14} radius={[3, 3, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </Panel>
 
-        {/* Sync Activity */}
-        <ChartCard
-          title="Sync Activity"
-          subtitle="Successful and failed sync runs"
-          delay={0.1}
-          controls={<RangeSelector value={syncDays} onChange={setSyncDays} options={[7, 14, 30]} />}
-          icon={RefreshCw}
-        >
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={syncData?.data || []}>
-              <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
-              <XAxis dataKey="date" tick={axisStyle} tickLine={false} axisLine={false} />
-              <YAxis tick={axisStyle} tickLine={false} axisLine={false} width={36} />
-              <Tooltip content={<ChartTooltip />} cursor={{ fill: 'hsl(var(--secondary) / 0.5)' }} />
-              <Bar dataKey="success" fill="#10B981" radius={[3, 3, 0, 0]} name="Success" stackId="a" />
-              <Bar dataKey="error"   fill="#EF4444" radius={[3, 3, 0, 0]} name="Error"   stackId="a" />
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartCard>
+        {/* Sync health + agent traffic */}
+        <div className="lg:col-span-4 flex flex-col gap-3 min-h-0">
+          <Panel
+            title="Sync health"
+            className="flex-1"
+            delay={0.12}
+            sub={
+              <span className="text-xs text-muted-foreground">
+                {syncTotals.ok.toLocaleString()} ok
+                {syncTotals.err > 0 && <span className="text-red-400"> · {syncTotals.err} failed</span>}
+              </span>
+            }
+            action={
+              <Legend items={[
+                { label: 'Success', color: OK_GREEN },
+                { label: 'Failed',  color: ERR_RED },
+              ]} />
+            }
+          >
+            <div className="flex-1 min-h-20 relative px-3 pb-2">
+              {syncTotals.ok + syncTotals.err === 0 && <EmptyNote>No sync runs in this window</EmptyNote>}
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={syncData?.data ?? []} margin={{ top: 6, right: 12, bottom: 0, left: 0 }}>
+                  <CartesianGrid stroke={gridStroke} vertical={false} />
+                  <XAxis dataKey="date" tick={axisTick} tickLine={false} axisLine={false}
+                    tickFormatter={trimYear} minTickGap={28} />
+                  <YAxis tick={axisTick} tickLine={false} axisLine={false} width={28}
+                    tickFormatter={(v: number) => compact.format(v)} allowDecimals={false} />
+                  <Tooltip content={<ChartTooltip />} cursor={{ fill: 'hsl(var(--secondary) / 0.5)' }} />
+                  <Bar dataKey="success" name="Success" stackId="sync" fill={OK_GREEN}
+                    stroke="hsl(var(--card))" strokeWidth={1} maxBarSize={14} />
+                  <Bar dataKey="error" name="Failed" stackId="sync" fill={ERR_RED}
+                    stroke="hsl(var(--card))" strokeWidth={1} maxBarSize={14} radius={[3, 3, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </Panel>
 
-        {/* Outbox Activity */}
-        <ChartCard
-          title="Outbox Activity"
-          subtitle="Messages through the approval pipeline"
-          delay={0.15}
-          controls={<RangeSelector value={outboxDays} onChange={setOutboxDays} options={[7, 14, 30]} />}
-          icon={Activity}
-        >
-          {obLoading ? <Loader /> : (
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={obData?.data || []}>
-                <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
-                <XAxis dataKey="date" tick={axisStyle} tickLine={false} axisLine={false} />
-                <YAxis tick={axisStyle} tickLine={false} axisLine={false} width={36} />
-                <Tooltip content={<ChartTooltip />} cursor={{ stroke: 'hsl(var(--border))', strokeWidth: 1 }} />
-                <Line type="monotone" dataKey="received" stroke="#8B5CF6" strokeWidth={2} dot={false} name="Received" />
-                <Line type="monotone" dataKey="approved" stroke="#10B981" strokeWidth={2} dot={false} name="Approved" />
-                <Line type="monotone" dataKey="rejected" stroke="#EF4444" strokeWidth={2} dot={false} name="Rejected" />
-                <Line type="monotone" dataKey="sent"     stroke="#0EA5E9" strokeWidth={2} dot={false} name="Sent" />
-              </LineChart>
-            </ResponsiveContainer>
-          )}
-        </ChartCard>
-
-        {/* Twitter latest posts */}
-        <LatestPostsCard delay={0.2} />
-
+          <Panel
+            title="Agent traffic"
+            className="flex-1"
+            delay={0.15}
+            sub={
+              <span className="text-xs text-muted-foreground">
+                {usageTotal.toLocaleString()} request{usageTotal === 1 ? '' : 's'}
+                {(usageData?.keys?.length ?? 0) > 0 && ` · ${usageData!.keys.length} key${usageData!.keys.length === 1 ? '' : 's'}`}
+              </span>
+            }
+            action={<PanelLink to="/settings/agents">Keys</PanelLink>}
+          >
+            <div className="flex-1 min-h-20 relative px-3 pb-2">
+              {usageTotal === 0 && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 pointer-events-none px-6 text-center">
+                  <KeyRound className="w-4 h-4 text-muted-foreground/50" />
+                  <p className="text-xs text-muted-foreground/70">
+                    No agent requests yet — create an API key and point your agent at the REST API.
+                  </p>
+                </div>
+              )}
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={usage} margin={{ top: 6, right: 12, bottom: 0, left: 0 }}>
+                  <CartesianGrid stroke={gridStroke} vertical={false} />
+                  <XAxis dataKey="date" tick={axisTick} tickLine={false} axisLine={false}
+                    tickFormatter={trimYear} minTickGap={28} />
+                  <YAxis tick={axisTick} tickLine={false} axisLine={false} width={28}
+                    tickFormatter={(v: number) => compact.format(v)} allowDecimals={false} />
+                  <Tooltip content={<ChartTooltip />} cursor={{ fill: 'hsl(var(--secondary) / 0.5)' }} />
+                  <Bar dataKey="requests" name="Requests" fill="hsl(var(--primary) / 0.8)"
+                    maxBarSize={12} radius={[3, 3, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </Panel>
+        </div>
       </div>
     </div>
   );

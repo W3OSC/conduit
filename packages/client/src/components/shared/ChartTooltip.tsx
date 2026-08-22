@@ -15,14 +15,17 @@ export function ChartTooltip({ active, payload, label, capitalize, className }: 
 }) {
   if (!active || !payload) return null;
   return (
-    <div className={cn('card-warm border-border/80 p-3 text-xs shadow-warm-lg min-w-[120px]', className)}>
+    <div className={cn('card-warm border-border/80 p-3 text-xs shadow-warm-lg min-w-[130px]', className)}>
       <p className="text-muted-foreground mb-2 font-medium">{String(label)}</p>
-      {payload.map((p) => (
-        <div key={p.name} className="flex items-center justify-between gap-4">
-          <span style={{ color: p.color }} className={capitalize ? 'capitalize' : undefined}>{p.name}</span>
-          <span className="font-semibold text-foreground">{(p.value ?? 0).toLocaleString()}</span>
-        </div>
-      ))}
+      <div className="space-y-1">
+        {payload.map((p) => (
+          <div key={p.name} className="flex items-center gap-2">
+            <span className="w-3 h-[3px] rounded-full flex-shrink-0" style={{ background: p.color }} />
+            <span className={cn('text-muted-foreground', capitalize && 'capitalize')}>{p.name}</span>
+            <span className="ml-auto pl-3 font-semibold text-foreground tabular-nums">{(p.value ?? 0).toLocaleString()}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
