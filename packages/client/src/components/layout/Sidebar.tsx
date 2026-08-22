@@ -314,6 +314,7 @@ export function Sidebar() {
         ) : (
           <div className="flex gap-1">
             {renderTile(INBOX_ITEM, { half: true })}
+            <div className="w-px my-1.5 bg-sidebar-border" />
             {renderTile(OUTBOX_ITEM, { half: true })}
           </div>
         )}
