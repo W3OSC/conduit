@@ -105,6 +105,22 @@ const queryClient = new QueryClient({
   },
 });
 
+// Route-specific copy for the "nothing connected" banner — mirrors each page's
+// own in-page empty-state CTA so the two links agree on wording and destination.
+const CONNECT_BANNERS: Record<string, { title: string; body: string; to: string }> = {
+  '/email':    { title: 'Gmail not connected.',       body: 'Add your Google credentials in Settings → Connections → Google.',         to: '/settings/email-calendar' },
+  '/calendar': { title: 'Calendar not connected.',    body: 'Add your Google credentials in Settings → Connections → Google.',         to: '/settings/email-calendar' },
+  '/twitter':  { title: 'Twitter / X not connected.', body: 'Add your credentials in Settings → Connections → Messaging.',             to: '/settings/messaging' },
+  '/chat':     { title: 'No services connected.',     body: 'Add your credentials in Settings → Connections → Messaging.',             to: '/settings/messaging' },
+  '/contacts': { title: 'No services connected.',     body: 'Connect a service in Settings → Connections to start syncing contacts.',  to: '/settings/connections' },
+  '/files':    { title: 'No file sources connected.', body: 'Add a vault, drive, or share in Settings → Connections → Files.',         to: '/settings/files' },
+};
+const DEFAULT_CONNECT_BANNER = {
+  title: 'No services connected.',
+  body: 'Head to Settings to connect Slack, Discord, Telegram, Google, and more.',
+  to: '/settings/connections',
+};
+
 function AppInner() {
   useWebSocket();
   const location = useLocation();
@@ -134,6 +150,9 @@ function AppInner() {
   }, [connections, nothingConnected, location.pathname, navigate]);
 
   const showConnectBanner = nothingConnected && !location.pathname.startsWith('/settings');
+  const connectBanner = Object.entries(CONNECT_BANNERS).find(([path]) =>
+    location.pathname === path || location.pathname.startsWith(`${path}/`),
+  )?.[1] ?? DEFAULT_CONNECT_BANNER;
 
   return (
     <div className="flex h-screen bg-background overflow-hidden">
@@ -142,13 +161,13 @@ function AppInner() {
         <TopBar />
         {showConnectBanner && (
           <Link
-            to="/settings/connections"
+            to={connectBanner.to}
             className="flex items-center gap-2.5 px-4 py-2.5 bg-primary/10 border-b border-primary/20 text-sm text-primary hover:bg-primary/15 transition-colors"
           >
             <PlugZap className="w-4 h-4 flex-shrink-0" />
             <span className="flex-1 min-w-0">
-              <span className="font-medium">No services connected.</span>{' '}
-              <span className="text-primary/80">Head to Settings to connect Slack, Discord, Telegram, Google, and more.</span>
+              <span className="font-medium">{connectBanner.title}</span>{' '}
+              <span className="text-primary/80">{connectBanner.body}</span>
             </span>
             <ArrowRight className="w-4 h-4 flex-shrink-0" />
           </Link>
