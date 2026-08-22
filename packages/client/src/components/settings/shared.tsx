@@ -103,6 +103,41 @@ export function Toggle({ checked, onChange, label, description }: {
   );
 }
 
+export function SectionTabs<T extends string>({ sections, active, onSelect, disabledIds, disabledTitle }: {
+  sections: ReadonlyArray<{ id: T; label: string; icon: React.ComponentType<{ className?: string }> }>;
+  active: T;
+  onSelect: (id: T) => void;
+  disabledIds?: readonly T[];
+  disabledTitle?: string;
+}) {
+  return (
+    <div className="flex items-center gap-1 px-4 py-2 border-b border-border bg-secondary/20 overflow-x-auto">
+      {sections.map(({ id, label, icon: Icon }) => {
+        const disabled = disabledIds?.includes(id) ?? false;
+        return (
+          <button
+            key={id}
+            onClick={() => onSelect(id)}
+            disabled={disabled}
+            title={disabled ? disabledTitle : undefined}
+            className={cn(
+              'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all duration-150',
+              active === id
+                ? 'bg-primary/15 text-primary border border-primary/25'
+                : disabled
+                  ? 'text-muted-foreground/40 cursor-not-allowed'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-secondary',
+            )}
+          >
+            <Icon className="w-3.5 h-3.5" />
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function CopyableScope({ scope }: { scope: string }) {
   return (
     <div className="flex items-center gap-2 rounded-lg border border-border bg-secondary/60 px-3 py-2">

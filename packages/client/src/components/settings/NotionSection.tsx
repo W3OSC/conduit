@@ -12,7 +12,7 @@ import { useConnectionStore } from '@/store';
 import { StatusBadge } from '@/components/shared/StatusDot';
 import { cn } from '@/lib/utils';
 import { toast } from '@/store';
-import { SectionHeader, SecretField, TextField, Toggle } from './shared';
+import { SectionHeader, SectionTabs, SecretField, TextField, Toggle } from './shared';
 import { type Service, type TestStep } from './ChatServiceAccordions';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -52,8 +52,17 @@ export function NotionAccordion() {
     }
   }, [raw]);
 
-  const tokenConfigured = !!(raw && (raw as Record<string, string>).configured);
+  // The raw endpoint returns the bare creds object (no `configured` flag) —
+  // use the redacted /credentials view, which computes it server-side.
+  const { data: credInfo } = useQuery({ queryKey: ['credentials'], queryFn: api.credentials });
+  const tokenConfigured = !!credInfo?.notion?.configured;
   const credsDirty = !!(token) || workspaceName !== savedWorkspaceName;
+
+  // Until a token is saved, Credentials is the only usable section.
+  const needsCredentials = credInfo ? !credInfo.notion?.configured : false;
+  useEffect(() => {
+    if (needsCredentials) setActiveSection('credentials');
+  }, [needsCredentials]);
 
   // Test state
   const [testSteps, setTestSteps] = useState<TestStep[]>([]);
@@ -179,23 +188,13 @@ export function NotionAccordion() {
           <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }} className="overflow-hidden">
             <div className="border-t border-border bg-card">
               {/* Section nav */}
-              <div className="flex items-center gap-1 px-4 py-2 border-b border-border bg-secondary/20 overflow-x-auto">
-                {NOTION_SECTIONS.map(({ id, label, icon: Icon }) => (
-                  <button
-                    key={id}
-                    onClick={() => setActiveSection(id)}
-                    className={cn(
-                      'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all duration-150',
-                      activeSection === id
-                        ? 'bg-primary/15 text-primary border border-primary/25'
-                        : 'text-muted-foreground hover:text-foreground hover:bg-secondary',
-                    )}
-                  >
-                    <Icon className="w-3.5 h-3.5" />
-                    {label}
-                  </button>
-                ))}
-              </div>
+              <SectionTabs
+                sections={NOTION_SECTIONS}
+                active={activeSection}
+                onSelect={setActiveSection}
+                disabledIds={needsCredentials ? NOTION_SECTIONS.filter((s) => s.id !== 'credentials').map((s) => s.id) : undefined}
+                disabledTitle="Save credentials first"
+              />
 
               {/* Section content */}
               <div className="p-4">

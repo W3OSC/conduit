@@ -1105,6 +1105,9 @@ export interface CredentialsResponse {
   slack: ServiceCredential;
   discord: ServiceCredential;
   telegram: ServiceCredential;
+  gmail: ServiceCredential;
+  twitter: ServiceCredential;
+  notion: ServiceCredential;
 }
 
 // ─── Gmail types ──────────────────────────────────────────────────────────────

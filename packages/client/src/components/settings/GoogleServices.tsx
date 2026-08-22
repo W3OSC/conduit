@@ -12,7 +12,7 @@ import { useSyncStore } from '@/store';
 import { StatusBadge } from '@/components/shared/StatusDot';
 import { cn, timeAgo } from '@/lib/utils';
 import { toast } from '@/store';
-import { SectionHeader, SecretField, CopyableScope } from './shared';
+import { SectionHeader, SectionTabs, SecretField, CopyableScope } from './shared';
 import { PermissionsSection, type Service, type TestStep } from './ChatServiceAccordions';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -272,23 +272,7 @@ function GmailAccountAccordion({
           <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }} className="overflow-hidden">
             <div className="border-t border-border bg-card">
               {/* Section nav */}
-              <div className="flex items-center gap-1 px-4 py-2 border-b border-border bg-secondary/20 overflow-x-auto">
-                {GMAIL_SECTIONS.map(({ id, label, icon: Icon }) => (
-                  <button
-                    key={id}
-                    onClick={() => setActiveSection(id)}
-                    className={cn(
-                      'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all duration-150',
-                      activeSection === id
-                        ? 'bg-primary/15 text-primary border border-primary/25'
-                        : 'text-muted-foreground hover:text-foreground hover:bg-secondary',
-                    )}
-                  >
-                    <Icon className="w-3.5 h-3.5" />
-                    {label}
-                  </button>
-                ))}
-              </div>
+              <SectionTabs sections={GMAIL_SECTIONS} active={activeSection} onSelect={setActiveSection} />
 
               {/* Section content */}
               <div className="p-4">

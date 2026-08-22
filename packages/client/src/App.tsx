@@ -1,8 +1,9 @@
-import { lazy, Suspense, useState, useEffect } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { lazy, Suspense, useState, useEffect, useRef } from 'react';
+import { Routes, Route, Navigate, Link, useLocation, useNavigate } from 'react-router-dom';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { PlugZap, ArrowRight } from 'lucide-react';
 import Login from '@/pages/Login';
-import { uiAuth } from '@/lib/api';
+import { api, uiAuth } from '@/lib/api';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { TopBar } from '@/components/layout/TopBar';
 import { Toaster } from '@/components/shared/Toaster';
@@ -106,12 +107,52 @@ const queryClient = new QueryClient({
 
 function AppInner() {
   useWebSocket();
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  // Onboarding: with no services connected yet there is nothing to see anywhere
+  // else, so land the initial "/" view on the Connections settings and show a
+  // persistent CTA banner on every other page.
+  const { data: connections } = useQuery({
+    queryKey: ['connections'],
+    queryFn: api.connections,
+    refetchInterval: 30000,
+  });
+  const nothingConnected = connections
+    ? Object.values(connections).every((c) => c.status === 'disconnected')
+    : false;
+
+  // Decide the redirect once, when connection statuses first arrive — after
+  // that the user is free to navigate anywhere, including back to "/".
+  const onboardingDecided = useRef(false);
+  useEffect(() => {
+    if (!connections || onboardingDecided.current) return;
+    onboardingDecided.current = true;
+    if (nothingConnected && location.pathname === '/') {
+      navigate('/settings/connections', { replace: true });
+    }
+  }, [connections, nothingConnected, location.pathname, navigate]);
+
+  const showConnectBanner = nothingConnected && !location.pathname.startsWith('/settings');
 
   return (
     <div className="flex h-screen bg-background overflow-hidden">
       <Sidebar />
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <TopBar />
+        {showConnectBanner && (
+          <Link
+            to="/settings/connections"
+            className="flex items-center gap-2.5 px-4 py-2.5 bg-primary/10 border-b border-primary/20 text-sm text-primary hover:bg-primary/15 transition-colors"
+          >
+            <PlugZap className="w-4 h-4 flex-shrink-0" />
+            <span className="flex-1 min-w-0">
+              <span className="font-medium">No services connected.</span>{' '}
+              <span className="text-primary/80">Head to Settings to connect Slack, Discord, Telegram, Google, and more.</span>
+            </span>
+            <ArrowRight className="w-4 h-4 flex-shrink-0" />
+          </Link>
+        )}
         <main className="flex-1 overflow-hidden min-h-0 h-full">
           <Suspense fallback={<PageLoader />}>
             <Routes>

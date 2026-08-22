@@ -15,7 +15,7 @@ import { StatusBadge } from '@/components/shared/StatusDot';
 import { cn, timeAgo } from '@/lib/utils';
 import { CopyButton } from '@/components/shared/CopyButton';
 import { toast } from '@/store';
-import { SectionHeader, SecretField, TextField, Toggle } from './shared';
+import { SectionHeader, SectionTabs, SecretField, TextField, Toggle } from './shared';
 
 export type Service = 'slack' | 'discord' | 'telegram';
 export const SERVICES: Service[] = ['slack', 'discord', 'telegram'];
@@ -1176,6 +1176,13 @@ export function ServiceAccordion({ service }: { service: Service }) {
   const [activeSection, setActiveSection] = useState<SectionId>('overview');
   const isSyncing = syncProgress?.status === 'running';
 
+  // Until credentials are saved, Credentials is the only usable section.
+  const { data: credInfo } = useQuery({ queryKey: ['credentials'], queryFn: api.credentials });
+  const needsCredentials = credInfo ? !credInfo[service]?.configured : false;
+  useEffect(() => {
+    if (needsCredentials) setActiveSection('credentials');
+  }, [needsCredentials]);
+
   // Test state lives here so it survives accordion collapse/expand
   const [testSteps, setTestSteps] = useState<TestStep[]>([]);
   const [testRunning, setTestRunning] = useState(false);
@@ -1294,23 +1301,13 @@ export function ServiceAccordion({ service }: { service: Service }) {
           >
             <div className="border-t border-border bg-card">
               {/* Section nav tabs */}
-              <div className="flex items-center gap-1 px-4 py-2 border-b border-border bg-secondary/20 overflow-x-auto">
-                {SERVICE_SECTIONS.map(({ id, label, icon: Icon }) => (
-                  <button
-                    key={id}
-                    onClick={() => setActiveSection(id)}
-                    className={cn(
-                      'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all duration-150',
-                      activeSection === id
-                        ? 'bg-primary/15 text-primary border border-primary/25'
-                        : 'text-muted-foreground hover:text-foreground hover:bg-secondary',
-                    )}
-                  >
-                    <Icon className="w-3.5 h-3.5" />
-                    {label}
-                  </button>
-                ))}
-              </div>
+              <SectionTabs
+                sections={SERVICE_SECTIONS}
+                active={activeSection}
+                onSelect={setActiveSection}
+                disabledIds={needsCredentials ? SERVICE_SECTIONS.filter((s) => s.id !== 'credentials').map((s) => s.id) : undefined}
+                disabledTitle="Save credentials first"
+              />
 
               {/* Section content */}
               <div className="p-4">
