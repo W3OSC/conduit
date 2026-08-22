@@ -12,7 +12,7 @@ import { useSyncStore } from '@/store';
 import { StatusBadge } from '@/components/shared/StatusDot';
 import { cn, timeAgo } from '@/lib/utils';
 import { toast } from '@/store';
-import { SectionHeader, SecretField, CopyableScope } from './shared';
+import { SectionHeader, SectionTabs, SecretField, CopyableScope } from './shared';
 import { PermissionsSection, type Service, type TestStep } from './ChatServiceAccordions';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -247,11 +247,11 @@ function GmailAccountAccordion({
           <p className="text-sm font-medium truncate">{email}</p>
           <div className="flex items-center gap-3 mt-0.5 text-[11px] text-muted-foreground flex-wrap">
             <span className={cn('flex items-center gap-1', gmailStatus === 'connected' ? 'text-emerald-400' : gmailStatus === 'error' ? 'text-red-400' : '')}>
-              <span className={cn('w-1.5 h-1.5 rounded-full', gmailStatus === 'connected' ? 'bg-emerald-400' : gmailStatus === 'error' ? 'bg-red-400' : 'bg-warm-600')} />
+              <span className={cn('w-1.5 h-1.5 rounded-full', gmailStatus === 'connected' ? 'bg-emerald-400' : gmailStatus === 'error' ? 'bg-red-400' : 'bg-muted-foreground/40')} />
               Gmail
             </span>
             <span className={cn('flex items-center gap-1', calStatus === 'connected' ? 'text-emerald-400' : calStatus === 'error' ? 'text-red-400' : '')}>
-              <span className={cn('w-1.5 h-1.5 rounded-full', calStatus === 'connected' ? 'bg-emerald-400' : calStatus === 'error' ? 'bg-red-400' : 'bg-warm-600')} />
+              <span className={cn('w-1.5 h-1.5 rounded-full', calStatus === 'connected' ? 'bg-emerald-400' : calStatus === 'error' ? 'bg-red-400' : 'bg-muted-foreground/40')} />
               Calendar
             </span>
             {!tokenValid && <span className="text-primary">Token expired</span>}
@@ -272,23 +272,7 @@ function GmailAccountAccordion({
           <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }} className="overflow-hidden">
             <div className="border-t border-border bg-card">
               {/* Section nav */}
-              <div className="flex items-center gap-1 px-4 py-2 border-b border-border bg-secondary/20 overflow-x-auto">
-                {GMAIL_SECTIONS.map(({ id, label, icon: Icon }) => (
-                  <button
-                    key={id}
-                    onClick={() => setActiveSection(id)}
-                    className={cn(
-                      'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all duration-150',
-                      activeSection === id
-                        ? 'bg-primary/15 text-primary border border-primary/25'
-                        : 'text-muted-foreground hover:text-foreground hover:bg-secondary',
-                    )}
-                  >
-                    <Icon className="w-3.5 h-3.5" />
-                    {label}
-                  </button>
-                ))}
-              </div>
+              <SectionTabs sections={GMAIL_SECTIONS} active={activeSection} onSelect={setActiveSection} />
 
               {/* Section content */}
               <div className="p-4">
@@ -385,7 +369,7 @@ function GmailAccountAccordion({
                                 <span className="font-semibold text-primary">+{syncProgress!.messagesSaved!.toLocaleString()}</span> messages saved
                               </p>
                             )}
-                            <div className="h-0.5 bg-warm-700/60 rounded-full overflow-hidden ml-6">
+                            <div className="h-0.5 bg-muted-foreground/25 rounded-full overflow-hidden ml-6">
                               <motion.div className="h-full bg-primary rounded-full" animate={{ x: ['-100%', '100%'] }} transition={{ duration: 1.6, repeat: Infinity, ease: 'linear' }} />
                             </div>
                             <div className="flex justify-end">

@@ -60,7 +60,7 @@ function NotifItem({ n, onDismiss }: { n: AppNotification; onDismiss: (id: strin
       transition={{ duration: 0.15 }}
       className={cn(
         'group relative flex items-start gap-2.5 px-3 py-2.5 cursor-pointer',
-        'hover:bg-white/[0.04] transition-colors',
+        'hover:bg-secondary/60 transition-colors',
         !n.read && 'border-l-2 border-primary/60 pl-[10px]',
       )}
       onClick={handleClick}
@@ -121,7 +121,7 @@ export function NotificationCenter() {
       <button
         ref={btnRef}
         onClick={handleOpen}
-        className="relative flex items-center justify-center w-8 h-8 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/5 transition-all"
+        className="relative flex items-center justify-center w-8 h-8 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-all"
         aria-label="Notifications"
       >
         <Bell className="w-4 h-4" />

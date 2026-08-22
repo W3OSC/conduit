@@ -45,13 +45,24 @@ packages/
       websocket/   WebSocket hub
   client/          React UI (Vite, Tailwind CSS, TypeScript)
     src/
-      components/  Shared UI components
+      components/
+        shared/    Cross-app primitives (badges, skeletons, toasts, diffs)
+        layout/    Sidebar, top bar, notification centre
+        settings/  Connection/permission/security tabs
+        files/     Multi-source file browser (vaults, Drive, SMB, Notion)
       hooks/       React hooks
+      lib/         API client, utils, service theme
       pages/       Page-level components
-      store/       Client state
+      store/       Client state (Zustand)
+  mcp-server/      MCP server exposing the REST API as agent tools
 ```
 
-The server and client are separate npm workspaces. The server is a standard Express app with better-sqlite3 for synchronous SQLite access via Drizzle ORM. The client is a Vite + React SPA that the server serves in production.
+The three packages are npm workspaces. The server is a standard Express app with better-sqlite3 for synchronous SQLite access via Drizzle ORM. The client is a Vite + React SPA that the server serves in production. The MCP server is an optional stdio process that talks to the REST API like any other agent.
+
+Two conventions worth knowing before you add a route:
+
+- **Validate with zod.** Use the `validateQuery`/`validateBody`/`validateParams` middleware from `api/validate.ts` and read values back with `queryOf`/`bodyOf`/`paramsOf` so handler types come from the schema.
+- **Document it.** `src/__tests__/openapi-drift.test.ts` fails if a route is missing from the OpenAPI spec or vice versa. Call `documentRoute()` alongside the middleware; add to the allowlist only for genuinely internal endpoints, with a reason.
 
 ---
 

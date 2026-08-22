@@ -15,7 +15,7 @@ export function SectionHeader({ icon: Icon, title, subtitle }: {
 }) {
   return (
     <div className="flex items-start gap-3 mb-5">
-      <div className="w-8 h-8 rounded-lg bg-white/5 border border-white/8 flex items-center justify-center flex-shrink-0 mt-0.5">
+      <div className="w-8 h-8 rounded-lg bg-secondary border border-border flex items-center justify-center flex-shrink-0 mt-0.5">
         <Icon className="w-4 h-4 text-muted-foreground" />
       </div>
       <div>
@@ -91,7 +91,7 @@ export function Toggle({ checked, onChange, label, description }: {
         onClick={() => onChange(!checked)}
         className={cn(
           'relative flex-shrink-0 w-10 h-6 rounded-full transition-all duration-200 focus:outline-none',
-          checked ? 'bg-primary shadow-amber' : 'bg-warm-700',
+          checked ? 'bg-primary shadow-amber' : 'bg-muted-foreground/30',
         )}
       >
         <span className={cn(
@@ -99,6 +99,41 @@ export function Toggle({ checked, onChange, label, description }: {
           checked ? 'left-5' : 'left-1',
         )} />
       </button>
+    </div>
+  );
+}
+
+export function SectionTabs<T extends string>({ sections, active, onSelect, disabledIds, disabledTitle }: {
+  sections: ReadonlyArray<{ id: T; label: string; icon: React.ComponentType<{ className?: string }> }>;
+  active: T;
+  onSelect: (id: T) => void;
+  disabledIds?: readonly T[];
+  disabledTitle?: string;
+}) {
+  return (
+    <div className="flex items-center gap-1 px-4 py-2 border-b border-border bg-secondary/20 overflow-x-auto">
+      {sections.map(({ id, label, icon: Icon }) => {
+        const disabled = disabledIds?.includes(id) ?? false;
+        return (
+          <button
+            key={id}
+            onClick={() => onSelect(id)}
+            disabled={disabled}
+            title={disabled ? disabledTitle : undefined}
+            className={cn(
+              'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all duration-150',
+              active === id
+                ? 'bg-primary/15 text-primary border border-primary/25'
+                : disabled
+                  ? 'text-muted-foreground/40 cursor-not-allowed'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-secondary',
+            )}
+          >
+            <Icon className="w-3.5 h-3.5" />
+            {label}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -133,7 +168,7 @@ export function MiniToggle({ checked, onChange, disabled }: { checked: boolean; 
       onClick={() => !disabled && onChange(!checked)}
       className={cn(
         'relative w-9 h-5 rounded-full transition-all duration-200 flex-shrink-0',
-        checked ? 'bg-primary shadow-amber' : 'bg-warm-700',
+        checked ? 'bg-primary shadow-amber' : 'bg-muted-foreground/30',
         disabled && 'opacity-40 cursor-not-allowed',
       )}
     >

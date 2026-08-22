@@ -12,7 +12,7 @@ import { useConnectionStore, useSyncStore } from '@/store';
 import { StatusBadge } from '@/components/shared/StatusDot';
 import { cn, timeAgo } from '@/lib/utils';
 import { toast } from '@/store';
-import { SectionHeader } from './shared';
+import { SectionHeader, SectionTabs } from './shared';
 import { PermissionsSection, type Service, type TestStep } from './ChatServiceAccordions';
 
 type TwitterSectionId = 'overview' | 'credentials' | 'permissions' | 'sync' | 'data';
@@ -35,6 +35,12 @@ export function TwitterAccordion() {
   const isRunning = syncProgress?.status === 'running';
 
   const status = connStatus?.status ?? (authStatus?.connected ? 'connected' : 'disconnected');
+
+  // Until cookie credentials are saved, Credentials is the only usable section.
+  const needsCredentials = authStatus ? !authStatus.configured : false;
+  useEffect(() => {
+    if (needsCredentials) setActiveSection('credentials');
+  }, [needsCredentials]);
 
   // Credentials state
   const [cookieString, setCookieString] = useState('');
@@ -190,23 +196,13 @@ export function TwitterAccordion() {
           <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }} className="overflow-hidden">
             <div className="border-t border-border bg-card">
               {/* Section nav */}
-              <div className="flex items-center gap-1 px-4 py-2 border-b border-border bg-secondary/20 overflow-x-auto">
-                {TWITTER_SECTIONS.map(({ id, label, icon: Icon }) => (
-                  <button
-                    key={id}
-                    onClick={() => setActiveSection(id)}
-                    className={cn(
-                      'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all duration-150',
-                      activeSection === id
-                        ? 'bg-primary/15 text-primary border border-primary/25'
-                        : 'text-muted-foreground hover:text-foreground hover:bg-secondary',
-                    )}
-                  >
-                    <Icon className="w-3.5 h-3.5" />
-                    {label}
-                  </button>
-                ))}
-              </div>
+              <SectionTabs
+                sections={TWITTER_SECTIONS}
+                active={activeSection}
+                onSelect={setActiveSection}
+                disabledIds={needsCredentials ? TWITTER_SECTIONS.filter((s) => s.id !== 'credentials').map((s) => s.id) : undefined}
+                disabledTitle="Save credentials first"
+              />
 
               {/* Section content */}
               <div className="p-4">
@@ -307,7 +303,7 @@ export function TwitterAccordion() {
                                 <span className="font-semibold text-primary">+{syncProgress!.messagesSaved!.toLocaleString()}</span> DMs saved
                               </p>
                             )}
-                            <div className="h-0.5 bg-warm-700/60 rounded-full overflow-hidden ml-6">
+                            <div className="h-0.5 bg-muted-foreground/25 rounded-full overflow-hidden ml-6">
                               <motion.div className="h-full bg-primary rounded-full" animate={{ x: ['-100%', '100%'] }} transition={{ duration: 1.6, repeat: Infinity, ease: 'linear' }} />
                             </div>
                             <div className="flex justify-end">

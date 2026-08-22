@@ -126,7 +126,7 @@ function ChatRow({
   return (
     <button
       onClick={onOpen}
-      className="w-full flex items-center gap-2.5 px-2 py-2 rounded-xl text-left transition-colors hover:bg-white/[0.04] group"
+      className="w-full flex items-center gap-2.5 px-2 py-2 rounded-xl text-left transition-colors hover:bg-secondary/60 group"
     >
       {entry.avatarUrl ? (
         <img src={entry.avatarUrl} alt={entry.name} className="w-7 h-7 rounded-full object-cover flex-shrink-0" />
@@ -285,7 +285,7 @@ function InboxEmailSection() {
               <button
                 key={msg.gmailId}
                 onClick={() => navigate('/email')}
-                className="w-full flex items-start gap-2.5 py-2.5 px-1 text-left hover:bg-white/[0.03] transition-colors rounded-lg group"
+                className="w-full flex items-start gap-2.5 py-2.5 px-1 text-left hover:bg-secondary/50 transition-colors rounded-lg group"
               >
                 {/* Star indicator — fixed width column so text always aligns */}
                 <div className="w-3.5 flex-shrink-0 mt-0.5">
@@ -501,7 +501,7 @@ function InboxCalendarSection() {
                       onClick={() => navigate('/calendar')}
                       className={cn(
                         'w-full flex items-start gap-3 rounded-xl px-3 py-2 text-left transition-colors',
-                        'hover:bg-white/[0.04]',
+                        'hover:bg-secondary/60',
                         soon && 'bg-primary/5 border border-primary/15',
                       )}
                     >
@@ -561,7 +561,7 @@ function TweetMicroRow({ tweet, onOpen }: { tweet: Tweet; onOpen: () => void }) 
   return (
     <button
       onClick={onOpen}
-      className="w-full flex items-start gap-2 py-2 px-2 rounded-xl hover:bg-white/[0.04] transition-colors text-left group"
+      className="w-full flex items-start gap-2 py-2 px-2 rounded-xl hover:bg-secondary/60 transition-colors text-left group"
     >
       {/* Avatar */}
       <div

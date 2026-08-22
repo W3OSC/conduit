@@ -13,8 +13,45 @@ import { requireRead, isSendEnabled, isApprovalRequired, filterGmailByLabels } f
 import { getConnectionManager } from '../connections/manager.js';
 import { broadcast } from '../websocket/hub.js';
 import type { GmailAction } from '../sync/gmail.js';
+import {
+  z, booleanFlag, paginationSchema, requiredString,
+  bodyOf, paramsOf, queryOf, validateBody, validateParams, validateQuery,
+} from './validate.js';
+import { documentRoute } from './openapi-registry.js';
 
 const router = Router();
+
+// ── Request schemas ───────────────────────────────────────────────────────────
+
+const MessagesQuery = z.object({
+  q: z.string().optional().openapi({ description: 'Substring match on subject, sender and snippet.' }),
+  label: z.string().optional().openapi({ description: 'Gmail label id to filter by.' }),
+  unread: booleanFlag.openapi({ description: 'Only unread messages.' }),
+  starred: booleanFlag.openapi({ description: 'Only starred messages.' }),
+  thread_id: z.string().optional(),
+  ...paginationSchema(50, 200),
+});
+
+const MessageIdParam = z.object({ id: z.string().min(1) });
+const ThreadIdParam = z.object({ threadId: z.string().min(1) });
+
+/**
+ * Gmail actions are a discriminated union owned by `sync/gmail.ts`; only the
+ * discriminant is validated here and every other field is passed through
+ * untouched (`looseObject`), so this stays a shape check rather than a
+ * behaviour change.
+ */
+const ActionBody = z.looseObject({
+  action: requiredString('action').openapi({
+    description: 'Which Gmail action to queue, e.g. reply, archive, trash, mark_read.',
+  }),
+});
+
+documentRoute({ method: 'get', path: '/gmail/messages', query: MessagesQuery });
+documentRoute({ method: 'get', path: '/gmail/messages/{id}', params: MessageIdParam });
+documentRoute({ method: 'get', path: '/gmail/messages/{id}/body', params: MessageIdParam });
+documentRoute({ method: 'get', path: '/gmail/threads/{threadId}', params: ThreadIdParam });
+documentRoute({ method: 'post', path: '/gmail/actions', body: ActionBody });
 
 type GmailRow = typeof gmailMessages.$inferSelect;
 
@@ -45,11 +82,8 @@ router.get('/status', optionalAuth, requireRead('gmail'), (req, res) => {
 });
 
 // GET /api/gmail/messages
-router.get('/messages', optionalAuth, requireRead('gmail'), trackAiCall, (req, res) => {
-  const {
-    q, label, unread, starred,
-    limit = '50', offset = '0', thread_id,
-  } = req.query as Record<string, string>;
+router.get('/messages', optionalAuth, requireRead('gmail'), trackAiCall, validateQuery(MessagesQuery), (req, res) => {
+  const { q, label, unread, starred, limit: lim, offset: off, thread_id } = queryOf(MessagesQuery, req);
 
   const db = getDb();
   const apiKeyId = (req as AuthedRequest).apiKey?.id ?? null;
@@ -59,8 +93,8 @@ router.get('/messages', optionalAuth, requireRead('gmail'), trackAiCall, (req, r
   // stalled the entire server).
   const conds: SQL[] = [];
   if (thread_id) conds.push(eq(gmailMessages.threadId, thread_id));
-  if (unread === 'true') conds.push(eq(gmailMessages.isRead, false));
-  if (starred === 'true') conds.push(eq(gmailMessages.isStarred, true));
+  if (unread) conds.push(eq(gmailMessages.isRead, false));
+  if (starred) conds.push(eq(gmailMessages.isStarred, true));
   if (label) conds.push(like(gmailMessages.labels, `%"${label.replace(/[%_"]/g, '')}"%`));
   if (q) {
     const term = `%${q.replace(/[%_]/g, '')}%`;
@@ -73,9 +107,6 @@ router.get('/messages', optionalAuth, requireRead('gmail'), trackAiCall, (req, r
     if (c) conds.push(c);
   }
   const where = conds.length > 0 ? and(...conds) : undefined;
-
-  const lim = Math.min(parseInt(limit) || 50, 200);
-  const off = parseInt(offset) || 0;
 
   let baseQuery = db.select().from(gmailMessages).orderBy(desc(gmailMessages.internalDate)).$dynamic();
   if (where) baseQuery = baseQuery.where(where);
@@ -102,10 +133,10 @@ router.get('/messages', optionalAuth, requireRead('gmail'), trackAiCall, (req, r
 });
 
 // GET /api/gmail/messages/:id
-router.get('/messages/:id', optionalAuth, requireRead('gmail'), trackAiCall, (req, res) => {
+router.get('/messages/:id', optionalAuth, requireRead('gmail'), trackAiCall, validateParams(MessageIdParam), (req, res) => {
   const db = getDb();
   const msg = db.select().from(gmailMessages)
-    .where(eq(gmailMessages.gmailId, req.params['id'] as string))
+    .where(eq(gmailMessages.gmailId, paramsOf(MessageIdParam, req).id))
     .get();
   if (!msg) return res.status(404).json({ error: 'Message not found' });
   if (!canReadMessage(msg, (req as AuthedRequest).apiKey?.id)) {
@@ -115,17 +146,18 @@ router.get('/messages/:id', optionalAuth, requireRead('gmail'), trackAiCall, (re
 });
 
 // GET /api/gmail/messages/:id/body — live fetch from Gmail API
-router.get('/messages/:id/body', optionalAuth, requireRead('gmail'), trackAiCall, async (req, res) => {
+router.get('/messages/:id/body', optionalAuth, requireRead('gmail'), trackAiCall, validateParams(MessageIdParam), async (req, res) => {
   const manager = getConnectionManager();
   const gmail = manager.getGmail();
   if (!gmail) return res.status(503).json({ error: 'Gmail not connected' });
+  const { id } = paramsOf(MessageIdParam, req);
 
   // Label-restricted keys may only fetch bodies of messages they can see locally.
   const apiKeyId = (req as AuthedRequest).apiKey?.id;
   if (apiKeyId) {
     const db = getDb();
     const msg = db.select().from(gmailMessages)
-      .where(eq(gmailMessages.gmailId, req.params['id'] as string))
+      .where(eq(gmailMessages.gmailId, id))
       .get();
     if (!msg || !canReadMessage(msg, apiKeyId)) {
       return res.status(403).json({ error: 'Reading this message is not permitted for this API key' });
@@ -133,7 +165,7 @@ router.get('/messages/:id/body', optionalAuth, requireRead('gmail'), trackAiCall
   }
 
   try {
-    const body = await gmail.fetchBody(req.params['id'] as string);
+    const body = await gmail.fetchBody(id);
     res.json(body);
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
@@ -141,14 +173,15 @@ router.get('/messages/:id/body', optionalAuth, requireRead('gmail'), trackAiCall
 });
 
 // GET /api/gmail/threads/:threadId
-router.get('/threads/:threadId', optionalAuth, requireRead('gmail'), trackAiCall, (req, res) => {
+router.get('/threads/:threadId', optionalAuth, requireRead('gmail'), trackAiCall, validateParams(ThreadIdParam), (req, res) => {
   const db = getDb();
+  const { threadId } = paramsOf(ThreadIdParam, req);
   let messages = db.select().from(gmailMessages)
-    .where(eq(gmailMessages.threadId, req.params['threadId'] as string))
+    .where(eq(gmailMessages.threadId, threadId))
     .orderBy(gmailMessages.internalDate)
     .all();
   messages = filterGmailByLabels(messages, rowLabels, (req as AuthedRequest).apiKey?.id);
-  res.json({ messages, threadId: req.params['threadId'] });
+  res.json({ messages, threadId });
 });
 
 // GET /api/gmail/labels — live from Gmail API
@@ -166,11 +199,9 @@ router.get('/labels', optionalAuth, requireRead('gmail'), trackAiCall, async (re
 });
 
 // POST /api/gmail/actions — ALL actions create outbox items for approval
-router.post('/actions', optionalAuth, (req, res) => {
+router.post('/actions', optionalAuth, validateBody(ActionBody), (req, res) => {
   const authedReq = req as AuthedRequest;
-  const action = req.body as GmailAction;
-
-  if (!action?.action) return res.status(400).json({ error: 'action is required' });
+  const action = bodyOf(ActionBody, req) as unknown as GmailAction;
 
   const db = getDb();
   const apiKeyId = authedReq.apiKey?.id ?? null;

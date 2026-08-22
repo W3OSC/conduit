@@ -64,12 +64,15 @@
   --text-2xs: 0.6875rem;
   --text-2xs--line-height: 1rem;
 
-  /* ── Box shadows ── */
-  --shadow-warm-sm:    0 1px 3px hsl(20 6% 4% / 0.4);
-  --shadow-warm-md:    0 4px 16px hsl(20 6% 4% / 0.5);
-  --shadow-warm-lg:    0 8px 32px hsl(20 6% 4% / 0.6);
+  /* ── Box shadows ──
+     The cast color/alpha live in --shadow-cast-* (see :root / html.light)
+     so shadows stay visible-but-subtle in light mode instead of stamping
+     near-black blocks onto a white page. */
+  --shadow-warm-sm:    0 1px 3px hsl(var(--shadow-cast) / var(--shadow-cast-sm));
+  --shadow-warm-md:    0 4px 16px hsl(var(--shadow-cast) / var(--shadow-cast-md));
+  --shadow-warm-lg:    0 8px 32px hsl(var(--shadow-cast) / var(--shadow-cast-lg));
   --shadow-amber:      0 0 24px hsl(var(--primary) / 0.18);
-  --shadow-inner-warm: inset 0 1px 2px hsl(20 6% 4% / 0.35);
+  --shadow-inner-warm: inset 0 1px 2px hsl(var(--shadow-cast) / var(--shadow-cast-inner));
   --shadow-inner-light: inset 0 1px 0 hsl(0 0% 100% / 0.05);
 
   /* ── Background images ── */
@@ -94,6 +97,18 @@
     --primary-l:           55%;
     --primary-fg-dark:     20 6% 7%;
     --primary-fg-light:    0 0% 100%;
+
+    /* ── Shadow cast (theme-aware; consumed by --shadow-warm-* and .btn-primary) ── */
+    --shadow-cast:         20 6% 4%;
+    --shadow-cast-sm:      0.4;
+    --shadow-cast-md:      0.5;
+    --shadow-cast-lg:      0.6;
+    --shadow-cast-inner:   0.35;
+    /* Highlight sheen along the top edge of raised surfaces. Pure white reads
+       as a bevel on dark; on light it just washes the edge out. */
+    --sheen:               0 0% 100%;
+    --sheen-btn:           0.18;
+    --sheen-btn-hover:     0.22;
 
     /* ── Warm Charcoal Dark (default) ── */
     --background:          20 6% 7%;
@@ -165,6 +180,17 @@
     --border:              30 10% 86%;
     --input:               30 10% 88%;
     --ring:                var(--primary-h) var(--primary-s) var(--primary-l);
+
+    /* Softer, warmer-grey cast at much lower alpha — a 0.5-alpha near-black
+       shadow reads as a dirty smudge on a white page. */
+    --shadow-cast:         24 12% 38%;
+    --shadow-cast-sm:      0.10;
+    --shadow-cast-md:      0.13;
+    --shadow-cast-lg:      0.16;
+    --shadow-cast-inner:   0.09;
+    --sheen:               0 0% 100%;
+    --sheen-btn:           0.28;
+    --sheen-btn-hover:     0.34;
   }
 }
 
@@ -223,6 +249,27 @@
     background: linear-gradient(180deg, hsl(var(--muted)) 0%, hsl(var(--card)) 100%);
   }
 
+  /* ── Light-mode tuning for the dark-tuned effects above ──
+     On dark these read as a faint bloom; replayed unchanged on white they
+     turn into muddy amber blocks, so light gets its own alphas/direction. */
+  html.light .glow-amber {
+    box-shadow: 0 0 0 1px hsl(var(--primary) / 0.35),
+                0 2px 12px hsl(var(--primary) / 0.20);
+  }
+  html.light .glow-amber-sm {
+    box-shadow: 0 0 0 1px hsl(var(--primary) / 0.28),
+                0 1px 6px hsl(var(--primary) / 0.14);
+  }
+  html.light .glow-primary { box-shadow: 0 2px 14px hsl(var(--primary) / 0.22); }
+
+  html.light .amber-surface {
+    background: linear-gradient(140deg, hsl(var(--primary) / 0.13) 0%, transparent 62%);
+  }
+  /* Inverted: on light, the lighter surface belongs on top. */
+  html.light .warm-gradient {
+    background: linear-gradient(180deg, hsl(var(--card)) 0%, hsl(var(--muted)) 100%);
+  }
+
   /* Glass */
   .glass {
     backdrop-filter: blur(20px) saturate(1.5);
@@ -267,13 +314,13 @@
     background: hsl(var(--primary));
     color: hsl(var(--primary-foreground));
     padding: 0.5rem 1.125rem;
-    box-shadow: 0 1px 3px hsl(20 6% 4% / 0.5),
-                inset 0 1px 0 hsl(0 0% 100% / 0.18);
+    box-shadow: 0 1px 3px hsl(var(--shadow-cast) / var(--shadow-cast-md)),
+                inset 0 1px 0 hsl(var(--sheen) / var(--sheen-btn));
   }
   .btn-primary:hover:not(:disabled) {
     background: hsl(var(--primary-h) var(--primary-s) calc(var(--primary-l) + 5%));
     box-shadow: 0 2px 10px hsl(var(--primary) / 0.35),
-                inset 0 1px 0 hsl(0 0% 100% / 0.22);
+                inset 0 1px 0 hsl(var(--sheen) / var(--sheen-btn-hover));
     transform: translateY(-0.5px);
   }
   .btn-primary:active:not(:disabled) { transform: translateY(0); }
@@ -282,18 +329,18 @@
   .btn-secondary {
     @apply inline-flex items-center justify-center gap-2 rounded-xl border border-border
            bg-secondary text-sm font-medium text-foreground/80
-           hover:text-foreground hover:bg-secondary/70 hover:border-white/10
+           hover:text-foreground hover:bg-secondary/70 hover:border-muted-foreground/30
            transition-all duration-150 select-none
            disabled:opacity-40 disabled:cursor-not-allowed;
     padding: 0.5rem 1.125rem;
-    box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.04);
+    box-shadow: inset 0 1px 0 hsl(var(--sheen) / 0.04);
   }
 
   /* Ghost button */
   .btn-ghost {
     @apply inline-flex items-center justify-center gap-1.5 rounded-lg
            text-sm font-medium text-muted-foreground
-           hover:text-foreground hover:bg-white/5
+           hover:text-foreground hover:bg-secondary/60
            transition-all duration-150 select-none
            disabled:opacity-40 disabled:cursor-not-allowed;
     padding: 0.375rem 0.75rem;
@@ -334,22 +381,32 @@
   .chip-sky    { @apply border-sky-500/25    bg-sky-500/10    text-sky-400;    }
   .chip-violet { @apply border-violet-500/25 bg-violet-500/10 text-violet-400; }
 
+  /* The -400 text on a /10 tint recipe above is built for a near-black page;
+     on white those pairs land around 2:1 contrast. Light mode keeps the same
+     hues but drops to -600/-700 text over a slightly stronger tint. */
+  html.light .chip-amber   { @apply border-amber-600/30   bg-amber-500/15   text-amber-700;   }
+  html.light .chip-emerald { @apply border-emerald-600/30 bg-emerald-500/15 text-emerald-700; }
+  html.light .chip-red     { @apply border-red-600/30     bg-red-500/12     text-red-700;     }
+  html.light .chip-zinc    { @apply border-zinc-400/50    bg-zinc-500/12    text-zinc-600;    }
+  html.light .chip-sky     { @apply border-sky-600/30     bg-sky-500/15     text-sky-700;     }
+  html.light .chip-violet  { @apply border-violet-600/30  bg-violet-500/12  text-violet-700;  }
+
   /* Card */
   .card-warm {
     @apply rounded-2xl border border-border bg-card;
-    box-shadow: 0 1px 3px hsl(var(--background) / 0.6),
-                inset 0 1px 0 hsl(0 0% 100% / 0.025);
+    box-shadow: 0 1px 3px hsl(var(--shadow-cast) / var(--shadow-cast-lg)),
+                inset 0 1px 0 hsl(var(--sheen) / 0.025);
   }
   .card-warm-hover {
     @apply rounded-2xl border border-border bg-card transition-all duration-200;
-    box-shadow: 0 1px 3px hsl(var(--background) / 0.6),
-                inset 0 1px 0 hsl(0 0% 100% / 0.025);
+    box-shadow: 0 1px 3px hsl(var(--shadow-cast) / var(--shadow-cast-lg)),
+                inset 0 1px 0 hsl(var(--sheen) / 0.025);
   }
   .card-warm-hover:hover {
     border-color: hsl(var(--primary) / 0.15);
     box-shadow: 0 0 0 1px hsl(var(--primary) / 0.08),
-                0 4px 20px hsl(var(--background) / 0.6),
-                inset 0 1px 0 hsl(0 0% 100% / 0.03);
+                0 4px 20px hsl(var(--shadow-cast) / var(--shadow-cast-lg)),
+                inset 0 1px 0 hsl(var(--sheen) / 0.03);
     transform: translateY(-1px);
   }
 
@@ -360,6 +417,20 @@
 
   /* Divider */
   .divider { @apply h-px bg-border; }
+
+  /* Recharts' accessibility layer makes every chart surface focusable, and
+     Chromium draws the UA focus ring around the whole plot on click (SVG
+     elements match :focus-visible even for mouse focus). Keyboard chart
+     navigation still works — the tooltip is the visible response. */
+  .recharts-wrapper:focus,
+  .recharts-wrapper:focus-visible,
+  .recharts-surface:focus,
+  .recharts-surface:focus-visible {
+    outline: none;
+  }
+  .recharts-wrapper {
+    @apply select-none;
+  }
 }
 
 /* ─────────────────────────────────────────────────────────── */
@@ -408,6 +479,7 @@
 /* ─────────────────────────────────────────────────────────── */
 /* Schedule-X calendar theme overrides */
 .sx-calendar-wrapper {
+  --sx-event-text: #ffffff;
   --sx-color-primary: hsl(var(--primary));
   --sx-color-primary-container: hsl(var(--primary) / 0.15);
   --sx-color-on-primary: #ffffff;
@@ -467,14 +539,16 @@
   padding: 2px 6px !important;
 }
 
-/* Force white text on all event chips regardless of calendar color */
+/* Force a single event-text color regardless of calendar color. Schedule-X
+   tints event chips from a light palette, so white text is only legible on
+   the dark theme — light mode gets the page foreground instead. */
 .sx-calendar-wrapper .sx__event *,
 .sx-calendar-wrapper .sx__time-grid-event-title,
 .sx-calendar-wrapper .sx__time-grid-event-time,
 .sx-calendar-wrapper .sx__title-and-time-compact,
 .sx-calendar-wrapper .sx__month-grid-event-text,
 .sx-calendar-wrapper .sx__date-grid-event-text {
-  color: #ffffff !important;
+  color: var(--sx-event-text) !important;
 }
 
 .sx-calendar-wrapper .sx__view-selection-dropdown {
@@ -491,6 +565,10 @@
 .sx-calendar-wrapper button:hover {
   background: hsl(var(--secondary));
   border-radius: 8px;
+}
+
+html.light .sx-calendar-wrapper {
+  --sx-event-text: hsl(var(--foreground));
 }
 
 /* ─────────────────────────────────────────────────────────── */

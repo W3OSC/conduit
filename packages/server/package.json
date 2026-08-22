@@ -14,6 +14,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@asteasolutions/zod-to-openapi": "^9.1.0",
     "@marsaud/smb2": "^0.18.0",
     "@notionhq/client": "^5.17.0",
     "@simplewebauthn/server": "^13.3.0",
@@ -33,7 +34,8 @@
     "otplib": "^13.4.0",
     "simple-git": "^3.35.2",
     "telegram": "^2.26.22",
-    "ws": "^8.20.0"
+    "ws": "^8.20.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",

@@ -319,12 +319,12 @@ export function SmbSharesTab() {
   return (
     <div className="flex gap-0 min-h-[320px]">
       {/* Left: share list */}
-      <div className="w-48 flex-shrink-0 border-r border-white/8 flex flex-col">
-        <div className="px-3 py-2 border-b border-white/8 flex items-center justify-between">
+      <div className="w-48 flex-shrink-0 border-r border-border flex flex-col">
+        <div className="px-3 py-2 border-b border-border flex items-center justify-between">
           <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Shares</span>
           <button
             onClick={() => setSelectedId('new')}
-            className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+            className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors"
             title="Add share"
           >
             <Plus className="w-3.5 h-3.5" />
@@ -343,7 +343,7 @@ export function SmbSharesTab() {
                 onClick={() => setSelectedId(s.id)}
                 className={cn(
                   'w-full flex items-center gap-2 px-3 py-2 text-left text-xs transition-colors',
-                  isSelected ? 'bg-primary/10 text-primary' : 'text-foreground hover:bg-white/5',
+                  isSelected ? 'bg-primary/10 text-primary' : 'text-foreground hover:bg-secondary/60',
                 )}
               >
                 <span className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0',
@@ -354,12 +354,12 @@ export function SmbSharesTab() {
             );
           })}
         </div>
-        <div className="border-t border-white/8 p-2">
+        <div className="border-t border-border p-2">
           <button
             onClick={() => setSelectedId('new')}
             className={cn(
               'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs transition-colors',
-              selectedId === 'new' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-white/5 hover:text-foreground',
+              selectedId === 'new' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-secondary/60 hover:text-foreground',
             )}
           >
             <Plus className="w-3.5 h-3.5 flex-shrink-0" />

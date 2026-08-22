@@ -323,7 +323,7 @@ function ContactDetail({ contact, onClose }: { contact: MergedContact; onClose: 
                   <button
                     key={g.id}
                     onClick={() => openInChatAt(g.id, g.name)}
-                    className="flex items-center gap-1 chip chip-zinc hover:bg-warm-700/80 transition-colors text-xs"
+                    className="flex items-center gap-1 chip chip-zinc hover:bg-secondary transition-colors text-xs"
                     title={`Open ${g.name} in Chat`}
                   >
                     <Hash className="w-3 h-3 opacity-60" />
@@ -399,7 +399,7 @@ function ContactRow({ contact, selected, onClick }: {
       onClick={onClick}
       className={cn(
         'w-full flex items-center gap-3 px-4 py-3 border-b border-border/60 text-left transition-colors',
-        selected ? 'bg-primary/8 border-l-2 border-l-primary' : 'hover:bg-white/[0.025] border-l-2 border-l-transparent',
+        selected ? 'bg-primary/8 border-l-2 border-l-primary' : 'hover:bg-secondary/50 border-l-2 border-l-transparent',
       )}
     >
       <ContactAvatar contact={contact} size={10} />

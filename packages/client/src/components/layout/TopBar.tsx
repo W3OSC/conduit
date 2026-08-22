@@ -10,7 +10,7 @@ import { api } from '@/lib/api';
 
 const ROUTE_LABELS: Record<string, { title: string; subtitle: string }> = {
   '/':            { title: 'Inbox',       subtitle: 'Everything new across all your platforms' },
-  '/dashboard':   { title: 'Dashboard',   subtitle: 'Overview of your messaging ecosystem' },
+  '/dashboard':   { title: 'Dashboard',   subtitle: 'Message flow, approvals, and channel health' },
   '/chat':        { title: 'Chat',        subtitle: 'Your conversations across all services' },
   '/outbox':      { title: 'Outbox',      subtitle: 'Pending and sent message requests' },
   '/contacts':    { title: 'Contacts',    subtitle: 'People you interact with across all services' },

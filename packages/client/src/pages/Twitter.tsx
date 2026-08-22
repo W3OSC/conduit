@@ -128,7 +128,7 @@ function TweetCard({ tweet, onThread, compact }: TweetCardProps) {
   });
 
   return (
-    <div className={cn('border-b border-border px-4 py-3.5 hover:bg-white/[0.02] transition-colors', compact && 'px-3 py-2.5')}>
+    <div className={cn('border-b border-border px-4 py-3.5 hover:bg-secondary/40 transition-colors', compact && 'px-3 py-2.5')}>
       <div className="flex gap-3">
         <TweetAvatar tweet={tweet} size={compact ? 8 : 10} />
         <div className="flex-1 min-w-0">
@@ -218,7 +218,7 @@ function ProfileCard({ profile, onTweets }: { profile: TwitterProfile; onTweets?
   });
 
   return (
-    <div className="flex items-start gap-3 border-b border-border px-4 py-3.5 hover:bg-white/[0.02] transition-colors">
+    <div className="flex items-start gap-3 border-b border-border px-4 py-3.5 hover:bg-secondary/40 transition-colors">
       <TwitterAvatar avatarUrl={profile.avatar} name={profile.name} username={profile.username} size={10} />
       <div className="flex-1 min-w-0">
         <div className="flex items-start justify-between gap-2">
@@ -317,7 +317,7 @@ function DmTab() {
                   onClick={() => setSelectedConv(conv)}
                   className={cn(
                     'w-full flex items-center gap-3 px-4 py-3 border-b border-border/50 text-left transition-colors',
-                    isSelected ? 'bg-primary/8 border-l-2 border-l-primary' : 'hover:bg-white/[0.025] border-l-2 border-l-transparent',
+                    isSelected ? 'bg-primary/8 border-l-2 border-l-primary' : 'hover:bg-secondary/50 border-l-2 border-l-transparent',
                   )}
                 >
                   <TwitterAvatar
@@ -455,7 +455,7 @@ function FeedTab() {
             onClick={() => setView(id)}
             className={cn(
               'flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors text-left',
-              view === id ? 'bg-primary/12 text-primary' : 'text-muted-foreground hover:text-foreground hover:bg-white/5',
+              view === id ? 'bg-primary/12 text-primary' : 'text-muted-foreground hover:text-foreground hover:bg-secondary/60',
             )}
           >
             <Icon className="w-4 h-4 flex-shrink-0" />
@@ -895,7 +895,7 @@ function AnalyticsTab({ handle }: { handle: string }) {
             style={{ height: Math.min(sortedTweets.length * 56, 400) }}
             data={sortedTweets}
             itemContent={(_, tweet: TweetAnalytic) => (
-              <div className="grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-2 px-4 py-3 border-b border-border/50 hover:bg-white/[0.02] transition-colors items-center text-xs">
+              <div className="grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-2 px-4 py-3 border-b border-border/50 hover:bg-secondary/40 transition-colors items-center text-xs">
                 <div className="flex items-center gap-2 min-w-0">
                   <p className="truncate text-foreground/85 flex-1">{tweet.text}</p>
                   {tweet.url && (

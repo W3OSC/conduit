@@ -4,7 +4,8 @@
   "private": true,
   "workspaces": [
     "packages/server",
-    "packages/client"
+    "packages/client",
+    "packages/mcp-server"
   ],
   "scripts": {
     "dev": "concurrently -n server,client -c blue,green \"PORT=3100 npm run dev --workspace=packages/server\" \"wait-on tcp:3100 && npm run dev --workspace=packages/client\"",

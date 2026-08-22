@@ -15,7 +15,7 @@ import { StatusBadge } from '@/components/shared/StatusDot';
 import { cn, timeAgo } from '@/lib/utils';
 import { CopyButton } from '@/components/shared/CopyButton';
 import { toast } from '@/store';
-import { SectionHeader, SecretField, TextField, Toggle } from './shared';
+import { SectionHeader, SectionTabs, SecretField, TextField, Toggle } from './shared';
 
 export type Service = 'slack' | 'discord' | 'telegram';
 export const SERVICES: Service[] = ['slack', 'discord', 'telegram'];
@@ -268,7 +268,7 @@ function OverviewSection({ service, testSteps, testRunning, runTest, clearTestSt
           )}
 
           {/* Animated progress bar */}
-          <div className="h-0.5 bg-warm-700/60 rounded-full overflow-hidden ml-6">
+          <div className="h-0.5 bg-muted-foreground/25 rounded-full overflow-hidden ml-6">
             <motion.div
               className="h-full bg-primary rounded-full"
               animate={{ x: ['-100%', '100%'] }}
@@ -578,7 +578,7 @@ function GuildRow({ guild, checked, onToggle }: { guild: DiscordGuildInfo; check
           type="button" onClick={onToggle}
           className={cn(
             'w-4 h-4 rounded flex-shrink-0 border-2 flex items-center justify-center transition-all',
-            checked ? 'bg-primary border-primary' : 'border-warm-600',
+            checked ? 'bg-primary border-primary' : 'border-muted-foreground/40',
           )}
         >
           {checked && <Check className="w-2.5 h-2.5 text-primary-foreground" />}
@@ -600,7 +600,7 @@ function GuildRow({ guild, checked, onToggle }: { guild: DiscordGuildInfo; check
             <div className="px-4 pb-2 space-y-0.5 border-t border-border/50">
               {guild.channels.map((ch) => (
                 <div key={ch.id} className="flex items-center gap-1.5 py-1 text-[11px] text-muted-foreground">
-                  <span className="text-warm-600">#</span> {ch.name}
+                  <span className="text-muted-foreground/50">#</span> {ch.name}
                 </div>
               ))}
             </div>
@@ -1074,7 +1074,7 @@ function ContactsSection({ service }: { service: Service }) {
                 onClick={() => setLocal((p) => p ? { ...p, enabled: !p.enabled } : p)}
                 className={cn(
                   'relative flex-shrink-0 w-10 h-6 rounded-full transition-all duration-200',
-                  local.enabled ? 'bg-primary shadow-amber' : 'bg-warm-700',
+                  local.enabled ? 'bg-primary shadow-amber' : 'bg-muted-foreground/30',
                 )}
               >
                 <span className={cn('absolute top-1 w-4 h-4 rounded-full bg-white shadow-warm-sm transition-all duration-200', local.enabled ? 'left-5' : 'left-1')} />
@@ -1094,7 +1094,7 @@ function ContactsSection({ service }: { service: Service }) {
                   onClick={() => setLocal((p) => p ? { ...p, [key]: !p[key] } : p)}
                   className={cn(
                     'relative flex-shrink-0 w-10 h-6 rounded-full transition-all duration-200',
-                    local[key] ? 'bg-primary shadow-amber' : 'bg-warm-700',
+                    local[key] ? 'bg-primary shadow-amber' : 'bg-muted-foreground/30',
                   )}
                 >
                   <span className={cn('absolute top-1 w-4 h-4 rounded-full bg-white shadow-warm-sm transition-all duration-200', local[key] ? 'left-5' : 'left-1')} />
@@ -1175,6 +1175,13 @@ export function ServiceAccordion({ service }: { service: Service }) {
   const [open, setOpen] = useState(false);
   const [activeSection, setActiveSection] = useState<SectionId>('overview');
   const isSyncing = syncProgress?.status === 'running';
+
+  // Until credentials are saved, Credentials is the only usable section.
+  const { data: credInfo } = useQuery({ queryKey: ['credentials'], queryFn: api.credentials });
+  const needsCredentials = credInfo ? !credInfo[service]?.configured : false;
+  useEffect(() => {
+    if (needsCredentials) setActiveSection('credentials');
+  }, [needsCredentials]);
 
   // Test state lives here so it survives accordion collapse/expand
   const [testSteps, setTestSteps] = useState<TestStep[]>([]);
@@ -1294,23 +1301,13 @@ export function ServiceAccordion({ service }: { service: Service }) {
           >
             <div className="border-t border-border bg-card">
               {/* Section nav tabs */}
-              <div className="flex items-center gap-1 px-4 py-2 border-b border-border bg-secondary/20 overflow-x-auto">
-                {SERVICE_SECTIONS.map(({ id, label, icon: Icon }) => (
-                  <button
-                    key={id}
-                    onClick={() => setActiveSection(id)}
-                    className={cn(
-                      'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all duration-150',
-                      activeSection === id
-                        ? 'bg-primary/15 text-primary border border-primary/25'
-                        : 'text-muted-foreground hover:text-foreground hover:bg-secondary',
-                    )}
-                  >
-                    <Icon className="w-3.5 h-3.5" />
-                    {label}
-                  </button>
-                ))}
-              </div>
+              <SectionTabs
+                sections={SERVICE_SECTIONS}
+                active={activeSection}
+                onSelect={setActiveSection}
+                disabledIds={needsCredentials ? SERVICE_SECTIONS.filter((s) => s.id !== 'credentials').map((s) => s.id) : undefined}
+                disabledTitle="Save credentials first"
+              />
 
               {/* Section content */}
               <div className="p-4">

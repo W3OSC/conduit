@@ -19,8 +19,65 @@ import { optionalAuth, writeAuditLog, type AuthedRequest } from '../auth/middlew
 import { isReadEnabled, isSendEnabled } from './permissions-utils.js';
 import { getConnectionManager } from '../connections/manager.js';
 import type { NotionReadAction, NotionWriteAction } from '../sync/notion.js';
+import {
+  z, optionalInt, bodyOf, paramsOf, queryOf, validateBody, validateParams, validateQuery,
+} from './validate.js';
+import { documentRoute } from './openapi-registry.js';
 
 const router = Router();
+
+// ── Request schemas ───────────────────────────────────────────────────────────
+//
+// These routes proxy straight to the Notion API. `filter` / `sorts` / `sort` /
+// `properties` / `children` are Notion's own deeply-nested shapes and are
+// passed through as `z.unknown()` — validating them here would fork Notion's
+// schema into this repo and break the moment they extend it.
+
+const PageIdParam = z.object({ pageId: z.string().min(1) });
+const BlockIdParam = z.object({ blockId: z.string().min(1) });
+const DatabaseIdParam = z.object({ databaseId: z.string().min(1) });
+
+const QueryDatabaseBody = z.object({
+  filter: z.unknown().optional(),
+  sorts: z.array(z.unknown()).optional(),
+  page_size: z.number().int().positive().optional(),
+  start_cursor: z.string().optional(),
+});
+
+const SearchBody = z.object({
+  query: z.string().optional(),
+  filter: z.unknown().optional(),
+  sort: z.unknown().optional(),
+  page_size: z.number().int().positive().optional(),
+  start_cursor: z.string().optional(),
+});
+
+const BlockChildrenQuery = z.object({
+  page_size: optionalInt('How many children to return.'),
+  start_cursor: z.string().optional(),
+});
+
+const UpdatePageBody = z.object({
+  properties: z.record(z.string(), z.unknown()).optional(),
+  in_trash: z.boolean().optional(),
+});
+
+const CreatePageBody = z.object({
+  parent: z.object({
+    database_id: z.string().optional(),
+    page_id: z.string().optional(),
+  }).optional(),
+  properties: z.record(z.string(), z.unknown()).optional(),
+  children: z.array(z.unknown()).optional(),
+});
+
+documentRoute({ method: 'get', path: '/notion/pages/{pageId}', params: PageIdParam });
+documentRoute({ method: 'post', path: '/notion/databases/{databaseId}/query', params: DatabaseIdParam, body: QueryDatabaseBody, bodyRequired: false });
+documentRoute({ method: 'post', path: '/notion/search', body: SearchBody, bodyRequired: false });
+documentRoute({ method: 'get', path: '/notion/blocks/{blockId}', params: BlockIdParam });
+documentRoute({ method: 'get', path: '/notion/blocks/{blockId}/children', params: BlockIdParam, query: BlockChildrenQuery });
+documentRoute({ method: 'patch', path: '/notion/pages/{pageId}', params: PageIdParam, body: UpdatePageBody });
+documentRoute({ method: 'post', path: '/notion/pages', body: CreatePageBody });
 
 /** Resolve the connection manager and assert that Notion is configured and connected. */
 function getNotion(res: ReturnType<Router['get']> extends never ? never : Parameters<Parameters<Router['get']>[1]>[1]) {
@@ -58,13 +115,13 @@ function checkWritePermission(req: RouteReq, res: RouteRes): boolean {
 // ── GET /api/notion/pages/:pageId ─────────────────────────────────────────────
 //   Retrieve a single Notion page by ID.
 
-router.get('/pages/:pageId', optionalAuth, async (req, res) => {
+router.get('/pages/:pageId', optionalAuth, validateParams(PageIdParam), async (req, res) => {
   const authedReq = req as AuthedRequest;
   if (!checkReadPermission(req, res)) return;
   const notion = getNotion(res);
   if (!notion) return;
 
-  const { pageId } = req.params as { pageId: string };
+  const { pageId } = paramsOf(PageIdParam, req);
 
   writeAuditLog('notion_read', authedReq.actor, {
     service: 'notion',
@@ -85,19 +142,14 @@ router.get('/pages/:pageId', optionalAuth, async (req, res) => {
 // ── POST /api/notion/databases/:databaseId/query ──────────────────────────────
 //   Query a Notion database with optional filter, sorts, and pagination.
 
-router.post('/databases/:databaseId/query', optionalAuth, async (req, res) => {
+router.post('/databases/:databaseId/query', optionalAuth, validateParams(DatabaseIdParam), validateBody(QueryDatabaseBody), async (req, res) => {
   const authedReq = req as AuthedRequest;
   if (!checkReadPermission(req, res)) return;
   const notion = getNotion(res);
   if (!notion) return;
 
-  const { databaseId } = req.params as { databaseId: string };
-  const { filter, sorts, page_size, start_cursor } = req.body as {
-    filter?: unknown;
-    sorts?: unknown[];
-    page_size?: number;
-    start_cursor?: string;
-  };
+  const { databaseId } = paramsOf(DatabaseIdParam, req);
+  const { filter, sorts, page_size, start_cursor } = bodyOf(QueryDatabaseBody, req);
 
   writeAuditLog('notion_read', authedReq.actor, {
     service: 'notion',
@@ -150,19 +202,13 @@ router.get('/databases', optionalAuth, async (req, res) => {
 // ── POST /api/notion/search ───────────────────────────────────────────────────
 //   Search the Notion workspace for pages and databases.
 
-router.post('/search', optionalAuth, async (req, res) => {
+router.post('/search', optionalAuth, validateBody(SearchBody), async (req, res) => {
   const authedReq = req as AuthedRequest;
   if (!checkReadPermission(req, res)) return;
   const notion = getNotion(res);
   if (!notion) return;
 
-  const { query, filter, sort, page_size, start_cursor } = req.body as {
-    query?: string;
-    filter?: unknown;
-    sort?: unknown;
-    page_size?: number;
-    start_cursor?: string;
-  };
+  const { query, filter, sort, page_size, start_cursor } = bodyOf(SearchBody, req);
 
   writeAuditLog('notion_read', authedReq.actor, {
     service: 'notion',
@@ -190,13 +236,13 @@ router.post('/search', optionalAuth, async (req, res) => {
 // ── GET /api/notion/blocks/:blockId ──────────────────────────────────────────
 //   Retrieve a single block by ID.
 
-router.get('/blocks/:blockId', optionalAuth, async (req, res) => {
+router.get('/blocks/:blockId', optionalAuth, validateParams(BlockIdParam), async (req, res) => {
   const authedReq = req as AuthedRequest;
   if (!checkReadPermission(req, res)) return;
   const notion = getNotion(res);
   if (!notion) return;
 
-  const { blockId } = req.params as { blockId: string };
+  const { blockId } = paramsOf(BlockIdParam, req);
 
   writeAuditLog('notion_read', authedReq.actor, {
     service: 'notion',
@@ -217,14 +263,14 @@ router.get('/blocks/:blockId', optionalAuth, async (req, res) => {
 // ── GET /api/notion/blocks/:blockId/children ──────────────────────────────────
 //   Retrieve the children of a block (e.g. the content of a page).
 
-router.get('/blocks/:blockId/children', optionalAuth, async (req, res) => {
+router.get('/blocks/:blockId/children', optionalAuth, validateParams(BlockIdParam), validateQuery(BlockChildrenQuery), async (req, res) => {
   const authedReq = req as AuthedRequest;
   if (!checkReadPermission(req, res)) return;
   const notion = getNotion(res);
   if (!notion) return;
 
-  const { blockId } = req.params as { blockId: string };
-  const { page_size, start_cursor } = req.query as { page_size?: string; start_cursor?: string };
+  const { blockId } = paramsOf(BlockIdParam, req);
+  const { page_size, start_cursor } = queryOf(BlockChildrenQuery, req);
 
   writeAuditLog('notion_read', authedReq.actor, {
     service: 'notion',
@@ -237,7 +283,7 @@ router.get('/blocks/:blockId/children', optionalAuth, async (req, res) => {
     const action: NotionReadAction = {
       action: 'retrieve_block_children',
       blockId,
-      pageSize: page_size ? parseInt(page_size) : undefined,
+      pageSize: page_size,
       startCursor: start_cursor,
     };
     const result = await notion.executeRead(action);
@@ -251,13 +297,14 @@ router.get('/blocks/:blockId/children', optionalAuth, async (req, res) => {
 //   Update an existing Notion page. Body passes through as-is to Notion PATCH
 //   /v1/pages/:id. Requires sendEnabled permission.
 
-router.patch('/pages/:pageId', optionalAuth, async (req, res) => {
+router.patch('/pages/:pageId', optionalAuth, validateParams(PageIdParam), validateBody(UpdatePageBody), async (req, res) => {
   const authedReq = req as AuthedRequest;
   if (!checkWritePermission(req, res)) return;
   const notion = getNotion(res);
   if (!notion) return;
 
-  const { pageId } = req.params as { pageId: string };
+  const { pageId } = paramsOf(PageIdParam, req);
+  const patch = bodyOf(UpdatePageBody, req);
 
   writeAuditLog('notion_write', authedReq.actor, {
     service: 'notion',
@@ -270,8 +317,8 @@ router.patch('/pages/:pageId', optionalAuth, async (req, res) => {
     const action: Extract<NotionWriteAction, { action: 'update_page' }> = {
       action: 'update_page',
       pageId,
-      properties: (req.body as { properties?: Record<string, unknown> }).properties ?? {},
-      in_trash: (req.body as { in_trash?: boolean }).in_trash,
+      properties: patch.properties ?? {},
+      in_trash: patch.in_trash,
     };
     const result = await notion.executeDirectWrite(action);
     res.json(result);
@@ -284,17 +331,13 @@ router.patch('/pages/:pageId', optionalAuth, async (req, res) => {
 //   Create a new Notion page. Body passes through as-is to Notion POST
 //   /v1/pages. Requires sendEnabled permission.
 
-router.post('/pages', optionalAuth, async (req, res) => {
+router.post('/pages', optionalAuth, validateBody(CreatePageBody), async (req, res) => {
   const authedReq = req as AuthedRequest;
   if (!checkWritePermission(req, res)) return;
   const notion = getNotion(res);
   if (!notion) return;
 
-  const body = req.body as {
-    parent?: { database_id?: string; page_id?: string };
-    properties?: Record<string, unknown>;
-    children?: unknown[];
-  };
+  const body = bodyOf(CreatePageBody, req);
 
   const rawParent = body.parent ?? {};
   const parentId = rawParent.database_id ?? rawParent.page_id ?? '';

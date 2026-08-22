@@ -219,7 +219,7 @@ function VaultDetailPanel({ vault, onDeleted }: { vault: ObsidianVaultConfigRow;
         </div>
       </div>
 
-      <div className="border-t border-white/5 mb-5" />
+      <div className="border-t border-border/60 mb-5" />
 
       {/* Section 2: Authentication */}
       <div className="space-y-4 pb-5">
@@ -237,7 +237,7 @@ function VaultDetailPanel({ vault, onDeleted }: { vault: ObsidianVaultConfigRow;
                 if (sshMatch) setRemoteUrl(`https://${sshMatch[1]}/${sshMatch[2]}.git`);
               }}
               className={cn('flex-1 px-3 py-2 rounded-xl border text-sm font-medium transition-all',
-                authType === 'https' ? 'bg-primary/10 border-primary/30 text-primary' : 'border-white/10 text-muted-foreground hover:border-white/20')}
+                authType === 'https' ? 'bg-primary/10 border-primary/30 text-primary' : 'border-border text-muted-foreground hover:border-muted-foreground/40')}
             >HTTPS / Token</button>
             <button
               onClick={() => {
@@ -251,7 +251,7 @@ function VaultDetailPanel({ vault, onDeleted }: { vault: ObsidianVaultConfigRow;
                 } catch { /* leave as-is */ }
               }}
               className={cn('flex-1 px-3 py-2 rounded-xl border text-sm font-medium transition-all',
-                authType === 'ssh' ? 'bg-primary/10 border-primary/30 text-primary' : 'border-white/10 text-muted-foreground hover:border-white/20')}
+                authType === 'ssh' ? 'bg-primary/10 border-primary/30 text-primary' : 'border-border text-muted-foreground hover:border-muted-foreground/40')}
             >SSH Key</button>
           </div>
 
@@ -291,15 +291,15 @@ function VaultDetailPanel({ vault, onDeleted }: { vault: ObsidianVaultConfigRow;
                   <div className="space-y-1.5">
                     <div className="relative group">
                       <textarea readOnly value={sshPublicKey} rows={2}
-                        className="w-full bg-black/20 border border-white/10 rounded-xl p-3 pr-10 text-[11px] font-mono text-foreground/60 resize-none focus:outline-none" />
-                      <button onClick={copyPublicKey} className="absolute right-2.5 top-2.5 p-1 rounded-lg bg-white/5 hover:bg-white/10 transition-colors" title="Copy public key">
+                        className="w-full bg-muted border border-border rounded-xl p-3 pr-10 text-[11px] font-mono text-foreground/60 resize-none focus:outline-none" />
+                      <button onClick={copyPublicKey} className="absolute right-2.5 top-2.5 p-1 rounded-lg bg-secondary hover:bg-secondary/80 transition-colors" title="Copy public key">
                         {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-muted-foreground" />}
                       </button>
                     </div>
                     {sshFingerprint && <p className="text-[11px] font-mono text-muted-foreground/60 px-1 select-all">Fingerprint: {sshFingerprint}</p>}
                   </div>
                 ) : (
-                  <div className="bg-black/20 border border-dashed border-white/10 rounded-xl p-4 text-xs text-muted-foreground text-center">No SSH key generated yet.</div>
+                  <div className="bg-muted border border-dashed border-border rounded-xl p-4 text-xs text-muted-foreground text-center">No SSH key generated yet.</div>
                 )}
               </div>
               {sshPublicKey && (
@@ -341,7 +341,7 @@ function VaultDetailPanel({ vault, onDeleted }: { vault: ObsidianVaultConfigRow;
             </button>
             {!hasUnsavedChanges && (
               <button onClick={() => testConnection.mutate()} disabled={testConnection.isPending}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl border border-white/10 text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors disabled:opacity-50">
+                className="flex items-center gap-2 px-4 py-2 rounded-xl border border-border text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors disabled:opacity-50">
                 {testConnection.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
                   : testResult?.success ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
                   : testResult?.success === false ? <XCircle className="w-3.5 h-3.5 text-red-400" />
@@ -361,7 +361,7 @@ function VaultDetailPanel({ vault, onDeleted }: { vault: ObsidianVaultConfigRow;
         </div>
       </div>
 
-      <div className="border-t border-white/5 mb-5" />
+      <div className="border-t border-border/60 mb-5" />
 
       {/* Section 3: Connect */}
       <div className="space-y-4 pb-5">
@@ -389,7 +389,7 @@ function VaultDetailPanel({ vault, onDeleted }: { vault: ObsidianVaultConfigRow;
                       isDone ? 'text-emerald-400' : isCurrent ? 'text-foreground' : 'text-muted-foreground/40')}>
                       {isDone ? <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
                         : isCurrent ? <Loader2 className="w-3.5 h-3.5 flex-shrink-0 animate-spin text-primary" />
-                        : <div className="w-3.5 h-3.5 flex-shrink-0 rounded-full border border-white/15" />}
+                        : <div className="w-3.5 h-3.5 flex-shrink-0 rounded-full border border-border" />}
                       <span className={isCurrent ? 'font-medium' : ''}>{phase.label}</span>
                     </div>
                   );
@@ -422,7 +422,7 @@ function VaultDetailPanel({ vault, onDeleted }: { vault: ObsidianVaultConfigRow;
                 </div>
                 <div className="flex items-center gap-2">
                   <button onClick={() => syncVault.mutate()} disabled={syncVault.isPending}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors disabled:opacity-50">
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors disabled:opacity-50">
                     <RefreshCw className={cn('w-3 h-3', syncVault.isPending && 'animate-spin')} />
                     Sync Now
                   </button>
@@ -433,7 +433,7 @@ function VaultDetailPanel({ vault, onDeleted }: { vault: ObsidianVaultConfigRow;
                 </div>
               </div>
               {vault.syncError && (
-                <div className="flex items-start gap-1.5 text-[11px] text-red-400 pt-1 border-t border-white/5">
+                <div className="flex items-start gap-1.5 text-[11px] text-red-400 pt-1 border-t border-border/60">
                   <XCircle className="w-3 h-3 flex-shrink-0 mt-0.5" />
                   <span>Last sync error: {vault.syncError}</span>
                 </div>
@@ -452,14 +452,14 @@ function VaultDetailPanel({ vault, onDeleted }: { vault: ObsidianVaultConfigRow;
               </div>
               <div className="flex gap-2 pt-1">
                 <button onClick={() => { setCloneInitiated(true); cloneVault.mutate(); }} disabled={cloneVault.isPending}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors">
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors">
                   <RotateCcw className="w-3 h-3" />
                   Retry Clone
                 </button>
               </div>
             </div>
           ) : (
-            <div className="rounded-xl border border-white/8 bg-white/3 p-4 space-y-3">
+            <div className="rounded-xl border border-border bg-secondary/40 p-4 space-y-3">
               <div className="flex items-start gap-3">
                 <div className="w-8 h-8 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center flex-shrink-0 mt-0.5">
                   <GitBranch className="w-4 h-4 text-primary" />
@@ -485,7 +485,7 @@ function VaultDetailPanel({ vault, onDeleted }: { vault: ObsidianVaultConfigRow;
       </div>
 
       {/* Danger zone */}
-      <div className="border-t border-white/5 mb-5" />
+      <div className="border-t border-border/60 mb-5" />
       <div className="border border-red-500/20 rounded-xl p-4 space-y-3">
         <h4 className="text-xs font-semibold text-red-400">Danger Zone</h4>
         <div className="flex items-center justify-between">
@@ -557,12 +557,12 @@ function NewVaultForm({ onCreated }: { onCreated: (vault: ObsidianVaultConfigRow
         <div className="flex gap-2">
           <button onClick={() => setAuthType('https')}
             className={cn('flex-1 px-3 py-2 rounded-xl border text-sm font-medium transition-all',
-              authType === 'https' ? 'bg-primary/10 border-primary/30 text-primary' : 'border-white/10 text-muted-foreground hover:border-white/20')}>
+              authType === 'https' ? 'bg-primary/10 border-primary/30 text-primary' : 'border-border text-muted-foreground hover:border-muted-foreground/40')}>
             HTTPS / Token
           </button>
           <button onClick={() => setAuthType('ssh')}
             className={cn('flex-1 px-3 py-2 rounded-xl border text-sm font-medium transition-all',
-              authType === 'ssh' ? 'bg-primary/10 border-primary/30 text-primary' : 'border-white/10 text-muted-foreground hover:border-white/20')}>
+              authType === 'ssh' ? 'bg-primary/10 border-primary/30 text-primary' : 'border-border text-muted-foreground hover:border-muted-foreground/40')}>
             SSH Key
           </button>
         </div>
@@ -628,12 +628,12 @@ export function ObsidianVaultTab() {
   return (
     <div className="flex gap-0 min-h-[420px]">
       {/* Left: vault list */}
-      <div className="w-48 flex-shrink-0 border-r border-white/8 flex flex-col">
-        <div className="px-3 py-2 border-b border-white/8 flex items-center justify-between">
+      <div className="w-48 flex-shrink-0 border-r border-border flex flex-col">
+        <div className="px-3 py-2 border-b border-border flex items-center justify-between">
           <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Vaults</span>
           <button
             onClick={() => setSelectedId('new')}
-            className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+            className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors"
             title="Add vault"
           >
             <Plus className="w-3.5 h-3.5" />
@@ -652,7 +652,7 @@ export function ObsidianVaultTab() {
                 onClick={() => setSelectedId(vault.id)}
                 className={cn(
                   'w-full flex items-center gap-2 px-3 py-2 text-left text-xs transition-colors',
-                  isSelected ? 'bg-primary/10 text-primary' : 'text-foreground hover:bg-white/5',
+                  isSelected ? 'bg-primary/10 text-primary' : 'text-foreground hover:bg-secondary/60',
                 )}
               >
                 <span className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0',
@@ -663,12 +663,12 @@ export function ObsidianVaultTab() {
             );
           })}
         </div>
-        <div className="border-t border-white/8 p-2">
+        <div className="border-t border-border p-2">
           <button
             onClick={() => setSelectedId('new')}
             className={cn(
               'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs transition-colors',
-              selectedId === 'new' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-white/5 hover:text-foreground',
+              selectedId === 'new' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-secondary/60 hover:text-foreground',
             )}
           >
             <Plus className="w-3.5 h-3.5 flex-shrink-0" />
