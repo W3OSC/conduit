@@ -174,7 +174,7 @@ function ChannelRow({ service, series, msgCount, chatCount, lastSync }: {
 
   return (
     <div className={cn(
-      'flex items-center gap-3 px-4 py-2.5 flex-1 min-h-[52px]',
+      'flex items-center gap-3 px-4 py-2 flex-1 min-h-[48px]',
       !connected && 'opacity-45',
     )}>
       <ServiceIcon service={service} size="sm" />
@@ -191,7 +191,9 @@ function ChannelRow({ service, series, msgCount, chatCount, lastSync }: {
           {syncing ? 'Syncing…' : lastSync ? `Synced ${timeAgo(lastSync)}` : 'Never synced'}
         </p>
       </div>
-      <Spark points={series} color={CHART_HEX[service]} />
+      <span className="hidden xl:block flex-shrink-0">
+        <Spark points={series} color={CHART_HEX[service]} />
+      </span>
       <div className="text-right w-14 flex-shrink-0">
         <p className="text-sm font-semibold tabular-nums leading-tight">{compact.format(msgCount)}</p>
         <p className="text-2xs text-muted-foreground tabular-nums">{compact.format(chatCount)} chats</p>
@@ -325,18 +327,18 @@ export default function Dashboard() {
       </motion.div>
 
       {/* Hero — message flow through the firewall */}
-      <motion.div {...fade(0.03)} className="card-warm flex flex-col md:flex-row md:h-60 flex-shrink-0 overflow-hidden">
-        <div className="md:w-64 flex-shrink-0 p-5 flex flex-col gap-4 border-b md:border-b-0 md:border-r border-border/60">
+      <motion.div {...fade(0.03)} className="card-warm flex flex-col md:flex-row md:h-[clamp(195px,26vh,240px)] flex-shrink-0 overflow-hidden">
+        <div className="md:w-64 flex-shrink-0 p-4 xl:p-5 flex flex-col gap-3 min-h-0 border-b md:border-b-0 md:border-r border-border/60">
           <div>
             <p className="section-label">Message flow</p>
-            <p className="text-[40px] font-bold tracking-tight leading-none mt-2">
+            <p className="text-[clamp(26px,4.5vh,40px)] font-bold tracking-tight leading-none mt-2">
               {windowTotal.toLocaleString()}
             </p>
             <p className="text-xs text-muted-foreground mt-1.5">
               messages in the past {days} days
             </p>
           </div>
-          <div className="mt-auto grid grid-cols-2 gap-x-4 gap-y-2.5">
+          <div className="mt-auto grid grid-cols-2 gap-x-4 gap-y-2">
             <HeroStat label="Active chats" value={activeChats.toLocaleString()} />
             <HeroStat label="Channels" value={`${connectedCount}/${SERVICES.length}`} />
             <HeroStat label="Pending" value={pending} to="/outbox" tone={pending > 0 ? 'accent' : undefined} />
@@ -414,12 +416,12 @@ export default function Dashboard() {
             : <span className="text-xs text-muted-foreground">queue clear</span>}
           action={<PanelLink to="/outbox">Outbox</PanelLink>}
         >
-          <div className="flex-shrink-0 max-h-[55%] overflow-y-auto">
+          <div className="flex-initial min-h-[72px] max-h-[55%] overflow-y-auto">
             {(pendingData?.items?.length ?? 0) > 0 ? (
               <div className="divide-y divide-border/50">
                 {pendingData!.items.slice(0, 4).map((item) => (
                   <Link key={item.id} to="/outbox"
-                    className="flex items-center gap-3 px-4 py-2.5 hover:bg-secondary/50 transition-colors">
+                    className="flex items-center gap-3 px-4 py-2 hover:bg-secondary/50 transition-colors">
                     <ServiceIcon service={item.source} size="sm" />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-baseline justify-between gap-2">
@@ -443,7 +445,7 @@ export default function Dashboard() {
             )}
           </div>
 
-          <div className="flex-1 min-h-0 overflow-hidden border-t border-border/50">
+          <div className="flex-1 min-h-0 overflow-y-auto border-t border-border/50">
             <p className="text-2xs uppercase tracking-wider text-muted-foreground/70 px-4 pt-2.5 pb-1">
               Recent decisions
             </p>
@@ -471,7 +473,7 @@ export default function Dashboard() {
             )}
           </div>
 
-          <div className="flex-shrink-0 h-40 flex flex-col px-3 pt-2.5 pb-2 border-t border-border/50">
+          <div className="flex-shrink-0 h-[clamp(118px,19vh,160px)] flex flex-col px-3 pt-2.5 pb-2 border-t border-border/50">
             <div className="flex items-center justify-between flex-shrink-0 pl-1 pr-2">
               <p className="text-2xs uppercase tracking-wider text-muted-foreground/70">Decisions per day</p>
               <Legend
