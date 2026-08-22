@@ -417,6 +417,20 @@
 
   /* Divider */
   .divider { @apply h-px bg-border; }
+
+  /* Recharts' accessibility layer makes every chart surface focusable, and
+     Chromium draws the UA focus ring around the whole plot on click (SVG
+     elements match :focus-visible even for mouse focus). Keyboard chart
+     navigation still works — the tooltip is the visible response. */
+  .recharts-wrapper:focus,
+  .recharts-wrapper:focus-visible,
+  .recharts-surface:focus,
+  .recharts-surface:focus-visible {
+    outline: none;
+  }
+  .recharts-wrapper {
+    @apply select-none;
+  }
 }
 
 /* ─────────────────────────────────────────────────────────── */
