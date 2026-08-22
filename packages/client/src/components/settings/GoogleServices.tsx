@@ -500,7 +500,7 @@ function GmailAccountAccordion({
 
 // ─── Google Services outer accordion ─────────────────────────────────────────
 
-export function GoogleServicesAccordion() {
+export function GoogleServicesAccordion({ standalone = false }: { standalone?: boolean }) {
   const [addingAccount, setAddingAccount] = useState(false);
   const qc = useQueryClient();
 
@@ -555,8 +555,9 @@ export function GoogleServicesAccordion() {
   const totalNotes = meetNotesData?.total ?? 0;
 
   return (
-    <motion.div layout className="rounded-2xl border border-border overflow-hidden">
-      {/* Header */}
+    <motion.div layout={!standalone} className={cn('rounded-2xl border border-border overflow-hidden', standalone && 'card-warm')}>
+      {/* Header — hidden in standalone mode (the settings shell renders the pane header) */}
+      {!standalone && (
       <div className="w-full flex items-center gap-3 px-4 py-3 text-left bg-card">
         <div className="w-10 h-10 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center flex-shrink-0 font-bold text-red-400">G</div>
         <div className="flex-1 min-w-0">
@@ -571,8 +572,9 @@ export function GoogleServicesAccordion() {
           {connectedCount > 0 ? `${connectedCount} connected` : accounts.length > 0 ? `${accounts.length} configured` : 'Not configured'}
         </div>
       </div>
+      )}
 
-      <div className="border-t border-border bg-card p-4 space-y-3">
+      <div className={cn('bg-card p-4 space-y-3', !standalone && 'border-t border-border')}>
 
         {/* Add account button / form */}
         {addingAccount ? (

@@ -108,17 +108,17 @@ const queryClient = new QueryClient({
 // Route-specific copy for the "nothing connected" banner — mirrors each page's
 // own in-page empty-state CTA so the two links agree on wording and destination.
 const CONNECT_BANNERS: Record<string, { title: string; body: string; to: string }> = {
-  '/email':    { title: 'Gmail not connected.',       body: 'Add your Google credentials in Settings → Connections → Google.',         to: '/settings/email-calendar' },
-  '/calendar': { title: 'Calendar not connected.',    body: 'Add your Google credentials in Settings → Connections → Google.',         to: '/settings/email-calendar' },
-  '/twitter':  { title: 'Twitter / X not connected.', body: 'Add your credentials in Settings → Connections → Messaging.',             to: '/settings/messaging' },
-  '/chat':     { title: 'No services connected.',     body: 'Add your credentials in Settings → Connections → Messaging.',             to: '/settings/messaging' },
-  '/contacts': { title: 'No services connected.',     body: 'Connect a service in Settings → Connections to start syncing contacts.',  to: '/settings/connections' },
-  '/files':    { title: 'No file sources connected.', body: 'Add a vault, drive, or share in Settings → Connections → Files.',         to: '/settings/files' },
+  '/email':    { title: 'Gmail not connected.',       body: 'Add your Google credentials in Settings → Google.',                    to: '/settings/google' },
+  '/calendar': { title: 'Calendar not connected.',    body: 'Add your Google credentials in Settings → Google.',                    to: '/settings/google' },
+  '/twitter':  { title: 'Twitter / X not connected.', body: 'Add your credentials in Settings → Twitter / X.',                      to: '/settings/twitter' },
+  '/chat':     { title: 'No services connected.',     body: 'Connect a channel in Settings to start syncing chats.',                to: '/settings' },
+  '/contacts': { title: 'No services connected.',     body: 'Connect a service in Settings to start syncing contacts.',             to: '/settings' },
+  '/files':    { title: 'No file sources connected.', body: 'Add a vault, drive, or share under Settings → Knowledge.',             to: '/settings/obsidian' },
 };
 const DEFAULT_CONNECT_BANNER = {
   title: 'No services connected.',
   body: 'Head to Settings to connect Slack, Discord, Telegram, Google, and more.',
-  to: '/settings/connections',
+  to: '/settings',
 };
 
 function AppInner() {
@@ -145,7 +145,7 @@ function AppInner() {
     if (!connections || onboardingDecided.current) return;
     onboardingDecided.current = true;
     if (nothingConnected && location.pathname === '/') {
-      navigate('/settings/connections', { replace: true });
+      navigate('/settings', { replace: true });
     }
   }, [connections, nothingConnected, location.pathname, navigate]);
 
@@ -184,8 +184,8 @@ function AppInner() {
               <Route path="/email" element={<Email />} />
               <Route path="/calendar" element={<Calendar />} />
               <Route path="/twitter" element={<TwitterPage />} />
-              <Route path="/connections" element={<Navigate to="/settings/connections" replace />} />
-              <Route path="/settings" element={<Navigate to="/settings/connections" replace />} />
+              <Route path="/connections" element={<Navigate to="/settings/overview" replace />} />
+              <Route path="/settings" element={<Navigate to="/settings/overview" replace />} />
               <Route path="/settings/:tab" element={<Connections />} />
               <Route path="/files" element={<ObsidianVault />} />
               <Route path="/audit-log" element={<AuditLog />} />

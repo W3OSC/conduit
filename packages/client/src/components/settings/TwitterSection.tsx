@@ -24,7 +24,7 @@ const TWITTER_SECTIONS: Array<{ id: TwitterSectionId; label: string; icon: React
   { id: 'data',        label: 'Data',        icon: Database },
 ];
 
-export function TwitterAccordion() {
+export function TwitterAccordion({ standalone = false }: { standalone?: boolean }) {
   const [open, setOpen] = useState(false);
   const [activeSection, setActiveSection] = useState<TwitterSectionId>('overview');
   const qc = useQueryClient();
@@ -158,8 +158,12 @@ export function TwitterAccordion() {
   const anyFailed = testSteps.some((s) => s.status === 'error');
 
   return (
-    <motion.div layout className={cn('rounded-2xl border overflow-hidden transition-all duration-200', open ? 'border-border shadow-warm-md' : 'border-border/60 hover:border-border')}>
-      {/* Header */}
+    <motion.div layout={!standalone} className={cn(
+      'rounded-2xl border overflow-hidden transition-all duration-200',
+      standalone ? 'card-warm' : open ? 'border-border shadow-warm-md' : 'border-border/60 hover:border-border',
+    )}>
+      {/* Header — hidden in standalone mode (the settings shell renders the pane header) */}
+      {!standalone && (
       <button onClick={() => setOpen(!open)} className={cn('w-full flex items-center gap-3 px-4 py-3 text-left transition-colors', open ? 'bg-card' : 'bg-card/50 hover:bg-card/80')}>
         <div className="w-10 h-10 rounded-xl bg-sky-500/10 border border-sky-500/20 flex items-center justify-center flex-shrink-0 font-bold text-sky-400">𝕏</div>
         <div className="flex-1 min-w-0">
@@ -189,12 +193,13 @@ export function TwitterAccordion() {
           <ChevronDown className={cn('w-4 h-4 text-muted-foreground transition-transform duration-200', open && 'rotate-180')} />
         </div>
       </button>
+      )}
 
       {/* Body */}
       <AnimatePresence initial={false}>
-        {open && (
+        {(standalone || open) && (
           <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }} className="overflow-hidden">
-            <div className="border-t border-border bg-card">
+            <div className={cn('bg-card', !standalone && 'border-t border-border')}>
               {/* Section nav */}
               <SectionTabs
                 sections={TWITTER_SECTIONS}

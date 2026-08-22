@@ -1167,7 +1167,7 @@ const SERVICE_SECTIONS = [
 
 type SectionId = typeof SERVICE_SECTIONS[number]['id'];
 
-export function ServiceAccordion({ service }: { service: Service }) {
+export function ServiceAccordion({ service, standalone = false }: { service: Service; standalone?: boolean }) {
   const cfg = SERVICE_CONFIG[service];
   const connStatus   = useConnectionStore((s) => s.statuses[service]);
   const syncProgress = useSyncStore((s) => s.progress[service]);
@@ -1221,6 +1221,45 @@ export function ServiceAccordion({ service }: { service: Service }) {
 
   const { data: statusData } = useQuery({ queryKey: ['status'], queryFn: api.status, refetchInterval: 10000 });
   const msgCount = statusData?.messageCounts[service] ?? 0;
+
+  const body = (
+    <div className={cn('bg-card', !standalone && 'border-t border-border')}>
+      {/* Section nav tabs */}
+      <SectionTabs
+        sections={SERVICE_SECTIONS}
+        active={activeSection}
+        onSelect={setActiveSection}
+        disabledIds={needsCredentials ? SERVICE_SECTIONS.filter((s) => s.id !== 'credentials').map((s) => s.id) : undefined}
+        disabledTitle="Save credentials first"
+      />
+
+      {/* Section content */}
+      <div className="p-4">
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={activeSection}
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.15 }}
+          >
+            {activeSection === 'overview'    && <OverviewSection    service={service} testSteps={testSteps} testRunning={testRunning} runTest={runTest} clearTestSteps={() => setTestSteps([])} />}
+            {activeSection === 'credentials' && <CredentialsSection service={service} onConnected={() => setActiveSection('overview')} />}
+            {activeSection === 'permissions' && <PermissionsSection service={service} />}
+            {activeSection === 'sync'        && <SyncSection        service={service} />}
+            {activeSection === 'contacts'    && <ContactsSection    service={service} />}
+            {activeSection === 'data'        && <DataSection        service={service} />}
+          </motion.div>
+        </AnimatePresence>
+      </div>
+    </div>
+  );
+
+  // Standalone: the settings shell renders its own pane header, so the card is
+  // just the section tabs + content — no collapsible chrome.
+  if (standalone) {
+    return <div className="card-warm overflow-hidden">{body}</div>;
+  }
 
   return (
     <motion.div
@@ -1299,36 +1338,7 @@ export function ServiceAccordion({ service }: { service: Service }) {
             transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
             className="overflow-hidden"
           >
-            <div className="border-t border-border bg-card">
-              {/* Section nav tabs */}
-              <SectionTabs
-                sections={SERVICE_SECTIONS}
-                active={activeSection}
-                onSelect={setActiveSection}
-                disabledIds={needsCredentials ? SERVICE_SECTIONS.filter((s) => s.id !== 'credentials').map((s) => s.id) : undefined}
-                disabledTitle="Save credentials first"
-              />
-
-              {/* Section content */}
-              <div className="p-4">
-                <AnimatePresence mode="wait">
-                  <motion.div
-                    key={activeSection}
-                    initial={{ opacity: 0, y: 6 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -4 }}
-                    transition={{ duration: 0.15 }}
-                  >
-                    {activeSection === 'overview'    && <OverviewSection    service={service} testSteps={testSteps} testRunning={testRunning} runTest={runTest} clearTestSteps={() => setTestSteps([])} />}
-                    {activeSection === 'credentials' && <CredentialsSection service={service} onConnected={() => setActiveSection('overview')} />}
-                    {activeSection === 'permissions' && <PermissionsSection service={service} />}
-                    {activeSection === 'sync'        && <SyncSection        service={service} />}
-                    {activeSection === 'contacts'    && <ContactsSection    service={service} />}
-                    {activeSection === 'data'        && <DataSection        service={service} />}
-                  </motion.div>
-                </AnimatePresence>
-              </div>
-            </div>
+            {body}
           </motion.div>
         )}
       </AnimatePresence>

@@ -881,7 +881,7 @@ export default function Calendar() {
         </div>
         <div className="text-center">
           <p className="text-sm font-medium">Calendar not connected</p>
-          <p className="text-xs opacity-60 mt-1">Add your Google credentials in <Link to="/settings/email-calendar" className="underline underline-offset-2 hover:text-foreground transition-colors">Settings → Connections → Google</Link></p>
+          <p className="text-xs opacity-60 mt-1">Add your Google credentials in <Link to="/settings/google" className="underline underline-offset-2 hover:text-foreground transition-colors">Settings → Google</Link></p>
         </div>
       </div>
     );
