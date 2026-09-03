@@ -40,10 +40,17 @@ const SettingsBody = z.object({
   driveSearchEnabled: z.boolean({ error: 'must be a boolean' }),
 });
 
+const SyncBody = z.object({
+  days: z.number().int().min(1).max(365).optional().openapi({
+    description: 'Look back this many days instead of the default 7 — use for a one-off backfill.',
+  }),
+});
+
 documentRoute({ method: 'get', path: '/meet-notes', query: ListQuery });
 documentRoute({ method: 'get', path: '/meet-notes/{id}', params: NoteIdParam });
 documentRoute({ method: 'post', path: '/meet-notes/{id}/refresh', params: NoteIdParam });
 documentRoute({ method: 'put', path: '/meet-notes/settings', body: SettingsBody });
+documentRoute({ method: 'post', path: '/meet-notes/sync', body: SyncBody });
 
 // ─── List notes ───────────────────────────────────────────────────────────────
 
@@ -107,8 +114,9 @@ router.put('/settings', uiOnlyAuth, validateBody(SettingsBody), (req, res) => {
 
 // ─── Trigger sync ─────────────────────────────────────────────────────────────
 
-router.post('/sync', optionalAuth, requireRead('calendar'), async (_req, res) => {
+router.post('/sync', optionalAuth, requireRead('calendar'), validateBody(SyncBody), async (req, res) => {
   try {
+    const { days } = bodyOf(SyncBody, req);
     const { getConnectionManager } = await import('../connections/manager.js');
     const manager = getConnectionManager();
     const instances = manager.getAllMeetNotesInstances();
@@ -117,7 +125,7 @@ router.post('/sync', optionalAuth, requireRead('calendar'), async (_req, res) =>
     }
     let total = 0;
     await Promise.all(instances.map(async (inst) => {
-      const n = await inst.incrementalSync();
+      const n = days ? await inst.initialFullSync(days) : await inst.incrementalSync();
       total += n;
     }));
     res.json({ success: true, message: `Synced ${total} new note(s)` });

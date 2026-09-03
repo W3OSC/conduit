@@ -465,7 +465,8 @@ export const api = {
   },
   meetNote: (id: number) => request<MeetNote>(`/meet-notes/${id}`),
   meetNoteRefresh: (id: number) => request<{ success: boolean; content: string | null }>(`/meet-notes/${id}/refresh`, { method: 'POST' }),
-  meetNotesSync: () => request<{ success: boolean; message: string }>('/meet-notes/sync', { method: 'POST' }),
+  meetNotesSync: (opts?: { days?: number }) =>
+    request<{ success: boolean; message: string }>('/meet-notes/sync', { method: 'POST', body: JSON.stringify(opts ?? {}) }),
   meetNotesSettings: () => request<{ driveSearchEnabled: boolean }>('/meet-notes/settings'),
   meetNotesUpdateSettings: (settings: { driveSearchEnabled: boolean }) =>
     request<{ success: boolean; driveSearchEnabled: boolean }>('/meet-notes/settings', { method: 'PUT', body: JSON.stringify(settings) }),
