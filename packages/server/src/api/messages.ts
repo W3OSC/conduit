@@ -12,6 +12,7 @@ import {
   isReadPermitted, filterEnabledSources,
 } from './permissions-utils.js';
 import type { DiscordFineGrained } from '../db/schema.js';
+import { sourceFilterPredicate } from '../sync/source-filters.js';
 import {
   z, booleanFlag, isoDateTime, limitSchema, messageSourceSchema, optionalMessageSource,
   requiredString, MESSAGE_SOURCES, bodyOf, paramsOf, queryOf, validateBody, validateParams, validateQuery,
@@ -326,7 +327,10 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
     const dcMyIds = JSON.stringify([...dcCache.myAccountIds]);
 
     // One pass: latest row per channel (name/guild) + count + unread, instead
-    // of 3 queries per channel.
+    // of 3 queries per channel. Both scans honour the user's guild sync-scope
+    // so de-selected servers vanish immediately, stored history included.
+    const dcScope = sql.raw(sourceFilterPredicate('discord'));
+    const dcScopeM = sql.raw(sourceFilterPredicate('discord', 'm'));
     const dcRows = db.all<{
       channelId: string; channelName: string | null; guildId: string | null;
       guildName: string | null; cnt: number; latestTs: string; unread: number;
@@ -335,6 +339,7 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
         SELECT channel_id, channel_name, guild_id, guild_name,
                ROW_NUMBER() OVER (PARTITION BY channel_id ORDER BY timestamp DESC) AS rn
         FROM discord_messages
+        WHERE ${dcScope}
       ),
       own AS (
         SELECT channel_id AS ch, MAX(timestamp) AS last_own_ts
@@ -352,6 +357,7 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
         FROM discord_messages m
         LEFT JOIN chat_read_state r ON r.source = 'discord' AND r.chat_id = m.channel_id
         LEFT JOIN own o ON o.ch = m.channel_id
+        WHERE ${dcScopeM}
         GROUP BY m.channel_id
       )
       SELECT l.channel_id AS channelId, l.channel_name AS channelName,
@@ -454,6 +460,10 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
     const unreadEpoch = getUnreadEpoch(db);
     const slMyIds = JSON.stringify([...slackCache.myAccountIds]);
 
+    // User sync-scope: non-DM conversations outside slack.syncChannels are
+    // hidden, stored history included.
+    const slScope = sql.raw(sourceFilterPredicate('slack'));
+    const slScopeM = sql.raw(sourceFilterPredicate('slack', 'm'));
     const slRows = db.all<{
       channelId: string; channelName: string | null; cnt: number; latestTs: string; unread: number;
     }>(sql`
@@ -461,6 +471,7 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
         SELECT channel_id, channel_name,
                ROW_NUMBER() OVER (PARTITION BY channel_id ORDER BY timestamp DESC) AS rn
         FROM slack_messages
+        WHERE ${slScope}
       ),
       own AS (
         SELECT channel_id AS ch, MAX(timestamp) AS last_own_ts
@@ -478,6 +489,7 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
         FROM slack_messages m
         LEFT JOIN chat_read_state r ON r.source = 'slack' AND r.chat_id = m.channel_id
         LEFT JOIN own o ON o.ch = m.channel_id
+        WHERE ${slScopeM}
         GROUP BY m.channel_id
       )
       SELECT l.channel_id AS channelId, l.channel_name AS channelName,
@@ -591,6 +603,10 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
 
     // Single pass: latest row per chat (name) + stats + unread. The previous
     // version materialised EVERY telegram message row just to dedupe names.
+    // User sync-scope: groups/channels outside telegram.syncChats are hidden,
+    // stored history included (private chats always pass).
+    const tgScope = sql.raw(sourceFilterPredicate('telegram'));
+    const tgScopeM = sql.raw(sourceFilterPredicate('telegram', 'm'));
     const tgRows = db.all<{
       chatId: number; chatName: string | null; chatType: string | null;
       cnt: number; latestTs: string; lastMessageId: number; unread: number;
@@ -599,6 +615,7 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
         SELECT chat_id, chat_name,
                ROW_NUMBER() OVER (PARTITION BY chat_id ORDER BY id DESC) AS rn
         FROM telegram_messages
+        WHERE ${tgScope}
       ),
       own AS (
         SELECT chat_id AS ch, MAX(timestamp) AS last_own_ts
@@ -618,6 +635,7 @@ router.get('/chats', optionalAuth, trackAiCall, async (req, res) => {
         FROM telegram_messages m
         LEFT JOIN chat_read_state r ON r.source = 'telegram' AND r.chat_id = CAST(m.chat_id AS TEXT)
         LEFT JOIN own o ON o.ch = m.chat_id
+        WHERE ${tgScopeM}
         GROUP BY m.chat_id
       )
       SELECT l.chat_id AS chatId, l.chat_name AS chatName, s.chat_type AS chatType,
@@ -1097,13 +1115,18 @@ router.post('/chats/read-all', uiOnlyAuth, validateBody(ReadAllBody), (req, res)
   let marked = 0;
 
   for (const src of chatSources) {
+    // Sync-scope aware: chats hidden by a source filter keep their unread
+    // state so nothing is silently lost if the source is re-included later.
     let ids: string[] = [];
     if (src === 'telegram') {
-      ids = db.selectDistinct({ id: telegramMessages.chatId }).from(telegramMessages).all().map((r) => String(r.id));
+      ids = db.selectDistinct({ id: telegramMessages.chatId }).from(telegramMessages)
+        .where(sql.raw(sourceFilterPredicate('telegram', 'telegram_messages'))).all().map((r) => String(r.id));
     } else if (src === 'discord') {
-      ids = db.selectDistinct({ id: discordMessages.channelId }).from(discordMessages).all().map((r) => r.id);
+      ids = db.selectDistinct({ id: discordMessages.channelId }).from(discordMessages)
+        .where(sql.raw(sourceFilterPredicate('discord', 'discord_messages'))).all().map((r) => r.id);
     } else if (src === 'slack') {
-      ids = db.selectDistinct({ id: slackMessages.channelId }).from(slackMessages).all().map((r) => r.id);
+      ids = db.selectDistinct({ id: slackMessages.channelId }).from(slackMessages)
+        .where(sql.raw(sourceFilterPredicate('slack', 'slack_messages'))).all().map((r) => r.id);
     } else if (src === 'twitter') {
       ids = db.selectDistinct({ id: twitterDms.conversationId }).from(twitterDms).all().map((r) => r.id);
     }
@@ -1148,19 +1171,22 @@ router.get('/search', optionalAuth, trackAiCall, validateQuery(SearchQuery), (re
 
   if (sources.includes('telegram')) {
     const rows = permittedRows('telegram', db.select().from(telegramMessages)
-      .where(like(telegramMessages.content, `%${q}%`))
+      .where(and(like(telegramMessages.content, `%${q}%`),
+        sql.raw(sourceFilterPredicate('telegram', 'telegram_messages'))))
       .orderBy(desc(telegramMessages.timestamp)).limit(lim).all(), (m) => String(m.chatId));
     results.push(...rows.map((m) => ({ source: 'telegram', ...m })));
   }
   if (sources.includes('discord')) {
     const rows = permittedRows('discord', db.select().from(discordMessages)
-      .where(like(discordMessages.content, `%${q}%`))
+      .where(and(like(discordMessages.content, `%${q}%`),
+        sql.raw(sourceFilterPredicate('discord', 'discord_messages'))))
       .orderBy(desc(discordMessages.timestamp)).limit(lim).all(), (m) => m.channelId);
     results.push(...rows.map((m) => ({ source: 'discord', ...m })));
   }
   if (sources.includes('slack')) {
     const rows = permittedRows('slack', db.select().from(slackMessages)
-      .where(like(slackMessages.content, `%${q}%`))
+      .where(and(like(slackMessages.content, `%${q}%`),
+        sql.raw(sourceFilterPredicate('slack', 'slack_messages'))))
       .orderBy(desc(slackMessages.timestamp)).limit(lim).all(), (m) => m.channelId);
     results.push(...rows.map((m) => ({ source: 'slack', ...m })));
   }
@@ -1281,7 +1307,8 @@ router.get('/activity', optionalAuth, trackAiCall, validateQuery(ActivityQuery),
 
     if (src === 'telegram') {
       const rows = permittedActivityRows('telegram', db.select().from(telegramMessages)
-        .where(and(gte(telegramMessages.timestamp, since), lte(telegramMessages.timestamp, until)))
+        .where(and(gte(telegramMessages.timestamp, since), lte(telegramMessages.timestamp, until),
+          sql.raw(sourceFilterPredicate('telegram', 'telegram_messages'))))
         .orderBy(desc(telegramMessages.timestamp))
         .limit(lim)
         .all(), (r) => String(r.chatId));
@@ -1304,7 +1331,8 @@ router.get('/activity', optionalAuth, trackAiCall, validateQuery(ActivityQuery),
 
     if (src === 'discord') {
       const rows = permittedActivityRows('discord', db.select().from(discordMessages)
-        .where(and(gte(discordMessages.timestamp, since), lte(discordMessages.timestamp, until)))
+        .where(and(gte(discordMessages.timestamp, since), lte(discordMessages.timestamp, until),
+          sql.raw(sourceFilterPredicate('discord', 'discord_messages'))))
         .orderBy(desc(discordMessages.timestamp))
         .limit(lim)
         .all(), (r) => r.channelId);
@@ -1325,7 +1353,8 @@ router.get('/activity', optionalAuth, trackAiCall, validateQuery(ActivityQuery),
 
     if (src === 'slack') {
       const rows = permittedActivityRows('slack', db.select().from(slackMessages)
-        .where(and(gte(slackMessages.timestamp, since), lte(slackMessages.timestamp, until)))
+        .where(and(gte(slackMessages.timestamp, since), lte(slackMessages.timestamp, until),
+          sql.raw(sourceFilterPredicate('slack', 'slack_messages'))))
         .orderBy(desc(slackMessages.timestamp))
         .limit(lim)
         .all(), (r) => r.channelId);

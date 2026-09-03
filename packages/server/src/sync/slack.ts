@@ -7,6 +7,7 @@ import { broadcast } from '../websocket/hub.js';
 import {
   syncSlackContacts, upsertContactFromMessage, getContactCriteria,
 } from './contacts.js';
+import { getSourceAllowlist } from './source-filters.js';
 
 export interface SlackConfig {
   token: string;           // xoxp- user token
@@ -77,6 +78,17 @@ export class SlackSync {
       console.error('[slack] Auth failed:', e);
       return false;
     }
+  }
+
+  /**
+   * Apply the user's channel allowlist (slack.syncChannels). 1:1 DMs are
+   * always synced; channels, private channels and group DMs are dropped
+   * unless allowlisted. No allowlist = everything.
+   */
+  private filterAllowedChannels(channels: SlackChannelInfo[]): SlackChannelInfo[] {
+    const allowed = getSourceAllowlist('slack');
+    if (!allowed) return channels;
+    return channels.filter((ch) => ch.type === 'im' || allowed.has(ch.id));
   }
 
   async getChannels(): Promise<SlackChannelInfo[]> {
@@ -276,7 +288,7 @@ export class SlackSync {
     broadcast({ type: 'sync:progress', data: { service: 'slack', status: 'running', type: 'full' } });
 
     try {
-      const channels = await this.getChannels();
+      const channels = this.filterAllowedChannels(await this.getChannels());
       let totalSaved = 0;
       let totalChats = 0;
 
@@ -361,12 +373,20 @@ export class SlackSync {
       if (!event || event.subtype) return;
 
       const channelId = event.channel as string;
+      const channelType = event.channel_type as string || '';
+      const isDm = channelType === 'im';
+
+      // Sync-scope allowlist: non-DM conversations outside the configured
+      // channel selection are dropped entirely (not stored, not broadcast).
+      if (!isDm) {
+        const allowed = getSourceAllowlist('slack');
+        if (allowed && !allowed.has(channelId)) return;
+      }
+
       const ts = event.ts as string || '';
       const userId = (event.user as string) || '';
       const userName = userId ? await this.resolveUser(userId) : 'Unknown';
       const channelName = this.channelCache.get(channelId) || channelId;
-      const channelType = event.channel_type as string || '';
-      const isDm = channelType === 'im';
 
       const db = getDb();
       const timestamp = ts ? new Date(parseFloat(ts) * 1000).toISOString() : new Date().toISOString();
@@ -440,7 +460,7 @@ export class SlackSync {
       if (this.pollInFlight) return; // previous cycle still running
       this.pollInFlight = true;
       try {
-        const channels = await this.getChannels();
+        const channels = this.filterAllowedChannels(await this.getChannels());
         for (const ch of channels) {
           const db = getDb();
           const state = db.select().from(syncState)

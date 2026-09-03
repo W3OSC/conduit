@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   ChevronDown, Eye, EyeOff, RefreshCw, Loader2, CheckCircle2, XCircle, AlertTriangle, Database,
   Key, Copy, Check, Send, Server, Shield, Settings, PlugZap, UserCircle2, Clock, Users,
-  ExternalLink,
+  ExternalLink, ListFilter, Search, Lock, Hash,
 } from 'lucide-react';
 import {
   api, type DiscordGuildInfo, type Permission, type ContactCriteria,
@@ -536,7 +536,13 @@ function DiscordGuildPicker({ isConnected }: { isConnected: boolean }) {
 
   const save = useMutation({
     mutationFn: () => api.setDiscordSyncGuilds(Array.from(selected)),
-    onSuccess: () => { toast({ title: 'Server sync preferences saved', variant: 'success' }); qc.invalidateQueries({ queryKey: ['discord-guilds'] }); },
+    onSuccess: () => {
+      toast({ title: 'Server sync preferences saved', variant: 'success' });
+      // Query-time filtering means the change is visible immediately.
+      for (const key of [['discord-guilds'], ['chats'], ['digest'], ['status']]) {
+        qc.invalidateQueries({ queryKey: key });
+      }
+    },
     onError: (e: Error) => toast({ title: 'Save failed', description: e.message, variant: 'destructive' }),
   });
 
@@ -550,9 +556,10 @@ function DiscordGuildPicker({ isConnected }: { isConnected: boolean }) {
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <p className="text-xs font-medium text-muted-foreground">Servers to sync — DMs are always included</p>
+        <p className="text-xs font-medium text-muted-foreground">Servers to include — DMs are always synced</p>
         <span className="text-[11px] text-muted-foreground">{selected.size}/{guilds.length}</span>
       </div>
+      <ScopeSummary count={selected.size} noun="servers" />
       <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
         {guilds.map((g) => <GuildRow key={g.id} guild={g} checked={selected.has(g.id)} onToggle={() => toggle(g.id)} />)}
       </div>
@@ -607,6 +614,224 @@ function GuildRow({ guild, checked, onToggle }: { guild: DiscordGuildInfo; check
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  );
+}
+
+/** Shared "empty selection = everything included" banner for scope pickers. */
+function ScopeSummary({ count, noun }: { count: number; noun: string }) {
+  return (
+    <div className={cn(
+      'rounded-lg border px-3 py-2 text-[11px]',
+      count === 0
+        ? 'border-border bg-secondary/30 text-muted-foreground'
+        : 'border-primary/25 bg-primary/5 text-foreground/80',
+    )}>
+      {count === 0
+        ? `No filter active — all ${noun} are included. Select ${noun} to limit syncing to just those.`
+        : `Filtering active — only the ${count} selected ${count === 1 ? noun.replace(/s$/, '') : noun} (plus DMs) will be synced and shown.`}
+    </div>
+  );
+}
+
+interface ScopeItem { id: string; name: string; synced?: boolean; hint?: string; icon?: 'hash' | 'lock' | 'users' }
+
+/**
+ * Generic source-scope picker: searchable checkbox list + save. Used for the
+ * Slack channel and Telegram chat filters (Discord keeps its richer
+ * guild-specific picker above).
+ */
+function SourceScopePicker({ items, noun, save, saving }: {
+  items: ScopeItem[];
+  noun: string;
+  save: (ids: string[]) => void;
+  saving: boolean;
+}) {
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [inited, setInited] = useState(false);
+  const [search, setSearch] = useState('');
+
+  useEffect(() => {
+    if (!inited) {
+      setSelected(new Set(items.filter((i) => i.synced).map((i) => i.id)));
+      setInited(true);
+    }
+  }, [items, inited]);
+
+  const toggle = (id: string) => setSelected((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const q = search.trim().toLowerCase();
+  const visible = q ? items.filter((i) => i.name.toLowerCase().includes(q)) : items;
+
+  const iconFor = (icon?: ScopeItem['icon']) => {
+    if (icon === 'lock') return <Lock className="w-3 h-3 text-muted-foreground/70 flex-shrink-0" />;
+    if (icon === 'users') return <Users className="w-3 h-3 text-muted-foreground/70 flex-shrink-0" />;
+    return <Hash className="w-3 h-3 text-muted-foreground/50 flex-shrink-0" />;
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium text-muted-foreground">
+          {`${noun.charAt(0).toUpperCase()}${noun.slice(1)} to include — DMs are always synced`}
+        </p>
+        <span className="text-[11px] text-muted-foreground">{selected.size}/{items.length}</span>
+      </div>
+      <ScopeSummary count={selected.size} noun={noun} />
+      <div className="relative">
+        <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground/60" />
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder={`Search ${noun}…`}
+          className="input-warm w-full pl-9 text-xs"
+        />
+      </div>
+      <div className="space-y-1 max-h-60 overflow-y-auto pr-1">
+        {visible.length === 0 && (
+          <p className="text-[11px] text-muted-foreground px-1 py-2">No {noun} match “{search}”.</p>
+        )}
+        {visible.map((item) => {
+          const checked = selected.has(item.id);
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => toggle(item.id)}
+              className={cn(
+                'w-full flex items-center gap-2.5 rounded-lg border px-3 py-2 text-left transition-all duration-150',
+                checked ? 'border-primary/25 bg-primary/5' : 'border-border bg-secondary/30 hover:border-border/80',
+              )}
+            >
+              <span className={cn(
+                'w-4 h-4 rounded flex-shrink-0 border-2 flex items-center justify-center transition-all',
+                checked ? 'bg-primary border-primary' : 'border-muted-foreground/40',
+              )}>
+                {checked && <Check className="w-2.5 h-2.5 text-primary-foreground" />}
+              </span>
+              {iconFor(item.icon)}
+              <span className="flex-1 text-xs font-medium truncate">{item.name}</span>
+              {item.hint && <span className="text-[10px] text-muted-foreground/70 flex-shrink-0">{item.hint}</span>}
+            </button>
+          );
+        })}
+      </div>
+      <div className="flex items-center gap-2">
+        <button onClick={() => save(Array.from(selected))} disabled={saving} className="btn-primary text-xs">
+          {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+          Save Selection
+        </button>
+        {selected.size > 0 && (
+          <button onClick={() => setSelected(new Set())} disabled={saving} className="btn-ghost text-xs">
+            Clear (include all)
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SlackChannelPicker({ isConnected }: { isConnected: boolean }) {
+  const qc = useQueryClient();
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['slack-channels'],
+    queryFn: api.slackChannels,
+    enabled: isConnected,
+    retry: false,
+  });
+
+  const save = useMutation({
+    mutationFn: (ids: string[]) => api.setSlackSyncChannels(ids),
+    onSuccess: () => {
+      toast({ title: 'Channel sync preferences saved', variant: 'success' });
+      for (const key of [['slack-channels'], ['chats'], ['digest'], ['status']]) {
+        qc.invalidateQueries({ queryKey: key });
+      }
+    },
+    onError: (e: Error) => toast({ title: 'Save failed', description: e.message, variant: 'destructive' }),
+  });
+
+  if (!isConnected) return <p className="text-xs text-muted-foreground">Connect Slack to select channels to sync. DMs are always synced.</p>;
+  if (isLoading)    return <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="w-3.5 h-3.5 animate-spin" />Loading channels…</div>;
+  if (error || !data) return <p className="text-xs text-muted-foreground">Could not load channels.</p>;
+
+  // 1:1 DMs are always synced and therefore not listed; everything else
+  // (channels, private channels, group DMs) is selectable.
+  const items = data.channels
+    .filter((c) => c.type !== 'im')
+    .map((c) => ({
+      id: c.id,
+      name: c.name,
+      synced: c.synced,
+      icon: c.type === 'private_channel' ? 'lock' as const : c.type === 'mpim' ? 'users' as const : 'hash' as const,
+      hint: c.type === 'mpim' ? 'group DM' : c.type === 'private_channel' ? 'private' : undefined,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  if (items.length === 0) return <p className="text-xs text-muted-foreground">No channels visible to this account.</p>;
+
+  return <SourceScopePicker items={items} noun="channels" save={(ids) => save.mutate(ids)} saving={save.isPending} />;
+}
+
+function TelegramChatPicker({ isConnected }: { isConnected: boolean }) {
+  const qc = useQueryClient();
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['telegram-chats'],
+    queryFn: api.telegramChats,
+    enabled: isConnected,
+    retry: false,
+  });
+
+  const save = useMutation({
+    mutationFn: (ids: string[]) => api.setTelegramSyncChats(ids),
+    onSuccess: () => {
+      toast({ title: 'Chat sync preferences saved', variant: 'success' });
+      for (const key of [['telegram-chats'], ['chats'], ['digest'], ['status']]) {
+        qc.invalidateQueries({ queryKey: key });
+      }
+    },
+    onError: (e: Error) => toast({ title: 'Save failed', description: e.message, variant: 'destructive' }),
+  });
+
+  if (!isConnected) return <p className="text-xs text-muted-foreground">Connect Telegram to select groups and channels to sync. Private chats are always synced.</p>;
+  if (isLoading)    return <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="w-3.5 h-3.5 animate-spin" />Loading chats…</div>;
+  if (error || !data) return <p className="text-xs text-muted-foreground">Could not load chats.</p>;
+
+  // Private chats (DMs) are always synced and therefore not listed.
+  const items = data.chats
+    .filter((c) => c.type !== 'private')
+    .map((c) => ({
+      id: c.id,
+      name: c.name,
+      synced: c.synced,
+      icon: c.type === 'channel' ? 'hash' as const : 'users' as const,
+      hint: c.type,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  if (items.length === 0) return <p className="text-xs text-muted-foreground">No groups or channels visible to this account.</p>;
+
+  return <SourceScopePicker items={items} noun="chats" save={(ids) => save.mutate(ids)} saving={save.isPending} />;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Section: Sources (sync scope)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function SourcesSection({ service }: { service: Service }) {
+  const connStatus = useConnectionStore((s) => s.statuses[service]);
+  const isConnected = connStatus?.status === 'connected';
+  const subtitle = {
+    slack: 'Choose which channels and group DMs Conduit syncs. Direct messages are always included.',
+    discord: 'Choose which servers Conduit syncs. Direct messages are always included.',
+    telegram: 'Choose which groups and channels Conduit syncs. Private chats are always included.',
+  }[service];
+
+  return (
+    <div className="space-y-4">
+      <SectionHeader icon={ListFilter} title="Sources" subtitle={subtitle} />
+      {service === 'discord' && <DiscordGuildPicker isConnected={isConnected} />}
+      {service === 'slack' && <SlackChannelPicker isConnected={isConnected} />}
+      {service === 'telegram' && <TelegramChatPicker isConnected={isConnected} />}
     </div>
   );
 }
@@ -734,15 +959,6 @@ function CredentialsSection({ service, onConnected }: { service: Service; onConn
             {save.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
             Save Credentials
           </button>
-
-          <div className="divider" />
-          <div>
-            <p className="text-sm font-semibold mb-3 flex items-center gap-2">
-              <Server className="w-4 h-4 text-indigo-400" />
-              Server Sync Selection
-            </p>
-            <DiscordGuildPicker isConnected={isConnected} />
-          </div>
         </div>
       )}
 
@@ -1158,7 +1374,8 @@ function ContactsSection({ service }: { service: Service }) {
 // ─────────────────────────────────────────────────────────────────────────────
 const SERVICE_SECTIONS = [
   { id: 'overview',     label: 'Overview',     icon: PlugZap  },
-  { id: 'credentials', label: 'Credentials',  icon: Key      },
+  { id: 'credentials', label: 'Credentials',  icon: Key        },
+  { id: 'sources',     label: 'Sources',      icon: ListFilter },
   { id: 'permissions', label: 'Permissions',  icon: Shield   },
   { id: 'sync',        label: 'Sync',         icon: Clock    },
   { id: 'contacts',    label: 'Contacts',     icon: Users    },
@@ -1245,6 +1462,7 @@ export function ServiceAccordion({ service, standalone = false }: { service: Ser
           >
             {activeSection === 'overview'    && <OverviewSection    service={service} testSteps={testSteps} testRunning={testRunning} runTest={runTest} clearTestSteps={() => setTestSteps([])} />}
             {activeSection === 'credentials' && <CredentialsSection service={service} onConnected={() => setActiveSection('overview')} />}
+            {activeSection === 'sources'     && <SourcesSection     service={service} />}
             {activeSection === 'permissions' && <PermissionsSection service={service} />}
             {activeSection === 'sync'        && <SyncSection        service={service} />}
             {activeSection === 'contacts'    && <ContactsSection    service={service} />}

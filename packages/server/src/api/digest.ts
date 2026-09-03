@@ -29,6 +29,7 @@ import {
   filterEnabledSources, filterReadIds, resolveTwitterReadPerms,
   resolveEffectiveFineGrained, isReadEnabled,
 } from './permissions-utils.js';
+import { sourceFilterPredicate, type FilterableService } from '../sync/source-filters.js';
 import { z, boundedInt, isoDateTime, queryOf, validateQuery } from './validate.js';
 import { documentRoute } from './openapi-registry.js';
 
@@ -76,11 +77,17 @@ function needsReplyForSource(
   cfg: {
     source: string; table: string; chatIdCol: string; chatNameExpr: string;
     senderIdCol: string; senderNameCol: string; contentCol: string; tsCol: string;
+    /** Set for sources with a user-configured sync scope (source filter). */
+    filterService?: FilterableService;
   },
   myIdsJson: string,
   unreadEpoch: string,
   limit: number,
 ): NeedsReplyItem[] {
+  // User sync-scope: confine every scan to the configured source selection so
+  // de-selected guilds/channels/chats never surface, even for stored history.
+  const scope = cfg.filterService ? sourceFilterPredicate(cfg.filterService) : '1=1';
+  const scopeM = cfg.filterService ? sourceFilterPredicate(cfg.filterService, 'm') : '1=1';
   const rows = db.all<{
     chatId: string; chatName: string | null; senderName: string | null;
     content: string | null; ts: string; unread: number;
@@ -94,6 +101,7 @@ function needsReplyForSource(
              ${cfg.tsCol} AS ts,
              ROW_NUMBER() OVER (PARTITION BY ${cfg.chatIdCol} ORDER BY ${cfg.tsCol} DESC) AS rn
       FROM ${cfg.table}
+      WHERE ${scope}
     ),
     own AS (
       -- Sending a message implicitly marks the chat read up to that point.
@@ -110,6 +118,7 @@ function needsReplyForSource(
       FROM ${cfg.table} m
       LEFT JOIN chat_read_state r ON r.source = '${cfg.source}' AND r.chat_id = CAST(m.${cfg.chatIdCol} AS TEXT)
       LEFT JOIN own o ON o.chat_key = CAST(m.${cfg.chatIdCol} AS TEXT)
+      WHERE ${scopeM}
       GROUP BY m.${cfg.chatIdCol}
     )
     SELECT l.chat_key AS chatId, l.chat_name AS chatName, l.sender_name AS senderName,
@@ -175,7 +184,7 @@ router.get('/', optionalAuth, trackAiCall, validateQuery(DigestQuery), (req, res
     needsReply.push(...needsReplyForSource(db, {
       source: 'slack', table: 'slack_messages', chatIdCol: 'channel_id',
       chatNameExpr: 'channel_name', senderIdCol: 'user_id', senderNameCol: 'user_name',
-      contentCol: 'content', tsCol: 'timestamp',
+      contentCol: 'content', tsCol: 'timestamp', filterService: 'slack',
     }, myIds('slack'), boundedEpoch, 15));
   }
   if (chatSources.includes('discord')) {
@@ -183,14 +192,14 @@ router.get('/', optionalAuth, trackAiCall, validateQuery(DigestQuery), (req, res
       source: 'discord', table: 'discord_messages', chatIdCol: 'channel_id',
       chatNameExpr: "COALESCE(guild_name || ' #' || channel_name, channel_name)",
       senderIdCol: 'author_id', senderNameCol: 'author_name',
-      contentCol: 'content', tsCol: 'timestamp',
+      contentCol: 'content', tsCol: 'timestamp', filterService: 'discord',
     }, myIds('discord'), boundedEpoch, 15));
   }
   if (chatSources.includes('telegram')) {
     needsReply.push(...needsReplyForSource(db, {
       source: 'telegram', table: 'telegram_messages', chatIdCol: 'chat_id',
       chatNameExpr: 'chat_name', senderIdCol: 'sender_id', senderNameCol: 'sender_name',
-      contentCol: 'content', tsCol: 'timestamp',
+      contentCol: 'content', tsCol: 'timestamp', filterService: 'telegram',
     }, myIds('telegram'), boundedEpoch, 15));
   }
   if (chatSources.includes('twitter') && (!apiKeyId || resolveTwitterReadPerms(apiKeyId).readDms)) {
@@ -329,6 +338,8 @@ router.get('/', optionalAuth, trackAiCall, validateQuery(DigestQuery), (req, res
     const senderCol = { slack: 'user_id', discord: 'author_id', telegram: 'sender_id', twitter: 'sender_id' }[src]!;
     const tsCol = src === 'twitter' ? 'created_at' : 'timestamp';
     const idsJson = myIds(src);
+    // User sync-scope: unread totals must not count de-selected sources.
+    const scopeM = src === 'twitter' ? '1=1' : sourceFilterPredicate(src as FilterableService, 'm');
     const row = db.all<{ n: number }>(sql.raw(`
       WITH own AS (
         SELECT CAST(${chatCol} AS TEXT) AS chat_key, MAX(${tsCol}) AS last_own_ts
@@ -342,6 +353,7 @@ router.get('/', optionalAuth, trackAiCall, validateQuery(DigestQuery), (req, res
       FROM ${table} m
       LEFT JOIN chat_read_state r ON r.source = '${src}' AND r.chat_id = CAST(m.${chatCol} AS TEXT)
       LEFT JOIN own o ON o.chat_key = CAST(m.${chatCol} AS TEXT)
+      WHERE ${scopeM}
     `));
     unreadBySource[src] = row[0]?.n ?? 0;
   }

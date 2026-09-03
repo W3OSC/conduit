@@ -3,12 +3,13 @@ import DiscordJS from 'discord.js-selfbot-v13';
 const { Client } = DiscordJS as unknown as { Client: new (opts?: Record<string, unknown>) => DiscordClient };
 
 import { getDb } from '../db/client.js';
-import { discordMessages, syncState, syncRuns, accounts, settings } from '../db/schema.js';
+import { discordMessages, syncState, syncRuns, accounts } from '../db/schema.js';
 import { eq, and, sql } from 'drizzle-orm';
 import { broadcast } from '../websocket/hub.js';
 import {
   syncDiscordContacts, upsertContact, upsertContactFromMessage, getContactCriteria,
 } from './contacts.js';
+import { getSourceAllowlist } from './source-filters.js';
 
 // Minimal Discord client interface we need
 interface DiscordMessage {
@@ -561,14 +562,7 @@ export class DiscordSync {
 
   /** Read the guild allowlist from the settings table. Null = no allowlist (sync all). */
   private getAllowedGuildIds(): Set<string> | null {
-    const db = getDb();
-    const row = db.select().from(settings).where(eq(settings.key, 'discord.syncGuilds')).get();
-    if (!row) return null;
-    try {
-      const ids = JSON.parse(row.value) as string[];
-      if (!Array.isArray(ids) || ids.length === 0) return null;
-      return new Set(ids);
-    } catch { return null; }
+    return getSourceAllowlist('discord');
   }
 
   async sendSelf(text: string): Promise<boolean> {
