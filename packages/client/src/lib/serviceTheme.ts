@@ -27,6 +27,7 @@ export const SERVICE_THEME: Record<string, ServiceTheme> = {
   calendar: { label: 'Calendar',  letter: 'C', hex: '#F59E0B', bg: 'bg-amber-500/10',  text: 'text-amber-400',  border: 'border-amber-500/25', dot: 'bg-amber-400'  },
   notion:   { label: 'Notion',    letter: 'N', hex: '#71717A', bg: 'bg-zinc-500/10',   text: 'text-zinc-300',   border: 'border-zinc-500/25',  dot: 'bg-zinc-300'   },
   obsidian: { label: 'Files',     letter: 'F', hex: '#A855F7', bg: 'bg-purple-500/10', text: 'text-purple-300', border: 'border-purple-500/25',dot: 'bg-purple-300'  },
+  gdrive:   { label: 'Google Drive', letter: 'D', hex: '#4285F4', bg: 'bg-blue-500/10',   text: 'text-blue-400',   border: 'border-blue-500/25',  dot: 'bg-blue-400'   },
   smb:      { label: 'SMB Share', letter: 'S', hex: '#F59E0B', bg: 'bg-amber-500/10',  text: 'text-amber-400',  border: 'border-amber-500/25', dot: 'bg-amber-400'  },
   ai:       { label: 'AI',        letter: 'A', hex: '#10B981', bg: 'bg-emerald-500/10',text: 'text-emerald-300',border: 'border-emerald-500/25',dot: 'bg-emerald-300' },
 };
