@@ -4,9 +4,9 @@
  * instead of the deprecated optimizeDeps.esbuildOptions.
  *
  * The plugin checks `"rolldownVersion" in vite` using its statically-imported
- * vite module. In this monorepo, the plugin resolves vite@6 from the root
- * node_modules (pinned for security), so the check returns false even though
- * the actual running Vite process is v8. This causes a deprecation warning.
+ * vite module. This guards against that check resolving a Vite copy older than
+ * the running process (which produced a deprecation warning back when the root
+ * pinned vite@6); the pin is gone and the tree now dedupes to a single vite@8.
  *
  * Since we are on Vite 8, we simply unconditionally use rolldownOptions.
  */
