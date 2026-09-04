@@ -10,9 +10,12 @@
  *   Returns the list of guilds (with channels) visible to the connected Discord client.
  *
  * POST /api/discord/sync-guilds
- *   Body: { guildIds: string[] }
- *   Saves the guild allowlist to settings, then kicks off an incremental sync
- *   for newly-added guilds.
+ * POST /api/slack/sync-channels
+ * POST /api/telegram/sync-chats
+ *   Body: { guildIds | channelIds | chatIds: string[] }
+ *   Saves the platform's source allowlist (sync scope) to settings, then kicks
+ *   off an incremental sync for newly-included sources. An empty array clears
+ *   the filter (= include everything). DMs are always included regardless.
  */
 
 import { Router } from 'express';
@@ -29,6 +32,10 @@ import { optionalAuth, uiOnlyAuth } from '../auth/middleware.js';
 import { getConnectionManager, type ServiceName } from '../connections/manager.js';
 import { broadcast } from '../websocket/hub.js';
 import { getSqlite } from '../db/client.js';
+import {
+  SOURCE_FILTER_KEYS, getSourceAllowlist, getTelegramAllowlistCanonical,
+  canonicalTelegramChatId, type FilterableService,
+} from '../sync/source-filters.js';
 
 const router = Router();
 
@@ -284,7 +291,13 @@ router.get('/slack/channels', optionalAuth, async (_req, res) => {
   }
   try {
     const channels = await slack.getChannels();
-    res.json({ channels: channels.map((c) => ({ id: c.id, name: c.name, type: c.type })) });
+    const allowed = getSourceAllowlist('slack');
+    res.json({
+      channels: channels.map((c) => ({
+        id: c.id, name: c.name, type: c.type,
+        synced: allowed?.has(c.id) ?? false,
+      })),
+    });
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   }
@@ -302,11 +315,13 @@ router.get('/telegram/chats', optionalAuth, async (_req, res) => {
   }
   try {
     const chats = await telegram.getChats();
+    const allowed = getTelegramAllowlistCanonical();
     res.json({
       chats: chats.map((c) => ({
         id: c.chat_id,
         name: c.name,
         type: c.chat_type,
+        synced: allowed?.has(canonicalTelegramChatId(c.chat_id)) ?? false,
       })),
     });
   } catch (e) {
@@ -314,26 +329,45 @@ router.get('/telegram/chats', optionalAuth, async (_req, res) => {
   }
 });
 
-router.post('/discord/sync-guilds', optionalAuth, async (req, res) => {
-  const { guildIds } = req.body as { guildIds: string[] };
-  if (!Array.isArray(guildIds)) {
-    return res.status(400).json({ error: 'guildIds must be an array' });
-  }
+// ── Source allowlists (sync scope) ────────────────────────────────────────────
+// Persist a platform's include-list, then sync so newly-included sources
+// backfill. Query-time filtering makes exclusions take effect immediately.
 
+function saveSourceAllowlist(service: FilterableService, ids: string[]): void {
   const db = getDb();
-
-  // Persist the allowlist
-  const value = JSON.stringify(guildIds);
+  const value = JSON.stringify(ids);
   db.insert(settings)
-    .values({ key: 'discord.syncGuilds', value, updatedAt: new Date().toISOString() })
+    .values({ key: SOURCE_FILTER_KEYS[service], value, updatedAt: new Date().toISOString() })
     .onConflictDoUpdate({ target: settings.key, set: { value, updatedAt: new Date().toISOString() } })
     .run();
+  getConnectionManager().triggerSync(service).catch(console.error);
+}
 
-  // Kick off a sync for any newly included guilds
-  const manager = getConnectionManager();
-  manager.triggerSync('discord').catch(console.error);
-
+router.post('/discord/sync-guilds', optionalAuth, async (req, res) => {
+  const { guildIds } = req.body as { guildIds: string[] };
+  if (!Array.isArray(guildIds) || guildIds.some((id) => typeof id !== 'string')) {
+    return res.status(400).json({ error: 'guildIds must be an array of strings' });
+  }
+  saveSourceAllowlist('discord', guildIds);
   res.json({ success: true, guildIds });
+});
+
+router.post('/slack/sync-channels', optionalAuth, async (req, res) => {
+  const { channelIds } = req.body as { channelIds: string[] };
+  if (!Array.isArray(channelIds) || channelIds.some((id) => typeof id !== 'string')) {
+    return res.status(400).json({ error: 'channelIds must be an array of strings' });
+  }
+  saveSourceAllowlist('slack', channelIds);
+  res.json({ success: true, channelIds });
+});
+
+router.post('/telegram/sync-chats', optionalAuth, async (req, res) => {
+  const { chatIds } = req.body as { chatIds: string[] };
+  if (!Array.isArray(chatIds) || chatIds.some((id) => typeof id !== 'string')) {
+    return res.status(400).json({ error: 'chatIds must be an array of strings' });
+  }
+  saveSourceAllowlist('telegram', chatIds);
+  res.json({ success: true, chatIds });
 });
 
 export default router;

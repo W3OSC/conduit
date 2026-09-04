@@ -10,6 +10,7 @@ import { getCreds, setCreds, type TelegramCreds } from '../api/credentials.js';
 import {
   syncTelegramContacts, upsertContact, upsertContactFromMessage, getContactCriteria,
 } from './contacts.js';
+import { getTelegramAllowlistCanonical, canonicalTelegramChatId } from './source-filters.js';
 import type { Entity } from 'telegram/define.js';
 
 export interface TelegramConfig {
@@ -230,6 +231,14 @@ export class TelegramBridge {
             : new Date().toISOString();
 
           const chatType = entityType(chat);
+
+          // Sync-scope allowlist: non-private chats outside the configured
+          // selection are dropped entirely (not stored, not broadcast).
+          if (chatType !== 'private') {
+            const allowed = getTelegramAllowlistCanonical();
+            if (allowed && !allowed.has(canonicalTelegramChatId(chatId))) return;
+          }
+
           const db = getDb();
           const result = db.insert(telegramMessages).values({
             messageId: msg.id,
@@ -385,7 +394,13 @@ export class TelegramBridge {
     broadcast({ type: 'sync:progress', data: { service: 'telegram', status: 'running', type: 'full' } });
 
     try {
-      const chats = await this.getChats();
+      // Sync-scope allowlist: private chats always sync; groups/channels only
+      // when selected (no allowlist = everything).
+      const allowedChats = getTelegramAllowlistCanonical();
+      const chats = (await this.getChats()).filter((chat) =>
+        chat.chat_type === 'private'
+        || !allowedChats
+        || allowedChats.has(canonicalTelegramChatId(chat.chat_id)));
       let totalSaved = 0;
       let totalChats = 0;
 

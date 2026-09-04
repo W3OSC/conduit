@@ -41,6 +41,7 @@ After submitting a write action, poll `GET /outbox/{id}` or `GET /outbox?status=
 - **`rawJson` is never returned.** List endpoints strip the raw serialised platform payload from every row. API-key actors additionally do not receive `attachments`/`embeds` on message rows.
 - **`GET /messages` returns a real `total`** — the true count of matching rows across all queried sources, suitable for pagination.
 - **Per-chat unread counts** appear as an `unread` field on each chat entry in `GET /chats`.
+- **Source filters apply everywhere.** The user can restrict each platform to selected sources (Discord servers, Slack channels, Telegram groups/channels) in Settings → service → Sources. Excluded sources are omitted from `/chats`, `/digest`, `/activity` and `/search`; direct messages are always included.
 
 ---
 

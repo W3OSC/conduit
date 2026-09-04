@@ -287,12 +287,20 @@ export const api = {
   resetAppData: () =>
     request<{ success: boolean; message: string }>('/reset-app-data', { method: 'POST' }),
 
-  // Discord guild management
+  // Source filters (sync scope) — which servers/channels/chats each platform syncs
   discordGuilds: () =>
     request<DiscordGuildInfo[]>('/discord/guilds'),
   setDiscordSyncGuilds: (guildIds: string[]) =>
     request<{ success: boolean; guildIds: string[] }>('/discord/sync-guilds', {
       method: 'POST', body: JSON.stringify({ guildIds }),
+    }),
+  setSlackSyncChannels: (channelIds: string[]) =>
+    request<{ success: boolean; channelIds: string[] }>('/slack/sync-channels', {
+      method: 'POST', body: JSON.stringify({ channelIds }),
+    }),
+  setTelegramSyncChats: (chatIds: string[]) =>
+    request<{ success: boolean; chatIds: string[] }>('/telegram/sync-chats', {
+      method: 'POST', body: JSON.stringify({ chatIds }),
     }),
 
   // Rebuild contacts from existing message DB (applies criteria changes in real-time)
@@ -943,12 +951,16 @@ export interface SlackChannel {
   id: string;
   name: string;
   type: 'im' | 'mpim' | 'public_channel' | 'private_channel';
+  /** Whether the channel is in the sync-scope allowlist (slack.syncChannels). */
+  synced?: boolean;
 }
 
 export interface TelegramChat {
   id: string;
   name: string;
   type: string;
+  /** Whether the chat is in the sync-scope allowlist (telegram.syncChats). */
+  synced?: boolean;
 }
 
 export interface Permission {
