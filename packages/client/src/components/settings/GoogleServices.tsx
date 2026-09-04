@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ChevronDown, RefreshCw, Loader2, CheckCircle2, XCircle, AlertTriangle, Database, Key, Plus, Copy,
-  Trash2, X, Shield, Settings, PlugZap, Clock, FileText, Search,
+  Trash2, X, Shield, Settings, PlugZap, Clock, FileText, Search, History,
 } from 'lucide-react';
 import {
   api,
@@ -532,7 +532,7 @@ export function GoogleServicesAccordion({ standalone = false }: { standalone?: b
     onError: (e: Error) => toast({ title: 'Failed to save settings', description: e.message, variant: 'destructive' }),
   });
   const syncMeetNotes = useMutation({
-    mutationFn: api.meetNotesSync,
+    mutationFn: (opts?: { days?: number }) => api.meetNotesSync(opts),
     onSuccess: (r) => { toast({ title: 'Meeting notes synced', description: r.message, variant: 'default' }); qc.invalidateQueries({ queryKey: ['meet-notes-count'] }); },
     onError: (e: Error) => toast({ title: 'Sync failed', description: e.message, variant: 'destructive' }),
   });
@@ -627,10 +627,11 @@ export function GoogleServicesAccordion({ standalone = false }: { standalone?: b
               <p className="font-medium text-foreground/70">Required OAuth scopes</p>
               <p>
                 Your Google token must include{' '}
+                <code className="bg-secondary/80 px-1 rounded">drive.readonly</code>{' '}
+                — notes are discovered in Drive.{' '}
                 <code className="bg-secondary/80 px-1 rounded">meetings.space.readonly</code>{' '}
-                and{' '}
-                <code className="bg-secondary/80 px-1 rounded">drive.readonly</code>.
-                These are listed in the setup instructions above. If missing, remove and re-add your account — the connection test will catch it.
+                is optional and only adds attendee lists.
+                Both are listed in the setup instructions above. If Drive access is missing, remove and re-add your account — the connection test will catch it.
               </p>
             </div>
 
@@ -658,19 +659,31 @@ export function GoogleServicesAccordion({ standalone = false }: { standalone?: b
             </div>
 
             {/* Manual sync */}
-            <div className="flex items-center justify-between">
-              <div>
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
                 <p className="text-sm font-medium">Sync now</p>
-                <p className="text-xs text-muted-foreground">Fetch new notes from the last 7 days</p>
+                <p className="text-xs text-muted-foreground">
+                  Fetch new notes from the last 7 days, or backfill the last 90
+                </p>
               </div>
-              <button
-                onClick={() => syncMeetNotes.mutate()}
-                disabled={syncMeetNotes.isPending || connectedCount === 0}
-                className="btn-secondary text-xs gap-1.5"
-              >
-                <RefreshCw className={cn('w-3.5 h-3.5', syncMeetNotes.isPending && 'animate-spin')} />
-                {syncMeetNotes.isPending ? 'Syncing…' : 'Sync Notes'}
-              </button>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  onClick={() => syncMeetNotes.mutate({ days: 90 })}
+                  disabled={syncMeetNotes.isPending || connectedCount === 0}
+                  className="btn-ghost text-xs gap-1.5"
+                >
+                  <History className="w-3.5 h-3.5" />
+                  Backfill 90d
+                </button>
+                <button
+                  onClick={() => syncMeetNotes.mutate(undefined)}
+                  disabled={syncMeetNotes.isPending || connectedCount === 0}
+                  className="btn-secondary text-xs gap-1.5"
+                >
+                  <RefreshCw className={cn('w-3.5 h-3.5', syncMeetNotes.isPending && 'animate-spin')} />
+                  {syncMeetNotes.isPending ? 'Syncing…' : 'Sync Notes'}
+                </button>
+              </div>
             </div>
           </div>
         </div>

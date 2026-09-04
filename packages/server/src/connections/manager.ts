@@ -1197,7 +1197,7 @@ export class ConnectionManager {
             },
           },
           {
-            name: 'Meet API access (Meet Notes)',
+            name: 'Meet API access (attendee lists)',
             run: async () => {
               // Verify meetings.space.readonly scope via the Meet REST API.
               const gmailInst = this.getGmail();
@@ -1217,7 +1217,9 @@ export class ConnectionManager {
               } catch (e) {
                 const msg = e instanceof Error ? e.message : String(e);
                 if (msg.includes('403') || msg.includes('PERMISSION_DENIED') || msg.includes('insufficient')) {
-                  throw new Error('meetings.space.readonly scope not granted — remove and re-add this Google account with the updated scope list');
+                  // Optional: notes are discovered through Drive. The Meet API
+                  // only adds the participant list to each note.
+                  return 'meetings.space.readonly not granted — notes still sync, but without attendee lists';
                 }
                 throw e;
               }
