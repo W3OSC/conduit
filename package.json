@@ -25,11 +25,10 @@
     "@roamhq/wrtc-linux-x64": "0.8.1"
   },
   "overrides": {
-    "vite": "6.4.2",
     "@types/react": "^19.2.14",
-    "tar": "^7.5.13",
+    "tar": "^7.5.22",
     "axios": "^1.15.0",
-    "@hono/node-server": "1.19.13",
-    "esbuild": "^0.25.0"
+    "@hono/node-server": "^1.19.15",
+    "esbuild": "^0.28.2"
   }
 }
