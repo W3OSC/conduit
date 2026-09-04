@@ -16,6 +16,7 @@
     "postinstall": "node scripts/patch-react-swc.mjs && node scripts/patch-twitter-client.mjs"
   },
   "devDependencies": {
+    "@types/react": "^19.2.14",
     "concurrently": "^9.2.1",
     "wait-on": "^9.0.5"
   },
@@ -25,6 +26,7 @@
   },
   "overrides": {
     "vite": "6.4.2",
+    "@types/react": "^19.2.14",
     "tar": "^7.5.13",
     "axios": "^1.15.0",
     "@hono/node-server": "1.19.13",
