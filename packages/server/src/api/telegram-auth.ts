@@ -17,6 +17,7 @@
 import { Router } from 'express';
 import { TelegramClient, Api, password as PasswordHelper } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
+import { LogLevel } from 'telegram/extensions/Logger.js';
 import { optionalAuth } from '../auth/middleware.js';
 import { getCreds, setCreds, type TelegramCreds } from './credentials.js';
 import { getConnectionManager } from '../connections/manager.js';
@@ -37,10 +38,15 @@ let pendingAuth: PendingTelegramAuth | null = null;
 const PENDING_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 async function clearPending(): Promise<void> {
-  if (pendingAuth) {
-    await pendingAuth.client.disconnect().catch(() => {});
-    pendingAuth = null;
-  }
+  const prev = pendingAuth;
+  // Drop the reference first: a client stuck in GramJS's ping/reconnect loop can
+  // make disconnect() hang, and we must never let that block the next request.
+  pendingAuth = null;
+  if (!prev) return;
+  await Promise.race([
+    prev.client.disconnect().catch(() => {}),
+    new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+  ]);
 }
 
 function isExpired(): boolean {
@@ -64,9 +70,19 @@ router.post('/send-code', optionalAuth, async (req, res) => {
     const client = new TelegramClient(new StringSession(''), Number(apiId), apiHash, {
       connectionRetries: 3,
     });
+    // The unauthenticated auth client's background ping loop reliably times out on
+    // some networks and would otherwise spam `Error: TIMEOUT` to the server console.
+    // Silence it — the send-code / sign-in RPCs surface their own errors regardless.
+    client.setLogLevel(LogLevel.NONE);
     await client.connect();
 
+    console.log(`[telegram-auth] sending code to ${phone} (apiId=${apiId})`);
     const result = await client.sendCode({ apiId: Number(apiId), apiHash }, phone);
+    console.log(
+      `[telegram-auth] sendCode ok — type=${(result as any)?.type?.className ?? 'unknown'} ` +
+        `nextType=${(result as any)?.nextType?.className ?? 'none'} ` +
+        `timeout=${(result as any)?.timeout ?? 'n/a'} hash=${result.phoneCodeHash ? 'set' : 'MISSING'}`
+    );
     pendingAuth = { client, phoneCodeHash: result.phoneCodeHash, lockedAt: Date.now() };
 
     // Persist credentials immediately so the flow survives a page reload
@@ -75,6 +91,7 @@ router.post('/send-code', optionalAuth, async (req, res) => {
 
     res.json({ success: true });
   } catch (e) {
+    console.error('[telegram-auth] sendCode failed:', e);
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   }
 });
