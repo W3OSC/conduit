@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { Fragment, useState, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -560,8 +560,17 @@ function DiscordGuildPicker({ isConnected }: { isConnected: boolean }) {
         <span className="text-[11px] text-muted-foreground">{selected.size}/{guilds.length}</span>
       </div>
       <ScopeSummary count={selected.size} noun="servers" />
-      <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
-        {guilds.map((g) => <GuildRow key={g.id} guild={g} checked={selected.has(g.id)} onToggle={() => toggle(g.id)} />)}
+      <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+        {selected.size > 0 && <ScopeGroupLabel label={`Included · ${guilds.filter((g) => selected.has(g.id)).length}`} tone="active" />}
+        {guilds.filter((g) => selected.has(g.id)).map((g) => (
+          <GuildRow key={g.id} guild={g} checked onToggle={() => toggle(g.id)} />
+        ))}
+        {guilds.some((g) => !selected.has(g.id)) && (
+          <ScopeGroupLabel label={selected.size > 0 ? `Not included · ${guilds.filter((g) => !selected.has(g.id)).length}` : `All servers · ${guilds.length}`} />
+        )}
+        {guilds.filter((g) => !selected.has(g.id)).map((g) => (
+          <GuildRow key={g.id} guild={g} checked={false} onToggle={() => toggle(g.id)} />
+        ))}
       </div>
       <button onClick={() => save.mutate()} disabled={save.isPending} className="btn-primary text-xs">
         {save.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
@@ -634,6 +643,16 @@ function ScopeSummary({ count, noun }: { count: number; noun: string }) {
   );
 }
 
+/** Sticky group header inside the scope-picker scroll list. */
+function ScopeGroupLabel({ label, tone }: { label: string; tone?: 'active' }) {
+  return (
+    <p className={cn(
+      'sticky top-0 z-10 -mx-1 px-2 py-1 bg-card text-[10px] font-semibold uppercase tracking-wider',
+      tone === 'active' ? 'text-primary/80' : 'text-muted-foreground/60',
+    )}>{label}</p>
+  );
+}
+
 interface ScopeItem { id: string; name: string; synced?: boolean; hint?: string; icon?: 'hash' | 'lock' | 'users' }
 
 /**
@@ -660,7 +679,11 @@ function SourceScopePicker({ items, noun, save, saving }: {
 
   const toggle = (id: string) => setSelected((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const q = search.trim().toLowerCase();
-  const visible = q ? items.filter((i) => i.name.toLowerCase().includes(q)) : items;
+  const matches = (i: ScopeItem) => !q || i.name.toLowerCase().includes(q);
+  // Selected sources are pinned to their own group at the top so the current
+  // scope is visible at a glance; toggling moves the row between groups.
+  const included = items.filter((i) => selected.has(i.id) && matches(i));
+  const available = items.filter((i) => !selected.has(i.id) && matches(i));
 
   const iconFor = (icon?: ScopeItem['icon']) => {
     if (icon === 'lock') return <Lock className="w-3 h-3 text-muted-foreground/70 flex-shrink-0" />;
@@ -686,15 +709,20 @@ function SourceScopePicker({ items, noun, save, saving }: {
           className="input-warm w-full pl-9 text-xs"
         />
       </div>
-      <div className="space-y-1 max-h-60 overflow-y-auto pr-1">
-        {visible.length === 0 && (
+      <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
+        {included.length === 0 && available.length === 0 && (
           <p className="text-[11px] text-muted-foreground px-1 py-2">No {noun} match “{search}”.</p>
         )}
-        {visible.map((item) => {
+        {included.length > 0 && <ScopeGroupLabel label={`Included · ${included.length}`} tone="active" />}
+        {[...included, ...available].map((item, idx) => {
+          const groupBreak = idx === included.length && available.length > 0;
           const checked = selected.has(item.id);
           return (
+            <Fragment key={item.id}>
+            {groupBreak && (
+              <ScopeGroupLabel label={selected.size > 0 ? `Not included · ${available.length}` : `All ${noun} · ${available.length}`} />
+            )}
             <button
-              key={item.id}
               type="button"
               onClick={() => toggle(item.id)}
               className={cn(
@@ -712,6 +740,7 @@ function SourceScopePicker({ items, noun, save, saving }: {
               <span className="flex-1 text-xs font-medium truncate">{item.name}</span>
               {item.hint && <span className="text-[10px] text-muted-foreground/70 flex-shrink-0">{item.hint}</span>}
             </button>
+            </Fragment>
           );
         })}
       </div>
