@@ -13,7 +13,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  LayoutGrid, HardDrive, Server, Bot, Zap, Shield, Bell, Lock, Palette,
+  LayoutGrid, Server, Bot, Zap, Shield, Bell, Lock, Palette,
   ChevronRight, RefreshCw, AlertTriangle,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -85,7 +85,7 @@ const PANES: Record<PaneId, PaneMeta> = {
   google:        { title: 'Google',         sub: 'Gmail, Calendar, and Meet notes across your accounts',     service: 'gmail',    statusKeys: ['gmail', 'calendar'] },
   notion:        { title: 'Notion',         sub: 'Passthrough workspace access — nothing stored locally',    service: 'notion',   statusKeys: ['notion'] },
   obsidian:      { title: 'Obsidian Vault', sub: 'Git-synced vault for reading and editing notes',           service: 'obsidian', statusKeys: ['obsidian'] },
-  drive:         { title: 'Google Drive',   sub: 'Browse, read, and edit Drive files with your Google account', icon: HardDrive },
+  drive:         { title: 'Google Drive',   sub: 'Browse, read, and edit Drive files with your Google account', service: 'gdrive' },
   smb:           { title: 'Network Shares', sub: 'Windows / Samba shares for file reading and writing',      icon: Server },
   agents:        { title: 'Agent Access',   sub: 'API keys and the REST surface your agents call',           icon: Bot },
   install:       { title: 'Install Skill',  sub: 'Teach any agent the Conduit API in one paste',             icon: Zap },
