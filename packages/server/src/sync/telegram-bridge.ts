@@ -25,6 +25,9 @@ interface TelegramChat {
   chat_id: string;
   name: string;
   chat_type: string;
+  /** ISO timestamp of the dialog's newest message, from getDialogs. Lets an
+   *  incremental pass skip chats that have not moved since our cursor. */
+  last_message_ts?: string;
 }
 
 interface TelegramMessageData {
@@ -85,6 +88,11 @@ export class TelegramBridge {
   private _reconnectTimer: NodeJS.Timeout | null = null;
   private _reconnectAttempts = 0;
   private _disconnecting = false;
+  private _syncInFlight = false;
+  private _keepFreshTimer: NodeJS.Timeout | null = null;
+  /** Wall-clock ms of the last live NewMessage event (or connect). Diagnostic only;
+   *  liveness is decided by an active probe, not by inactivity. */
+  private _lastEventAt = 0;
   public connected = false;
   public accountInfo: { userId: string; displayName: string } | null = null;
 
@@ -165,6 +173,7 @@ export class TelegramBridge {
 
       this.accountInfo = { userId: String(me.id), displayName };
       this.connected = true;
+      this._lastEventAt = Date.now();
 
       // Persist the (possibly refreshed) session string back to the DB
       const freshSession = (this.client.session as StringSession).save();
@@ -216,6 +225,7 @@ export class TelegramBridge {
 
       // Register live message event handler
       this.client.addEventHandler(async (event: NewMessageEvent) => {
+        this._lastEventAt = Date.now();
         try {
           const msg = event.message;
           const chat = await event.getChat();
@@ -310,6 +320,7 @@ export class TelegramBridge {
         chat_id: String(d.entity!.id),
         name: entityName(d.entity!),
         chat_type: entityType(d.entity!),
+        last_message_ts: d.message?.date ? new Date(d.message.date * 1000).toISOString() : undefined,
       }));
   }
 
@@ -381,17 +392,31 @@ export class TelegramBridge {
     }).run();
   }
 
-  async initialFullSync(onProgress?: (service: string, chat: string, saved: number) => void): Promise<void> {
+  /**
+   * Cursor-bounded sync of every dialog. `mode: 'incremental'` (used by the
+   * keep-fresh timer) additionally skips chats whose newest message, as reported
+   * by getDialogs, is not newer than our stored cursor, so a quiet tick costs one
+   * getDialogs call instead of one getHistory per chat.
+   */
+  async initialFullSync(
+    onProgress?: (service: string, chat: string, saved: number) => void,
+    mode: 'full' | 'incremental' = 'full',
+  ): Promise<void> {
+    if (this._syncInFlight) {
+      console.log(`[telegram] ${mode} sync requested while another sync is running; skipping`);
+      return;
+    }
+    this._syncInFlight = true;
     const db = getDb();
     this._cancelRequested = false;
     const runId = db.insert(syncRuns).values({
       source: 'telegram',
-      syncType: 'full',
+      syncType: mode,
       status: 'running',
       startedAt: new Date().toISOString(),
     }).run().lastInsertRowid as number;
 
-    broadcast({ type: 'sync:progress', data: { service: 'telegram', status: 'running', type: 'full' } });
+    broadcast({ type: 'sync:progress', data: { service: 'telegram', status: 'running', type: mode } });
 
     try {
       // Sync-scope allowlist: private chats always sync; groups/channels only
@@ -408,7 +433,7 @@ export class TelegramBridge {
         db.update(syncRuns)
           .set({ messagesSaved: totalSaved, chatsVisited: totalChats })
           .where(eq(syncRuns.id, runId)).run();
-        broadcast({ type: 'sync:progress', data: { service: 'telegram', status: 'running', type: 'full', messagesSaved: totalSaved, chatsVisited: totalChats } });
+        broadcast({ type: 'sync:progress', data: { service: 'telegram', status: 'running', type: mode, messagesSaved: totalSaved, chatsVisited: totalChats } });
       };
 
       for (const chat of chats) {
@@ -417,6 +442,12 @@ export class TelegramBridge {
         const state = db.select().from(syncState)
           .where(and(eq(syncState.source, 'telegram'), eq(syncState.chatId, chat.chat_id)))
           .get();
+
+        // Incremental: nothing newer than our cursor in this dialog, skip the getHistory.
+        if (mode === 'incremental' && state?.lastMessageTs && chat.last_message_ts && chat.last_message_ts <= state.lastMessageTs) {
+          totalChats++;
+          continue;
+        }
 
         let messages: Awaited<ReturnType<typeof this.getMessages>> = [];
         try {
@@ -500,6 +531,48 @@ export class TelegramBridge {
         finishedAt: new Date().toISOString(),
       }).where(eq(syncRuns.id, runId)).run();
       broadcast({ type: 'sync:progress', data: { service: 'telegram', status: 'error', error: msg } });
+    } finally {
+      this._syncInFlight = false;
+    }
+  }
+
+  /**
+   * Keep Telegram fresh without relying on the live socket. GramJS's update loop
+   * can go quiet without ever emitting UpdateConnectionState, in which case no
+   * NewMessage arrives, no reconnect fires, and the feed freezes until someone
+   * triggers a manual sync (observed Sep 2026: every Telegram sync between the
+   * 8th and the 14th was manual). Each tick: an active liveness probe (getMe with
+   * a timeout), reconnect on failure, otherwise a cheap incremental pass.
+   * Interval comes from settings.incrementalIntervalMinutes.telegram.
+   */
+  startKeepFresh(intervalMinutes: number): void {
+    this.stopKeepFresh();
+    const minutes = Number.isFinite(intervalMinutes) && intervalMinutes >= 2 ? intervalMinutes : 5;
+    console.log(`[telegram] keep-fresh every ${minutes}m (probe + incremental catch-up)`);
+    this._keepFreshTimer = setInterval(async () => {
+      if (this._disconnecting || !this.client || !this.config) return;
+      if (this._syncInFlight) return;
+      // Liveness probe: a dead MTProto socket hangs rather than throws, so race a timeout.
+      try {
+        await Promise.race([
+          this.client.getMe(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('probe timeout')), 15_000)),
+        ]);
+      } catch (e) {
+        const idleMin = this._lastEventAt ? Math.round((Date.now() - this._lastEventAt) / 60_000) : -1;
+        console.warn(`[telegram] liveness probe failed (${e instanceof Error ? e.message : String(e)}; last event ${idleMin}m ago) — scheduling reconnect`);
+        this.connected = false;
+        this._scheduleReconnect();
+        return;
+      }
+      this.initialFullSync(undefined, 'incremental').catch((e) => console.error('[telegram] keep-fresh incremental sync failed:', e));
+    }, minutes * 60_000);
+  }
+
+  stopKeepFresh(): void {
+    if (this._keepFreshTimer) {
+      clearInterval(this._keepFreshTimer);
+      this._keepFreshTimer = null;
     }
   }
 
@@ -641,6 +714,7 @@ export class TelegramBridge {
   disconnect(): void {
     // Mark as intentionally disconnecting so the reconnect timer doesn't fire
     this._disconnecting = true;
+    this.stopKeepFresh();
     if (this._reconnectTimer) {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = null;

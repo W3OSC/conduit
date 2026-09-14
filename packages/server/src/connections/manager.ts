@@ -446,8 +446,23 @@ export class ConnectionManager {
       this.setStatus('telegram', { status: 'connected', accountId: info?.userId, displayName: info?.displayName, mode: 'mtproto' });
       // Catch-up for messages missed while offline (cursor-bounded, cheap).
       this.telegram.initialFullSync().catch((e) => console.error('[telegram] Catch-up sync failed:', e));
+      // The live socket alone is not enough: when GramJS goes quiet the feed
+      // freezes. Probe + incremental catch-up on the configured interval.
+      this.telegram.startKeepFresh(this.incrementalIntervalMinutes('telegram', 5));
     } catch (e) {
       this.setStatus('telegram', { status: 'error', error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  /** settings.incrementalIntervalMinutes[source], falling back when unset or invalid. */
+  private incrementalIntervalMinutes(source: 'slack' | 'discord' | 'telegram', fallback: number): number {
+    try {
+      const row = getDb().select().from(settings).where(eq(settings.key, 'incrementalIntervalMinutes')).get();
+      const parsed = row ? (JSON.parse(row.value) as Record<string, unknown>) : null;
+      const v = parsed?.[source];
+      return typeof v === 'number' && Number.isFinite(v) && v >= 2 ? v : fallback;
+    } catch {
+      return fallback;
     }
   }
 
