@@ -1,7 +1,7 @@
 /** Google Drive folder sidebar section: file tree with drag-and-drop upload. */
 
 import { useState, useEffect, useId } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ChevronRight, ChevronDown, Folder, FolderOpen, RefreshCw, Loader2, AlertCircle,
   AlertTriangle, HardDrive, Upload, CheckCircle2,
@@ -105,11 +105,22 @@ export interface GDriveSectionProps {
 export function GDriveSection({ folder, selectedItem, onSelect, onUpload, uploading, open, onToggle }: GDriveSectionProps) {
   const [filter, setFilter] = useState('');
   const fileInputId = useId();
+  const queryClient = useQueryClient();
 
-  const { data: treeData, isLoading, error, refetch } = useQuery({
+  const { data: treeData, isLoading, error } = useQuery({
     queryKey: ['gdrive-tree-files', folder.id],
     queryFn: () => api.gdriveFileTree(folder.id),
     staleTime: 5 * 60 * 1000,
+  });
+
+  // The server serves the tree from its DB cache, so a plain refetch returns
+  // the same stale data — a real refresh means POST /sync, then invalidate.
+  const syncMutation = useMutation({
+    mutationFn: () => api.syncGdriveFolder(folder.id),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['gdrive-tree-files', folder.id] });
+      queryClient.invalidateQueries({ queryKey: ['gdrive-folders'] });
+    },
   });
 
   const selectedId = selectedItem?.source.kind === 'gdrive' && selectedItem.source.folderId === folder.id
@@ -136,8 +147,13 @@ export function GDriveSection({ folder, selectedItem, onSelect, onUpload, upload
             </label>
             <input id={fileInputId} type="file" multiple className="sr-only"
               onChange={(e) => { const f = Array.from(e.target.files ?? []); if (f.length) onUpload(folder.id, f); e.target.value = ''; }} />
-            <button onClick={() => refetch()} className={sectionActionClass} title="Refresh">
-              <RefreshCw className={cn('w-3.5 h-3.5', isLoading && 'animate-spin')} />
+            <button
+              onClick={() => syncMutation.mutate()}
+              disabled={syncMutation.isPending}
+              className={sectionActionClass}
+              title="Sync folder from Drive"
+            >
+              <RefreshCw className={cn('w-3.5 h-3.5', (syncMutation.isPending || isLoading) && 'animate-spin')} />
             </button>
           </div>
         }

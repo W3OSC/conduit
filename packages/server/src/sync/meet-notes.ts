@@ -31,7 +31,13 @@ import type { GmailCreds } from './gmail.js';
 
 /** Setting key predates the rename; it now gates notes the user does not own. */
 const SHARED_NOTES_SETTING = 'meet_notes.drive_search_enabled';
-const MEET_FOLDER_NAME = 'Meet Recordings';
+/**
+ * Folders Meet saves artefacts into. 'Meet Recordings' is the classic flat
+ * folder; around Sep 2026 Google switched to a 'Google Meet' folder holding
+ * one subfolder per meeting series, so both names are searched and the
+ * subfolders of any match are included as parents too.
+ */
+const MEET_FOLDER_NAMES = ['Meet Recordings', 'Google Meet'];
 const DOC_MIME = 'application/vnd.google-apps.document';
 const MATCH_WINDOW_MS = 2 * 60 * 60 * 1000; // ±2h for calendar / conference matching
 
@@ -307,17 +313,33 @@ export class MeetNotesSync {
 
   // ── Drive discovery ───────────────────────────────────────────────────────
 
-  /** Folder IDs of every "Meet Recordings" folder visible to the account. */
+  /** Folder IDs of every Meet artefact folder visible to the account,
+   *  including the per-meeting subfolders of 'Google Meet' folders. */
   private async findMeetFolderIds(): Promise<string[]> {
     if (!this.auth) return [];
     const drive = google.drive({ version: 'v3', auth: this.auth });
+    const folderMime = 'application/vnd.google-apps.folder';
     try {
+      const nameClause = MEET_FOLDER_NAMES.map((n) => `name = '${n}'`).join(' or ');
       const res = await drive.files.list({
-        q: `name = '${MEET_FOLDER_NAME}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+        q: `(${nameClause}) and mimeType = '${folderMime}' and trashed = false`,
         fields: 'files(id)',
         pageSize: 20,
       });
-      return (res.data.files ?? []).map((f) => f.id).filter((id): id is string => !!id);
+      const ids = (res.data.files ?? []).map((f) => f.id).filter((id): id is string => !!id);
+      if (ids.length === 0) return ids;
+      // Notes live one level down in per-meeting subfolders; Drive queries
+      // don't recurse, so each subfolder must be queried as a parent itself.
+      const parentClause = ids.map((id) => `'${id}' in parents`).join(' or ');
+      const subs = await drive.files.list({
+        q: `(${parentClause}) and mimeType = '${folderMime}' and trashed = false`,
+        fields: 'files(id)',
+        pageSize: 200,
+      });
+      for (const f of subs.data.files ?? []) {
+        if (f.id) ids.push(f.id);
+      }
+      return ids;
     } catch {
       return [];
     }
