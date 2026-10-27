@@ -333,7 +333,10 @@ export class MeetNotesSync {
         const res = await drive.files.list({
           q,
           fields: 'nextPageToken, files(id, name, createdTime, webViewLink, owners(me))',
-          orderBy: 'createdTime desc',
+          // Drive rejects orderBy on fullText queries ("Sorting is not supported
+          // for queries with fullText terms"); order is irrelevant here anyway
+          // since every page is consumed and candidates are deduped by id.
+          ...(q.includes('fullText') ? {} : { orderBy: 'createdTime desc' }),
           pageSize: 100,
           ...(pageToken ? { pageToken } : {}),
         });
