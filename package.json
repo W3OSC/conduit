@@ -29,6 +29,15 @@
     "tar": "^7.5.22",
     "axios": "^1.15.0",
     "@hono/node-server": "^1.19.15",
-    "esbuild": "^0.28.2"
+    "esbuild": "^0.28.2",
+    "shell-quote": "^1.11.0"
+  },
+  "allowScripts": {
+    "@swc/core@1.16.20": true,
+    "better-sqlite3@12.11.1": true,
+    "bufferutil@4.1.0": true,
+    "es5-ext@0.10.64": true,
+    "esbuild@0.28.2": true,
+    "utf-8-validate@5.0.10": true
   }
 }

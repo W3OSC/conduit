@@ -17,7 +17,7 @@
     "@asteasolutions/zod-to-openapi": "^9.1.0",
     "@marsaud/smb2": "^0.18.0",
     "@notionhq/client": "^5.17.0",
-    "@simplewebauthn/server": "^13.3.0",
+    "@simplewebauthn/server": "^13.3.3",
     "@slack/socket-mode": "^2.0.6",
     "@slack/web-api": "^7.15.0",
     "@types/multer": "^2.1.0",
@@ -28,14 +28,14 @@
     "cors": "^2.8.5",
     "discord.js-selfbot-v13": "^3.7.1",
     "drizzle-orm": "^0.45.2",
-    "express": "^5.2.1",
+    "express": "^5.3.0",
     "googleapis": "^171.4.0",
-    "multer": "^2.3.0",
+    "multer": "^2.5.0",
     "otplib": "^13.4.0",
-    "simple-git": "^3.36.0",
+    "simple-git": "^4.0.2",
     "telegram": "^2.26.22",
     "ws": "^8.20.0",
-    "zod": "^4.4.3"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
@@ -45,10 +45,11 @@
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.6",
     "@types/node": "^22.10.0",
+    "@types/tough-cookie": "^4.0.5",
     "@types/ws": "^8.5.13",
     "drizzle-kit": "^0.31.10",
     "tsx": "^4.21.0",
     "typescript": "^6.0.2",
-    "vitest": "^4.1.4"
+    "vitest": "^4.1.12"
   }
 }
