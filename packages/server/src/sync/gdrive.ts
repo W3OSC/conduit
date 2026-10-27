@@ -231,14 +231,86 @@ export class GdriveSyncManager {
 
   startFolderPolling(folderConfigId: number, intervalMs = POLL_INTERVAL_MS): void {
     this.stopFolderPolling(folderConfigId);
-    const timer = setInterval(() => {
+    const timer = setInterval(async () => {
       if (this.syncInFlight.has(folderConfigId)) return; // previous cycle still running — skip this tick
       this.syncInFlight.add(folderConfigId);
-      this.syncFolder(folderConfigId)
-        .catch((e) => console.error(`[gdrive:${folderConfigId}] Poll sync failed:`, e))
-        .finally(() => { this.syncInFlight.delete(folderConfigId); });
+      try {
+        if (await this.shouldResync(folderConfigId)) {
+          await this.syncFolder(folderConfigId);
+        }
+      } catch (e) {
+        console.error(`[gdrive:${folderConfigId}] Poll sync failed:`, e);
+      } finally {
+        this.syncInFlight.delete(folderConfigId);
+      }
     }, intervalMs);
     this.pollTimers.set(folderConfigId, timer);
+  }
+
+  /**
+   * Gate the poll-triggered rescan on Drive's changes feed: a full recursive
+   * tree scan only runs when changes.list() reports account activity since the
+   * last scan (token in last_change_id). The feed is account-wide, so unrelated
+   * activity causes a harmless extra rescan — the win is skipping the constant
+   * rescans when nothing changed at all. Manual syncs (sync button, folder
+   * creation, uploads) call syncFolder() directly and bypass this gate.
+   */
+  private async shouldResync(folderConfigId: number): Promise<boolean> {
+    const db = getDb();
+    const row = db.select().from(googleDriveFolderConfig).where(eq(googleDriveFolderConfig.id, folderConfigId)).get();
+    if (!row) return false;
+    // Self-heal: always rescan after a failed sync or when nothing is cached.
+    if (row.syncStatus === 'error' || !row.lastSyncedAt) return true;
+
+    const sharedDriveParams = row.driveId
+      ? { driveId: row.driveId, includeItemsFromAllDrives: true, supportsAllDrives: true }
+      : {};
+
+    if (!row.lastChangeId) {
+      // No baseline yet — establish one, then scan once.
+      const res = await this.drive.changes.getStartPageToken({ supportsAllDrives: true, ...(row.driveId ? { driveId: row.driveId } : {}) });
+      db.update(googleDriveFolderConfig)
+        .set({ lastChangeId: res.data.startPageToken ?? null, updatedAt: new Date().toISOString() })
+        .where(eq(googleDriveFolderConfig.id, folderConfigId))
+        .run();
+      return true;
+    }
+
+    try {
+      let pageToken: string | undefined = row.lastChangeId;
+      let changeCount = 0;
+      let newToken: string | null = null;
+      do {
+        const listParams: drive_v3.Params$Resource$Changes$List = {
+          pageToken,
+          pageSize: 100,
+          fields: 'nextPageToken, newStartPageToken, changes(fileId)',
+          ...sharedDriveParams,
+        };
+        const res = await this.drive.changes.list(listParams);
+        changeCount += res.data.changes?.length ?? 0;
+        newToken = res.data.newStartPageToken ?? newToken;
+        pageToken = res.data.nextPageToken ?? undefined;
+      } while (pageToken);
+
+      if (changeCount === 0) return false;
+
+      // Advance the baseline before scanning; changes landing mid-scan are
+      // picked up next tick. A failed scan sets syncStatus='error', which
+      // forces a rescan regardless of the token.
+      db.update(googleDriveFolderConfig)
+        .set({ lastChangeId: newToken, updatedAt: new Date().toISOString() })
+        .where(eq(googleDriveFolderConfig.id, folderConfigId))
+        .run();
+      return true;
+    } catch {
+      // Expired/invalid token (e.g. 410 Gone) — reset the baseline and rescan.
+      db.update(googleDriveFolderConfig)
+        .set({ lastChangeId: null, updatedAt: new Date().toISOString() })
+        .where(eq(googleDriveFolderConfig.id, folderConfigId))
+        .run();
+      return true;
+    }
   }
 
   stopFolderPolling(folderConfigId: number): void {
