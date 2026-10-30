@@ -14,6 +14,7 @@ import credentialsRouter from './credentials.js';
 import telegramAuthRouter from './telegram-auth.js';
 import serviceDataRouter from './service-data.js';
 import contactsRouter from './contacts.js';
+import identityRouter from './identity.js';
 import googleAuthRouter from './google-auth.js';
 import gmailRouter from './gmail.js';
 import calendarRouter from './calendar.js';
@@ -154,6 +155,9 @@ router.use('/keys', keysRouter);
 router.use('/test', testRouter);
 router.use('/credentials', credentialsRouter);
 router.use('/connections/telegram/auth', telegramAuthRouter);
+// identityRouter adds POST /contacts/resolve and GET /contacts/:source/:platformId/chats;
+// contactsRouter is tried first and has no conflicting patterns.
+router.use('/contacts', identityRouter);
 router.use('/contacts', contactsRouter);
 router.use('/google', googleAuthRouter);
 router.use('/gmail', gmailRouter);

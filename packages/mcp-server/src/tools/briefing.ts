@@ -90,7 +90,9 @@ export function registerBriefingTools(server: McpServer, client: ConduitClient):
         '(a person\'s name, a project, an order number) — not to browse. ' +
         'Matching is plain substring (LIKE), not semantic: use short distinctive keywords, not sentences, ' +
         'and retry with a different keyword rather than a longer one if nothing matches. ' +
-        'Each result carries its source plus that service\'s message fields.',
+        'Results are lean normalised rows (source, messageId, chatId, chatName, senderId, senderName, content, ' +
+        'timestamp, context). The response\'s `coverage` block names the accounts actually searched and any ' +
+        'requested source that is disconnected — check it before concluding something does not exist.',
       inputSchema: {
         q: z.string().min(1).describe('Required. Short distinctive keyword or phrase to match.'),
         source: z

@@ -93,9 +93,10 @@ export function registerMessagingTools(server: McpServer, client: ConduitClient)
       description:
         'People the user talks to, across services, sorted by an activity score (most-engaged first). ' +
         'Use it to turn a name ("Priya") into the platform id needed to message someone, or to answer ' +
-        '"who do I talk to most on Slack". Always pass `q` when you have a name — an unfiltered list is pure cost.',
+        '"who do I talk to most on Slack". Always pass `q` when you have a name — an unfiltered list is pure cost. ' +
+        'For matching an external identity (lead, attendee) with name+domain+email, prefer conduit_resolve_identity.',
       inputSchema: {
-        q: z.string().optional().describe('Name or handle substring to match. Pass this whenever you know who you are looking for.'),
+        q: z.string().optional().describe('Case-insensitive substring matched against display name, username, first/last name, phone and email. Pass this whenever you know who you are looking for.'),
         source: z
           .enum(['slack', 'discord', 'telegram', 'twitter', 'gmail'])
           .optional()
@@ -116,6 +117,58 @@ export function registerMessagingTools(server: McpServer, client: ConduitClient)
       annotations: READ_ONLY,
     },
     async ({ q, source, criteria, limit, offset }) =>
-      run(() => client.get('/api/contacts', { q, source, criteria, limit, offset })),
+      run(() => client.get('/api/contacts', { q, source, criteria, limit, offset, fields: 'lean' })),
+  );
+
+  server.registerTool(
+    'conduit_resolve_identity',
+    {
+      title: 'Resolve an identity to contacts',
+      description:
+        'Match an external person (a CRM lead, a meeting attendee, an email signature) to the contacts this hub ' +
+        'knows, using any combination of name, email, domain, handle, phone and company. Returns ranked candidates ' +
+        'with a confidence score, the fields that matched, DM availability and the sendable dmChatId where a direct ' +
+        'conversation exists. An empty list explicitly means no connected account has seen that identity — ' +
+        'check the coverage block before concluding the person is unknown.',
+      inputSchema: {
+        name: z.string().optional().describe('Person name, e.g. "Nathan".'),
+        email: z.string().optional().describe('Email address (exact, case-insensitive).'),
+        domain: z.string().optional().describe('Company domain, e.g. "symbiosis.finance".'),
+        handle: z.string().optional().describe('Platform handle, with or without @.'),
+        phone: z.string().optional().describe('Phone number in any format.'),
+        company: z.string().optional().describe('Company name.'),
+        sources: z
+          .array(z.enum(['slack', 'discord', 'telegram', 'twitter', 'gmail', 'calendar']))
+          .optional()
+          .describe('Restrict to these services (default: all).'),
+        limit: z.number().int().positive().max(25).optional().describe('Max candidates. Default 5.'),
+      },
+      annotations: READ_ONLY,
+    },
+    async (body) => run(() => client.post('/api/contacts/resolve', body)),
+  );
+
+  server.registerTool(
+    'conduit_contact_chats',
+    {
+      title: 'List chats a contact participates in',
+      description:
+        'Every chat a contact participates in (chatId, chatType, last activity, message count), with direct DMs ' +
+        'flagged isDm. Use the DM entry\'s chatId as the recipient_id for conduit_queue_action / the outbox. ' +
+        'Get source + platformId from conduit_contacts or conduit_resolve_identity.',
+      inputSchema: {
+        source: z.enum(['slack', 'discord', 'telegram', 'twitter', 'gmail', 'calendar']).describe('Contact source platform.'),
+        platform_id: z.string().describe('The contact\'s platformId on that source.'),
+        limit: z.number().int().positive().max(200).optional().describe('Max chats. Default 50.'),
+      },
+      annotations: READ_ONLY,
+    },
+    async ({ source, platform_id, limit }) =>
+      run(() =>
+        client.get(
+          `/api/contacts/${encodeURIComponent(source)}/${encodeURIComponent(platform_id)}/chats`,
+          { limit },
+        ),
+      ),
   );
 }

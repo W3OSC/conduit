@@ -656,7 +656,7 @@ export function buildSpec(baseUrl: string): Record<string, unknown> {
         get: {
           operationId: 'searchMessages',
           summary: 'Full-text search across all messages',
-          description: 'Search the local message database across all platforms by keyword. Returns matching messages sorted by recency. Use this to find conversations about a specific topic, locate a message you remember, or understand what has been discussed around a particular subject.',
+          description: 'Search the local message database across all platforms by keyword. Returns matching messages sorted by recency, normalised to one lean shape (no rawJson; pass fields=full for raw platform rows). The response carries a coverage block naming the accounts actually searched and any requested source that is disconnected. Use this to find conversations about a specific topic, locate a message you remember, or understand what has been discussed around a particular subject.',
           parameters: [
             {
               name: 'q',
@@ -688,6 +688,16 @@ export function buildSpec(baseUrl: string): Record<string, unknown> {
                     type: 'object',
                     properties: {
                       results: { type: 'array', items: { $ref: '#/components/schemas/Message' } },
+                      coverage: {
+                        type: 'object',
+                        description: 'Which accounts/sources were actually searched, and which requested sources are unavailable.',
+                        properties: {
+                          accountsSearched: { type: 'array', items: { type: 'object' } },
+                          sourcesSearched: { type: 'array', items: { type: 'string' } },
+                          sourcesUnavailable: { type: 'array', items: { type: 'object' } },
+                          visibility: { type: 'string' },
+                        },
+                      },
                     },
                   },
                 },

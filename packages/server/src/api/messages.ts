@@ -14,10 +14,11 @@ import {
 import type { DiscordFineGrained } from '../db/schema.js';
 import { sourceFilterPredicate } from '../sync/source-filters.js';
 import {
-  z, booleanFlag, isoDateTime, limitSchema, messageSourceSchema, optionalMessageSource,
+  z, booleanFlag, isoDateTime, limitSchema, messageSourceSchema, optionalEnum, optionalMessageSource,
   requiredString, MESSAGE_SOURCES, bodyOf, paramsOf, queryOf, validateBody, validateParams, validateQuery,
 } from './validate.js';
 import { documentRoute } from './openapi-registry.js';
+import { buildCoverage } from './coverage.js';
 
 // ── Request schemas ───────────────────────────────────────────────────────────
 
@@ -31,12 +32,19 @@ const MessagesQuery = z.object({
   include_meta: booleanFlag.openapi({ description: 'Include conversationMeta (requires chat_id and source).' }),
 });
 
+// `.strict()`: an unknown param (e.g. `query=` instead of `q=`) must fail
+// loudly rather than silently searching without it.
 const SearchQuery = z.object({
   q: requiredString('q')
     .openapi({ description: 'Substring to search message content for.' }),
   source: optionalMessageSource,
   limit: limitSchema(50, 200),
-});
+  fields: optionalEnum(['lean', 'full'], {
+    description:
+      'lean (default) returns normalised rows without rawJson/attachments/embeds. ' +
+      'full returns raw platform rows including rawJson — explicit opt-in only.',
+  }),
+}).strict();
 
 /**
  * `sources` stays permissive on purpose: unknown entries are dropped rather
@@ -980,7 +988,8 @@ router.get('/messages', optionalAuth, trackAiCall, validateQuery(MessagesQuery),
     return rest;
   }
 
-  const sources = filterEnabledSources(source ? [source] : [...MSG_SOURCES], apiKeyId);
+  const requestedSources = source ? [source] : [...MSG_SOURCES];
+  const sources = filterEnabledSources(requestedSources, apiKeyId);
   if (source && sources.length === 0) {
     res.status(403).json({ error: `Read access to ${source} is not permitted for this API key` });
     return;
@@ -1080,7 +1089,11 @@ router.get('/messages', optionalAuth, trackAiCall, validateQuery(MessagesQuery),
 
   // `total` is the true count of matching rows across the queried sources —
   // the old value was capped at min(sources × limit) and useless for paging.
-  res.json({ messages: page, total, ...(conversationMeta ? { conversationMeta } : {}) });
+  res.json({
+    messages: page, total,
+    ...(conversationMeta ? { conversationMeta } : {}),
+    coverage: buildCoverage(requestedSources, sources),
+  });
 });
 
 // ── Read-state (unread model) ─────────────────────────────────────────────────
@@ -1148,14 +1161,16 @@ router.post('/chats/read-all', uiOnlyAuth, validateBody(ReadAllBody), (req, res)
 router.get('/search', optionalAuth, trackAiCall, validateQuery(SearchQuery), (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
-  const { q, source, limit: lim } = queryOf(SearchQuery, req);
+  const { q, source, limit: lim, fields } = queryOf(SearchQuery, req);
+  const full = fields === 'full';
 
   const results: unknown[] = [];
   const apiKeyId = authedReq.apiKey?.id ?? null;
 
   // Same read enforcement as /messages: service toggles + per-chat allowlists.
   // Search must not be a side door around channel-scoped keys.
-  const sources = filterEnabledSources(source ? [source] : [...MSG_SOURCES], apiKeyId);
+  const requested = source ? [source] : [...MSG_SOURCES];
+  const sources = filterEnabledSources(requested, apiKeyId);
   if (source && sources.length === 0) {
     res.status(403).json({ error: `Read access to ${source} is not permitted for this API key` });
     return;
@@ -1169,32 +1184,65 @@ router.get('/search', optionalAuth, trackAiCall, validateQuery(SearchQuery), (re
     return rows.filter((r) => allowed.has(chatIdOf(r)));
   }
 
+  // Lean (default) rows are normalised to one shape across sources and never
+  // carry rawJson/attachments/embeds — the raw platform payload duplicates
+  // `content` at 5-20x the tokens. `fields=full` is the explicit opt-in.
+  type LeanHit = {
+    source: string; messageId: string; chatId: string; chatName: string | null;
+    senderId: string | null; senderName: string | null; content: string;
+    timestamp: string; context: 'dm' | 'group' | 'channel' | 'email';
+  };
+
   if (sources.includes('telegram')) {
     const rows = permittedRows('telegram', db.select().from(telegramMessages)
       .where(and(like(telegramMessages.content, `%${q}%`),
         sql.raw(sourceFilterPredicate('telegram', 'telegram_messages'))))
       .orderBy(desc(telegramMessages.timestamp)).limit(lim).all(), (m) => String(m.chatId));
-    results.push(...rows.map((m) => ({ source: 'telegram', ...m })));
+    results.push(...rows.map((m) => {
+      if (full) return { source: 'telegram', ...m };
+      const type = (m.chatType || '').toLowerCase();
+      return {
+        source: 'telegram', messageId: String(m.messageId), chatId: String(m.chatId),
+        chatName: m.chatName, senderId: m.senderId == null ? null : String(m.senderId),
+        senderName: m.senderName, content: m.content || '', timestamp: m.timestamp,
+        context: type === 'private' || type === 'user' ? 'dm' : type === 'channel' ? 'channel' : 'group',
+      } satisfies LeanHit;
+    }));
   }
   if (sources.includes('discord')) {
     const rows = permittedRows('discord', db.select().from(discordMessages)
       .where(and(like(discordMessages.content, `%${q}%`),
         sql.raw(sourceFilterPredicate('discord', 'discord_messages'))))
       .orderBy(desc(discordMessages.timestamp)).limit(lim).all(), (m) => m.channelId);
-    results.push(...rows.map((m) => ({ source: 'discord', ...m })));
+    results.push(...rows.map((m) => full ? { source: 'discord', ...m } : {
+      source: 'discord', messageId: m.messageId, chatId: m.channelId,
+      chatName: m.channelName ?? m.guildName, senderId: m.authorId,
+      senderName: m.authorName, content: m.content || '', timestamp: m.timestamp,
+      context: m.guildId ? 'group' : 'dm',
+    } satisfies LeanHit));
   }
   if (sources.includes('slack')) {
     const rows = permittedRows('slack', db.select().from(slackMessages)
       .where(and(like(slackMessages.content, `%${q}%`),
         sql.raw(sourceFilterPredicate('slack', 'slack_messages'))))
       .orderBy(desc(slackMessages.timestamp)).limit(lim).all(), (m) => m.channelId);
-    results.push(...rows.map((m) => ({ source: 'slack', ...m })));
+    results.push(...rows.map((m) => full ? { source: 'slack', ...m } : {
+      source: 'slack', messageId: m.messageId, chatId: m.channelId,
+      chatName: m.channelName, senderId: m.userId, senderName: m.userName,
+      content: m.content || '', timestamp: m.timestamp,
+      context: m.channelId.startsWith('D') ? 'dm' : m.channelId.startsWith('G') ? 'group' : 'channel',
+    } satisfies LeanHit));
   }
   if (sources.includes('twitter') && (!apiKeyId || resolveTwitterReadPerms(apiKeyId).readDms)) {
     results.push(...db.select().from(twitterDms)
       .where(like(twitterDms.text, `%${q}%`))
       .orderBy(desc(twitterDms.createdAt)).limit(lim).all()
-      .map((m) => ({ source: 'twitter', messageId: m.messageId, chatId: m.conversationId, content: m.text || '', timestamp: m.createdAt, senderName: m.senderHandle })));
+      .map((m) => full ? { source: 'twitter', ...m } : {
+        source: 'twitter', messageId: m.messageId, chatId: m.conversationId,
+        chatName: m.senderHandle, senderId: m.senderId,
+        senderName: m.senderName ?? m.senderHandle, content: m.text || '',
+        timestamp: m.createdAt, context: 'dm',
+      } satisfies LeanHit));
   }
   if (sources.includes('gmail')) {
     const rows = filterGmailByLabels(
@@ -1204,7 +1252,11 @@ router.get('/search', optionalAuth, trackAiCall, validateQuery(SearchQuery), (re
       (m) => { try { return JSON.parse(m.labels || '[]') as string[]; } catch { return []; } },
       apiKeyId,
     );
-    results.push(...rows.map((m) => ({ source: 'gmail', messageId: m.gmailId, chatId: m.threadId, content: m.snippet || '', timestamp: m.internalDate, senderName: m.fromName })));
+    results.push(...rows.map((m) => full ? { source: 'gmail', ...m } : {
+      source: 'gmail', messageId: m.gmailId, chatId: m.threadId,
+      chatName: m.subject, senderId: m.fromAddress, senderName: m.fromName,
+      content: m.snippet || '', timestamp: m.internalDate || '', context: 'email',
+    } satisfies LeanHit));
   }
 
   results.sort((a, b) =>
@@ -1217,7 +1269,10 @@ router.get('/search', optionalAuth, trackAiCall, validateQuery(SearchQuery), (re
     detail: { query: q, source, limit: lim },
   });
 
-  res.json({ results: results.slice(0, lim) });
+  res.json({
+    results: results.slice(0, lim),
+    coverage: buildCoverage(requested, sources),
+  });
 });
 
 // ── GET /activity — unified chronological activity feed ───────────────────────

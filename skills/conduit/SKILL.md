@@ -39,7 +39,7 @@ Costs assume default limits; keep `limit` small — you can always fetch more.
 ```
 GET /api/digest                                  — attention briefing (START HERE)
 GET /api/activity?since=&until=&sources=&limit=  — chronological feed of messages+email (max 200)
-GET /api/search?q=&source=&limit=                — text search across services
+GET /api/search?q=&source=&limit=&fields=        — text search across services (lean rows by default)
 GET /api/chats                                   — chat tree per service, with per-chat `unread` counts
 GET /api/messages?source=&chat_id=&limit=&before=&after=&around=&include_meta=true
 GET /api/topology                                — channel/label/folder structure per service (cached)
@@ -47,13 +47,37 @@ GET /api/topology                                — channel/label/folder struct
 `/api/messages` params are exactly those listed — there is no `search` or
 `offset` param. Page with `before` (ISO timestamp).
 
-### Contacts
+`/api/search` returns normalised lean rows (no `rawJson`); pass `fields=full`
+only if you need raw platform rows. `/api/search` and `/api/messages` responses
+include a `coverage` block — `accountsSearched`, `sourcesSearched`,
+`sourcesUnavailable` — so you can tell "nothing exists" apart from "this hub
+cannot see it". **Never report someone as silent/unreachable without checking
+`coverage`:** threads in teammates' accounts are invisible to this hub.
+
+### Contacts & identity
 ```
-GET /api/contacts?source=&q=&criteria=&limit=&offset=   — sorted by activity score
-GET /api/contacts/{source}/{platformId}                 — one contact
-GET /api/contacts/{source}/{platformId}/history?limit=  — messages with that person
-GET /api/contacts/{source}/{platformId}/dm-channel      — resolve the DM channel id
+GET  /api/contacts?source=&q=&criteria=&fields=&limit=&offset= — q filters (name/username/phone/email), activity score orders
+POST /api/contacts/resolve                               — identity → ranked contact candidates (see below)
+GET  /api/contacts/{source}/{platformId}                 — one contact
+GET  /api/contacts/{source}/{platformId}/chats?limit=    — chats they participate in; DMs flagged `isDm`
+GET  /api/contacts/{source}/{platformId}/history?limit=  — messages with that person
+GET  /api/contacts/{source}/{platformId}/dm-channel      — resolve the DM channel id
 ```
+`fields=lean` on `/api/contacts` drops avatar data URIs and profile detail —
+use it for bulk reads. Unknown query params are rejected with a 400 (a typo'd
+filter must not silently return the full list).
+
+**`POST /api/contacts/resolve`** is the primitive for matching external people
+(CRM leads, meeting attendees) to known contacts. Body: any combination of
+`{ name, email, domain, handle, phone, company }` + optional `sources` array
+and `limit` (default 5). Returns ranked `candidates`, each with `contact`
+(source, platformId, displayName, username, email, phone), `confidence` (0-1),
+`matchedFields`, `evidence`, `accountId` (which connected account saw them),
+`hasDm`, `dmChatId` (the sendable direct-conversation id, when one exists —
+for gmail/calendar the email address itself is the route), `messageCount` and
+`lastMessageAt`. An empty `candidates` list comes with `resolution:"no_match"`
+and an explicit message that no connected account has seen that identity —
+check the `coverage` block before concluding the person is unknown.
 
 ### Gmail
 ```

@@ -32,6 +32,7 @@ import {
   bodyOf, paramsOf, queryOf, validateBody, validateParams, validateQuery,
 } from './validate.js';
 import { documentRoute } from './openapi-registry.js';
+import { buildCoverage } from './coverage.js';
 
 const router = Router();
 
@@ -295,17 +296,24 @@ function computeActivityScores(db: ReturnType<typeof getDb>): Map<string, Activi
 /** Contacts are derived from these services (calendar/gmail contribute too). */
 const CONTACT_SOURCES = ['slack', 'discord', 'telegram', 'twitter', 'gmail', 'calendar'] as const;
 
+// `.strict()` is deliberate: a misspelled filter (`name=` instead of `q=`)
+// used to be silently dropped, returning the full unfiltered list — which
+// reads as a confident "no match" to automated consumers. An explicit 400
+// is strictly better than a wrong-looking success.
 const ListQuery = z.object({
   source: optionalEnum(CONTACT_SOURCES, { description: 'Restrict to contacts from one platform.' }),
-  q: z.string().optional().openapi({ description: 'Substring match on display name, username, first/last name.' }),
+  q: z.string().optional().openapi({ description: 'Case-insensitive substring match on display name, username, first/last name, phone, and email address (where known).' }),
   // Deliberately NOT an enum: an unrecognised value has always fallen through
   // the switch below as "no filter", and tightening it would reject requests
   // that used to work.
   criteria: z.string().optional().openapi({
     description: 'Optional flag filter — one of dm, owned, small, native. Unknown values are ignored.',
   }),
+  fields: optionalEnum(['lean', 'full'], {
+    description: 'lean omits avatar data URIs, bio, status and group-id arrays — use for bulk/agent reads. Default: full.',
+  }),
   ...paginationSchema(50, 500),
-});
+}).strict();
 
 const RebuildQuery = z.object({
   source: optionalEnum(CONTACT_SOURCES, { description: 'Rebuild only this platform (default: all).' }),
@@ -356,7 +364,7 @@ documentRoute({
 // ─── GET /api/contacts ────────────────────────────────────────────────────────
 
 router.get('/', optionalAuth, trackAiCall, validateQuery(ListQuery), (req, res) => {
-  const { source, q, criteria: criteriaFilter, limit: lim, offset: off } = queryOf(ListQuery, req);
+  const { source, q, criteria: criteriaFilter, fields, limit: lim, offset: off } = queryOf(ListQuery, req);
 
   const db = getDb();
 
@@ -365,6 +373,8 @@ router.get('/', optionalAuth, trackAiCall, validateQuery(ListQuery), (req, res) 
 
   // Push source + text search into SQL; criteria filter, score sort and
   // pagination stay in JS (they depend on computed activity scores).
+  // `q` filters; activity rank only orders WITHIN the matches (never replaces
+  // the filter). SQLite LIKE is case-insensitive for ASCII.
   const sqlConditions = [];
   if (source) sqlConditions.push(eq(contacts.source, source));
   if (q) {
@@ -374,6 +384,9 @@ router.get('/', optionalAuth, trackAiCall, validateQuery(ListQuery), (req, res) 
       like(contacts.username, term),
       like(contacts.firstName, term),
       like(contacts.lastName, term),
+      like(contacts.phone, term),
+      // Email lives in platformId for gmail/calendar-derived contacts.
+      and(sql`${contacts.platformId} LIKE '%@%'`, like(contacts.platformId, term)),
     ));
   }
 
@@ -420,14 +433,28 @@ router.get('/', optionalAuth, trackAiCall, validateQuery(ListQuery), (req, res) 
   // Attach activity score to each contact for transparency
   const enriched = page.map((c) => {
     const activity = activityScores.get(`${c.source}:${c.platformId}`);
-    return {
+    const formatted = {
       ...formatContact(c),
       activityScore: activity?.score ?? 0,
       messageCount: activity?.messageCount ?? 0,
     };
+    if (fields === 'lean') {
+      // Avatar data URIs are inline JPEGs (tens of KB each); bio/status and
+      // the group-id arrays are UI detail. Bulk consumers don't want either.
+      const { avatarUrl: _a, bio: _b, statusText: _s, workspaceIds: _w, mutualGroupIds: _m, ...lean } = formatted;
+      return lean;
+    }
+    return formatted;
   });
 
-  res.json({ contacts: enriched, total, limit: lim, offset: off });
+  const requestedSources = source ? [source] : [...CONTACT_SOURCES];
+  const searchedSources = apiKeyId
+    ? requestedSources.filter((s) => isReadEnabled(s, apiKeyId))
+    : requestedSources;
+  res.json({
+    contacts: enriched, total, limit: lim, offset: off,
+    coverage: buildCoverage(requestedSources, searchedSources),
+  });
 });
 
 // ─── Criteria routes ──────────────────────────────────────────────────────────

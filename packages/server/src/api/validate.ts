@@ -68,8 +68,12 @@ function phraseFor(issue: z.core.$ZodIssue): string {
     }
     case 'invalid_format':
       return `must be a valid ${String((issue as { format?: string }).format ?? 'value')}`;
-    case 'unrecognized_keys':
-      return 'is not a recognised field';
+    case 'unrecognized_keys': {
+      const keys = (issue as { keys?: string[] }).keys ?? [];
+      return keys.length
+        ? `unknown field${keys.length > 1 ? 's' : ''}: ${keys.join(', ')}`
+        : 'is not a recognised field';
+    }
     default:
       return issue.message || 'is invalid';
   }
