@@ -838,6 +838,35 @@ export class GdriveSyncManager {
     }
   }
 
+  /**
+   * Replace every occurrence of each placeholder key with its value in a
+   * Google Doc. Unlike applyDocsEdits this never throws on zero matches —
+   * it returns the per-key occurrence counts so callers can surface
+   * "placeholder not found" as a warning instead of a failure.
+   */
+  async replaceAllTextInDoc(documentId: string, replacements: Record<string, string>): Promise<Record<string, number>> {
+    const docs = google.docs({ version: 'v1', auth: this.auth });
+    const keys = Object.keys(replacements);
+    const requests = keys.map((key) => ({
+      replaceAllText: {
+        containsText: { text: key, matchCase: true },
+        replaceText:  replacements[key]!,
+      },
+    }));
+
+    const res = await docs.documents.batchUpdate({
+      documentId,
+      requestBody: { requests },
+    });
+
+    const replies = res.data.replies ?? [];
+    const occurrences: Record<string, number> = {};
+    keys.forEach((key, i) => {
+      occurrences[key] = replies[i]?.replaceAllText?.occurrencesChanged ?? 0;
+    });
+    return occurrences;
+  }
+
   // ── Google Sheets batchUpdate (findReplace) ────────────────────────────────
 
   private async applySheetsEdits(spreadsheetId: string, edits: DriveEditDelta[]): Promise<void> {
