@@ -20,6 +20,10 @@ import {
   bodyOf, paramsOf, queryOf, validateBody, validateParams, validateQuery,
 } from './validate.js';
 import { documentRoute } from './openapi-registry.js';
+import {
+  ATTACHABLE_SOURCES, MAX_ATTACHMENTS,
+  parseStoredAttachments, redactAttachments, validateAttachments,
+} from '../util/attachments.js';
 
 const router = Router();
 
@@ -45,6 +49,13 @@ const ItemActionBody = z.object({
   content: z.string().optional().openapi({ description: 'Replacement text (action=edit only).' }),
 });
 
+const AttachmentItem = z.object({
+  filename: z.string().min(1).max(255)
+    .openapi({ description: 'File name shown to the recipient (no path separators).' }),
+  mime: requiredString('mime').openapi({ description: 'MIME type, e.g. application/pdf.' }),
+  data: requiredString('data').openapi({ description: 'Base64-encoded file bytes.' }),
+});
+
 /** Shared shape of a single queued operation. */
 const OperationBody = z.object({
   source: requiredString('source').openapi({ description: 'Target service, e.g. slack, gmail, obsidian.' }),
@@ -55,7 +66,14 @@ const OperationBody = z.object({
     .openapi({ description: 'Plain text for messaging services; a JSON action payload for structured services.' }),
 });
 
-const CreateBody = OperationBody;
+const CreateBody = OperationBody.extend({
+  attachments: z.array(AttachmentItem).max(MAX_ATTACHMENTS).optional().openapi({
+    description:
+      `Outbound files (max ${MAX_ATTACHMENTS}, 5 MiB decoded total). ` +
+      `Only for sources: ${ATTACHABLE_SOURCES.join(', ')}. Delivered platform-natively; ` +
+      'API responses echo only {filename, mime, size}.',
+  }),
+});
 
 const BatchCreateBody = z.object({
   source: requiredString('source'),
@@ -525,10 +543,14 @@ async function dispatchOutboxItem(
   source: string,
   recipientId: string,
   content: string,
+  attachmentsJson?: string | null,
 ): Promise<void> {
   const manager = getConnectionManager();
+  const attachments = parseStoredAttachments(attachmentsJson);
   if (source === 'gmail') {
-    await manager.executeGmailAction(JSON.parse(content) as Parameters<typeof manager.executeGmailAction>[0]);
+    const action = JSON.parse(content) as Parameters<typeof manager.executeGmailAction>[0];
+    if (attachments.length) action.attachments = attachments;
+    await manager.executeGmailAction(action);
   } else if (source === 'calendar') {
     await manager.executeCalendarAction(JSON.parse(content) as Parameters<typeof manager.executeCalendarAction>[0]);
   } else if (source === 'twitter') {
@@ -542,7 +564,7 @@ async function dispatchOutboxItem(
   } else if (source === 'gdrive') {
     await manager.executeGdriveAction(JSON.parse(content) as Parameters<typeof manager.executeGdriveAction>[0]);
   } else {
-    await manager.sendMessage(source as 'slack' | 'discord' | 'telegram', recipientId, content);
+    await manager.sendMessage(source as 'slack' | 'discord' | 'telegram', recipientId, content, attachments);
   }
 }
 
@@ -624,7 +646,7 @@ router.get('/', optionalAuth, validateQuery(ListQuery), (req, res) => {
   const pendingCount = (db.select({ count: sql<number>`count(*)` }).from(outbox)
     .where(and(...scope, eq(outbox.status, 'pending'))).get()?.count) ?? 0;
 
-  res.json({ items, total, pendingCount, limit, offset });
+  res.json({ items: items.map(redactAttachments), total, pendingCount, limit, offset });
 });
 
 // ── Batch-level read ──────────────────────────────────────────────────────────
@@ -644,7 +666,7 @@ router.get('/batch/:batchId', optionalAuth, validateParams(BatchParam), (req, re
     .orderBy(outbox.id)
     .all();
   if (items.length === 0) { res.status(404).json({ error: 'Batch not found' }); return; }
-  res.json({ batchId, items });
+  res.json({ batchId, items: items.map(redactAttachments) });
 });
 
 // ── Batch-level approve / reject ──────────────────────────────────────────────
@@ -711,7 +733,7 @@ router.patch(
 
     try {
       const textToSend = item.editedContent || item.content;
-      await dispatchOutboxItem(item.source, item.recipientId, textToSend);
+      await dispatchOutboxItem(item.source, item.recipientId, textToSend, item.attachments);
       db.update(outbox).set({ status: 'sent', sentAt: new Date().toISOString() }).where(eq(outbox.id, item.id)).run();
       writeAuditLog('send', authedReq.actor, {
         service: item.source,
@@ -744,13 +766,13 @@ router.get('/:id', optionalAuth, validateParams(IdParam), (req, res) => {
     res.status(404).json({ error: 'Not found' });
     return;
   }
-  res.json(item);
+  res.json(redactAttachments(item));
 });
 
 router.post('/', optionalAuth, validateBody(CreateBody), async (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
-  const { source, recipient_id, recipient_name, content } = bodyOf(CreateBody, req);
+  const { source, recipient_id, recipient_name, content, attachments } = bodyOf(CreateBody, req);
 
   // Idempotent replay: a retried POST carrying the same Idempotency-Key
   // returns the original row instead of double-queueing.
@@ -762,9 +784,15 @@ router.post('/', optionalAuth, validateBody(CreateBody), async (req, res) => {
         res.status(409).json({ error: 'Idempotency-Key is already in use' });
         return;
       }
-      res.status(200).json({ ...existing, idempotent: true });
+      res.status(200).json({ ...redactAttachments(existing), idempotent: true });
       return;
     }
+  }
+
+  const attachmentError = validateAttachments(source, attachments);
+  if (attachmentError) {
+    res.status(400).json({ error: attachmentError });
+    return;
   }
 
   const perm = db.select().from(permissions).where(eq(permissions.service, source)).get();
@@ -839,6 +867,7 @@ router.post('/', optionalAuth, validateBody(CreateBody), async (req, res) => {
       apiKeyId: authedReq.apiKey?.id || null,
       aiToolCallId,
       fuzzyMatchInfo,
+      attachments: attachments?.length ? JSON.stringify(attachments) : null,
       idempotencyKey,
     }).returning().get();
   } catch (e) {
@@ -851,7 +880,7 @@ router.post('/', optionalAuth, validateBody(CreateBody), async (req, res) => {
           res.status(409).json({ error: 'Idempotency-Key is already in use' });
           return;
         }
-        res.status(200).json({ ...existing, idempotent: true });
+        res.status(200).json({ ...redactAttachments(existing), idempotent: true });
         return;
       }
     }
@@ -865,14 +894,14 @@ router.post('/', optionalAuth, validateBody(CreateBody), async (req, res) => {
     detail: { recipient_id, content: content.slice(0, 100) },
   });
 
-  broadcast({ type: 'outbox:new', data: item });
+  broadcast({ type: 'outbox:new', data: redactAttachments(item) });
 
   if (autoSend) {
     try {
       // Dispatch what was stored (finalContent) — never the raw request
       // content, which may lack the fuzzy-match rewrite / injected vaultId.
       const textToSend = item.editedContent || item.content;
-      await dispatchOutboxItem(source, recipient_id, textToSend);
+      await dispatchOutboxItem(source, recipient_id, textToSend, item.attachments);
       db.update(outbox).set({
         status: 'sent',
         sentAt: new Date().toISOString(),
@@ -891,7 +920,7 @@ router.post('/', optionalAuth, validateBody(CreateBody), async (req, res) => {
     }
   }
 
-  res.json(db.select().from(outbox).where(eq(outbox.id, item.id)).get());
+  res.json(redactAttachments(db.select().from(outbox).where(eq(outbox.id, item.id)).get()!));
 });
 
 router.post('/batch', optionalAuth, validateBody(BatchCreateBody), async (req, res) => {
@@ -1116,7 +1145,7 @@ router.patch(
 
   if (action === 'edit') {
     db.update(outbox).set({ editedContent: content || item.content }).where(eq(outbox.id, id)).run();
-    res.json(db.select().from(outbox).where(eq(outbox.id, id)).get());
+    res.json(redactAttachments(db.select().from(outbox).where(eq(outbox.id, id)).get()!));
     return;
   }
 
@@ -1143,7 +1172,7 @@ router.patch(
 
     try {
       const textToSend = item.editedContent || item.content;
-      await dispatchOutboxItem(item.source, item.recipientId, textToSend);
+      await dispatchOutboxItem(item.source, item.recipientId, textToSend, item.attachments);
       db.update(outbox).set({ status: 'sent', sentAt: new Date().toISOString() }).where(eq(outbox.id, id)).run();
       writeAuditLog('send', authedReq.actor, {
         service: item.source,
@@ -1192,7 +1221,7 @@ router.post('/:id/retry', optionalAuth, validateParams(IdParam), async (req, res
 
   try {
     const textToSend = item.editedContent || item.content;
-    await dispatchOutboxItem(item.source, item.recipientId, textToSend);
+    await dispatchOutboxItem(item.source, item.recipientId, textToSend, item.attachments);
     db.update(outbox).set({ status: 'sent', sentAt: new Date().toISOString() }).where(eq(outbox.id, id)).run();
     writeAuditLog('send', authedReq.actor, {
       service: item.source,
