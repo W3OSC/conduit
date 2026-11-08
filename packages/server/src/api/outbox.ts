@@ -225,7 +225,7 @@ function resolveWriteFineGrained(service: string, apiKeyId: number | null | unde
  * Only enforced for API key actors. UI actors are unrestricted on write.
  * An empty allowlist (null / empty array) means "all recipients allowed".
  */
-function checkWriteAllowlist(
+export function checkWriteAllowlist(
   service: string,
   recipientId: string,
   apiKeyId: number | null | undefined,
