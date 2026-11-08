@@ -406,7 +406,14 @@ router.get('/folders/:folderId/download/*fileId', optionalAuth, requireRead('gdr
 
   try {
     // Use raw Drive API to download as binary
-    const driveApi = (gdrive as unknown as { drive: { files: { get: (p: object, o: object) => Promise<{ data: unknown; headers: Record<string, string> }> } } }).drive;
+    const driveApi = (gdrive as unknown as {
+      drive: {
+        files: {
+          get: (p: object, o: object) => Promise<{ data: unknown; headers: Record<string, string> }>;
+          export: (p: object, o: object) => Promise<{ data: unknown; headers: Record<string, string> }>;
+        };
+      };
+    }).drive;
     const mimeType = cached?.mimeType;
     const fileName = cached?.fileName ?? fileId;
 
@@ -417,9 +424,11 @@ router.get('/folders/:folderId/download/*fileId', optionalAuth, requireRead('gdr
     let downloadName: string;
 
     if (isWorkspace) {
-      // Export as PDF for Google Workspace files
-      const res2 = await driveApi.files.get(
-        { fileId, mimeType: 'application/pdf' } as object,
+      // files.export, not files.get — get ignores mimeType and returns the
+      // file's metadata JSON, so this path used to ship a JSON blob labeled
+      // application/pdf. Export is what the preview route uses too.
+      const res2 = await driveApi.files.export(
+        { fileId, mimeType: 'application/pdf' },
         { responseType: 'arraybuffer' },
       );
       buf = Buffer.from(res2.data as ArrayBuffer);
