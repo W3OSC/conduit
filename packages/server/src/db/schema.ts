@@ -157,6 +157,13 @@ export const outbox = sqliteTable('outbox', {
    * Shape: Array<{ editIndex: number; searchedFor: string; matchedTo: string; similarity: number }>
    */
   fuzzyMatchInfo: text('fuzzy_match_info'),
+  /**
+   * JSON array of outbound file attachments: Array<{filename, mime, data}>
+   * with data base64-encoded. Stored on the row so approval and retry
+   * re-dispatch the exact bytes that were queued. API responses redact the
+   * payload to {filename, mime, size} (see util/attachments.ts).
+   */
+  attachments: text('attachments'),
   // Client-supplied dedupe token (Idempotency-Key header). A retried POST
   // after a timeout returns the existing item instead of double-queueing.
   idempotencyKey: text('idempotency_key'),

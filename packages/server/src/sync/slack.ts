@@ -479,8 +479,30 @@ export class SlackSync {
     broadcast({ type: 'connection:status', data: { service: 'slack', status: 'connected', mode: 'polling' } });
   }
 
-  async sendMessage(channelId: string, text: string): Promise<void> {
-    await this.client.chat.postMessage({ channel: channelId, text });
+  async sendMessage(
+    channelId: string,
+    text: string,
+    attachments: Array<{ filename: string; mime: string; data: string }> = [],
+  ): Promise<void> {
+    if (!attachments.length) {
+      await this.client.chat.postMessage({ channel: channelId, text });
+      return;
+    }
+    // files.uploadV2 needs a real channel id — unlike postMessage it does not
+    // auto-open a DM from a user id, so resolve U/W ids to their DM channel.
+    let channel = channelId;
+    if (/^[UW]/.test(channelId)) {
+      const opened = await this.client.conversations.open({ users: channelId });
+      channel = opened.channel?.id ?? channelId;
+    }
+    await this.client.filesUploadV2({
+      channel_id: channel,
+      initial_comment: text || undefined,
+      file_uploads: attachments.map((a) => ({
+        file: Buffer.from(a.data, 'base64'),
+        filename: a.filename,
+      })),
+    });
   }
 
   async getLatestDM(): Promise<{ channelName: string; content: string; timestamp: string } | null> {

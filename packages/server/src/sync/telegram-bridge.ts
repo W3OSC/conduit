@@ -1,4 +1,5 @@
 import { TelegramClient } from 'telegram';
+import { CustomFile } from 'telegram/client/uploads.js';
 import { LogLevel } from 'telegram/extensions/Logger.js';
 import { StringSession } from 'telegram/sessions/index.js';
 import { NewMessage, NewMessageEvent } from 'telegram/events/index.js';
@@ -341,10 +342,23 @@ export class TelegramBridge {
     });
   }
 
-  async sendMessage(chatId: string, text: string): Promise<void> {
+  async sendMessage(
+    chatId: string,
+    text: string,
+    attachments: Array<{ filename: string; mime: string; data: string }> = [],
+  ): Promise<void> {
     if (!this.client) throw new Error('Not connected');
     const entity = await this.client.getEntity(Number(chatId));
-    await this.client.sendMessage(entity, { message: text });
+    // Text first, then one document per file — captions cap at 1024 chars, so
+    // outreach-length bodies can't ride as a file caption.
+    if (text) await this.client.sendMessage(entity, { message: text });
+    for (const a of attachments) {
+      const bytes = Buffer.from(a.data, 'base64');
+      await this.client.sendFile(entity, {
+        file: new CustomFile(a.filename, bytes.length, a.filename, bytes),
+        forceDocument: true,
+      });
+    }
   }
 
   /**

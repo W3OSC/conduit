@@ -9,6 +9,7 @@
  * on demand from the Gmail API (never stored locally).
  */
 
+import { randomUUID } from 'crypto';
 import { google, gmail_v1 } from 'googleapis';
 import { getDb } from '../db/client.js';
 import { gmailMessages, settings, syncRuns } from '../db/schema.js';
@@ -44,6 +45,69 @@ export interface GmailAction {
   subject?: string;
   body?: string;           // plain text / markdown
   labelId?: string;        // for 'move'
+  /**
+   * Outbound files (injected by the outbox dispatcher from the row's
+   * attachments column — never part of the stored content JSON).
+   */
+  attachments?: Array<{ filename: string; mime: string; data: string }>;
+}
+
+export interface SendEmailOptions {
+  to: string[]; cc?: string[]; bcc?: string[];
+  subject: string; body: string;
+  replyToMessageId?: string; threadId?: string;
+  attachments?: Array<{ filename: string; mime: string; data: string }>;
+}
+
+/** Fold a base64 string to RFC-compliant 76-char lines. */
+function foldBase64(b64: string): string {
+  return b64.replace(/(.{76})/g, '$1\r\n');
+}
+
+/**
+ * Build the full RFC 822 message for `users.messages.send`. Plain text/utf-8
+ * when there are no attachments (the historical shape); multipart/mixed with
+ * one base64 part per attachment otherwise. Exported for unit tests.
+ */
+export function buildRfc822Message(opts: SendEmailOptions): string {
+  const to = `To: ${opts.to.join(', ')}`;
+  const cc = opts.cc?.length ? `Cc: ${opts.cc.join(', ')}` : null;
+  const bcc = opts.bcc?.length ? `Bcc: ${opts.bcc.join(', ')}` : null;
+  const subject = `Subject: ${opts.subject}`;
+  const inReplyTo = opts.replyToMessageId ? `In-Reply-To: ${opts.replyToMessageId}` : null;
+
+  if (!opts.attachments?.length) {
+    const headers = [to, cc, bcc, subject, 'Content-Type: text/plain; charset=utf-8', inReplyTo]
+      .filter(Boolean).join('\r\n');
+    return `${headers}\r\n\r\n${opts.body}`;
+  }
+
+  const boundary = `conduit_${randomUUID().replace(/-/g, '')}`;
+  const headers = [
+    to, cc, bcc, subject, inReplyTo,
+    'MIME-Version: 1.0',
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+  ].filter(Boolean).join('\r\n');
+
+  const parts: string[] = [
+    `--${boundary}`,
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    opts.body,
+  ];
+  for (const a of opts.attachments) {
+    parts.push(
+      `--${boundary}`,
+      `Content-Type: ${a.mime}; name="${a.filename}"`,
+      'Content-Transfer-Encoding: base64',
+      `Content-Disposition: attachment; filename="${a.filename}"`,
+      '',
+      foldBase64(a.data),
+    );
+  }
+  parts.push(`--${boundary}--`, '');
+
+  return `${headers}\r\n\r\n${parts.join('\r\n')}`;
 }
 
 const SETTINGS_KEY = 'credentials.gmail';
@@ -620,23 +684,10 @@ export class GmailSync {
     });
   }
 
-  async sendEmail(opts: {
-    to: string[]; cc?: string[]; bcc?: string[];
-    subject: string; body: string;
-    replyToMessageId?: string; threadId?: string;
-  }): Promise<string> {
+  async sendEmail(opts: SendEmailOptions): Promise<string> {
     if (!this.gmail) throw new Error('Not connected');
 
-    const headers = [
-      `To: ${opts.to.join(', ')}`,
-      opts.cc?.length ? `Cc: ${opts.cc.join(', ')}` : null,
-      opts.bcc?.length ? `Bcc: ${opts.bcc.join(', ')}` : null,
-      `Subject: ${opts.subject}`,
-      'Content-Type: text/plain; charset=utf-8',
-      opts.replyToMessageId ? `In-Reply-To: ${opts.replyToMessageId}` : null,
-    ].filter(Boolean).join('\r\n');
-
-    const raw = Buffer.from(`${headers}\r\n\r\n${opts.body}`).toString('base64url');
+    const raw = Buffer.from(buildRfc822Message(opts)).toString('base64url');
 
     const res = await this.gmail.users.messages.send({
       userId: 'me',
@@ -705,6 +756,7 @@ export class GmailSync {
           body: action.body || '',
           replyToMessageId: action.messageId,
           threadId: action.threadId,
+          attachments: action.attachments,
         });
         break;
       default:

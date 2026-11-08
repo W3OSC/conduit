@@ -26,7 +26,7 @@ interface DiscordChannel {
   name?: string;
   type: number;
   messages: { fetch: (opts: Record<string, unknown>) => Promise<Map<string, DiscordMessage>> };
-  send: (text: string) => Promise<void>;
+  send: (message: string | { content?: string; files?: Array<{ attachment: Buffer; name: string }> }) => Promise<void>;
   recipient?: { tag?: string; username?: string };
 }
 
@@ -488,10 +488,24 @@ export class DiscordSync {
     }).run();
   }
 
-  async sendMessage(channelId: string, text: string): Promise<void> {
+  async sendMessage(
+    channelId: string,
+    text: string,
+    attachments: Array<{ filename: string; mime: string; data: string }> = [],
+  ): Promise<void> {
     const channel = this.client.channels.cache.get(channelId);
     if (!channel) throw new Error(`Channel ${channelId} not found`);
-    await channel.send(text);
+    if (!attachments.length) {
+      await channel.send(text);
+      return;
+    }
+    await channel.send({
+      content: text || undefined,
+      files: attachments.map((a) => ({
+        attachment: Buffer.from(a.data, 'base64'),
+        name: a.filename,
+      })),
+    });
   }
 
   async getLatestDM(): Promise<{ channelName: string; content: string; timestamp: string } | null> {
