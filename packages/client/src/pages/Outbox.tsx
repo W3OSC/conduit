@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Check, X, Pencil, Trash2, SendHorizonal, Clock, CheckCircle2, XCircle,
   Inbox, ChevronDown, ChevronUp, Save, RotateCcw, Terminal, Copy, Layers,
-  AlertTriangle,
+  AlertTriangle, Paperclip,
 } from 'lucide-react';
 import { api, type OutboxItem } from '@/lib/api';
 import { ServiceBadge } from '@/components/shared/ServiceBadge';
@@ -25,6 +25,30 @@ const STATUS_CONFIG: Record<string, { icon: React.ComponentType<{ className?: st
   rejected: { icon: XCircle,       chip: 'chip chip-red' },
   failed:   { icon: XCircle,       chip: 'chip chip-red' },
 };
+
+function humanSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function AttachmentChips({ attachments }: { attachments: Array<{ filename: string; mime: string; size: number }> }) {
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap">
+      {attachments.map((a, i) => (
+        <span
+          key={`${a.filename}-${i}`}
+          className="chip chip-sky text-[10px] inline-flex items-center gap-1 max-w-full"
+          title={`${a.mime} · ${humanSize(a.size)}`}
+        >
+          <Paperclip className="w-2.5 h-2.5 flex-shrink-0" />
+          <span className="truncate">{a.filename}</span>
+          <span className="text-muted-foreground/70">{humanSize(a.size)}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
 
 function StatusChip({ status }: { status: string }) {
   const cfg = STATUS_CONFIG[status] ?? STATUS_CONFIG.pending;
@@ -663,6 +687,12 @@ function OutboxCard({ item, nested = false }: OutboxCardProps) {
             {item.editedContent && item.editedContent !== item.content && (
               <span className="chip chip-amber text-[10px]">edited</span>
             )}
+            {!!item.attachments?.length && (
+              <span className="chip chip-sky text-[10px] inline-flex items-center gap-1" title={item.attachments.map((a) => a.filename).join(', ')}>
+                <Paperclip className="w-2.5 h-2.5" />
+                {item.attachments.length}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-3 mt-0.5">
             <p className="text-[11px] text-muted-foreground">{timeAgo(item.createdAt)}</p>
@@ -725,6 +755,11 @@ function OutboxCard({ item, nested = false }: OutboxCardProps) {
                 editDraft={editDraft}
                 setEditDraft={setEditDraft}
               />
+
+              {/* ── Attachments (metadata only; bytes never leave the server) ── */}
+              {!!item.attachments?.length && (
+                <AttachmentChips attachments={item.attachments} />
+              )}
 
               {/* ── Error message ─────────────────────────────────────────── */}
               {item.errorMessage && (

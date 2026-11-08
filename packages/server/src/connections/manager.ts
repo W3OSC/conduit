@@ -10,6 +10,7 @@ import { ObsidianVaultSync, type ObsidianWriteAction, type VaultConfig } from '.
 import { SmbSync, type SmbWriteAction, type SmbConfig } from '../sync/smb.js';
 import { GdriveSyncManager, type DriveWriteAction, POLL_INTERVAL_MS } from '../sync/gdrive.js';
 import { syncGmailContactsFromDb, syncCalendarContactsFromDb } from '../sync/contacts.js';
+import type { OutboxAttachment } from '../util/attachments.js';
 import { broadcast, onNextBroadcast } from '../websocket/hub.js';
 import { randomBytes } from 'crypto';
 import { getCreds, type SlackCreds, type DiscordCreds, type TelegramCreds, type TwitterCredsLite, type NotionCredsLite } from '../api/credentials.js';
@@ -873,11 +874,16 @@ export class ConnectionManager {
     }
   }
 
-  async sendMessage(service: 'slack' | 'discord' | 'telegram', recipientId: string, text: string): Promise<void> {
+  async sendMessage(
+    service: 'slack' | 'discord' | 'telegram',
+    recipientId: string,
+    text: string,
+    attachments: OutboxAttachment[] = [],
+  ): Promise<void> {
     switch (service) {
-      case 'slack':    if (!this.slack) throw new Error('Slack not connected'); await this.slack.sendMessage(recipientId, text); break;
-      case 'discord':  if (!this.discord) throw new Error('Discord not connected'); await this.discord.sendMessage(recipientId, text); break;
-      case 'telegram': if (!this.telegram) throw new Error('Telegram not connected'); await this.telegram.sendMessage(recipientId, text); break;
+      case 'slack':    if (!this.slack) throw new Error('Slack not connected'); await this.slack.sendMessage(recipientId, text, attachments); break;
+      case 'discord':  if (!this.discord) throw new Error('Discord not connected'); await this.discord.sendMessage(recipientId, text, attachments); break;
+      case 'telegram': if (!this.telegram) throw new Error('Telegram not connected'); await this.telegram.sendMessage(recipientId, text, attachments); break;
     }
   }
 

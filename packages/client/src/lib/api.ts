@@ -860,6 +860,8 @@ export interface OutboxItem {
   aiToolCallId?: string;
   /** JSON array recording patch_file edits resolved via fuzzy matching. */
   fuzzyMatchInfo?: string | null;
+  /** Outbound files (metadata only — the server never echoes the bytes). */
+  attachments?: Array<{ filename: string; mime: string; size: number }> | null;
   idempotencyKey?: string | null;
   createdAt: string;
   approvedAt?: string;
