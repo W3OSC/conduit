@@ -83,7 +83,7 @@ function AddGoogleAccountForm({ onCancel, onSuccess }: { onCancel: () => void; o
           {' '}→ click the <strong className="text-foreground/80">⚙ gear</strong> (top-right) → check <strong className="text-foreground/80">"Use your own OAuth credentials"</strong> → paste your Client ID and Client Secret → close the panel.
           In the <strong className="text-foreground/80">Input your own scopes</strong> box at the top of the scope list, paste the following and click <strong className="text-foreground/80">Authorize APIs</strong>:
         </p>
-        <CopyableScope scope="https://mail.google.com/ https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/meetings.space.readonly https://www.googleapis.com/auth/drive.readonly" />
+        <CopyableScope scope="https://mail.google.com/ https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/meetings.space.readonly https://www.googleapis.com/auth/drive" />
         <p>
           Sign in with your Google account → click <strong className="text-foreground/80">Allow</strong> → then click <strong className="text-foreground/80">Exchange authorization code for tokens</strong>. Copy the <strong className="text-foreground/80">Access token</strong> and <strong className="text-foreground/80">Refresh token</strong> and paste them below. The last two scopes enable Gemini meeting notes — remove them if you don't need that feature.
         </p>
