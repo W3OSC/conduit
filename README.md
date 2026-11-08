@@ -164,3 +164,11 @@ Conduit has no configuration files. All credentials are entered through the web 
 ## Trust model
 
 Conduit runs entirely on your machine. All credentials, tokens, and message data are stored in a single local SQLite database. All platform traffic is routed through the local Node.js process. There are no cloud services, no telemetry, and no data leaves your host except through the platform connections you configure.
+
+## Self-updating
+
+A clean checkout of the default branch auto-pulls new commits every 5 minutes
+(`CONDUIT_UPDATE_INTERVAL_SECS`; opt out with `CONDUIT_AUTO_UPDATE=0`). Feature
+branches and dirty trees are never touched — `/api/update/status` shows why.
+Dependency changes trigger `npm install` automatically; Docker images still
+rebuild manually.
