@@ -51,8 +51,8 @@ import { Readable } from 'stream';
 import { getDb } from '../db/client.js';
 import { googleDriveFolderConfig, googleDriveFileCache } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
-import { optionalAuth, uiOnlyAuth, type AuthedRequest } from '../auth/middleware.js';
-import { requireRead, resolveEffectiveFineGrained } from './permissions-utils.js';
+import { optionalAuth, uiOnlyAuth, writeAuditLog, type AuthedRequest } from '../auth/middleware.js';
+import { requireRead, resolveEffectiveFineGrained, isSendEnabled } from './permissions-utils.js';
 import type { GdriveFineGrained } from '../db/schema.js';
 import { getConnectionManager } from '../connections/manager.js';
 import {
@@ -99,6 +99,21 @@ const CreateFolderBody = z.object({
 const UpdateFolderBody = z.object({ folderName: z.string().optional() });
 const UploadBody = z.looseObject({ parentFolderId: z.string().optional() });
 
+const CopyBody = z.object({
+  fileId: trimmedString('fileId').openapi({ description: 'Drive file ID to copy. Must belong to this folder config.' }),
+  name: trimmedString('name').openapi({ description: 'Name for the new copy.' }),
+  targetParentId: z.string().optional().openapi({ description: 'Destination folder ID (must belong to this folder config). Defaults to the config root.' }),
+});
+
+const ReplaceTextParams = z.object({
+  folderId: intParam('folder'),
+  fileId: trimmedString('fileId').openapi({ description: 'Google Doc file ID. Must belong to this folder config.' }),
+});
+
+const ReplaceTextBody = z.object({
+  replacements: z.record(z.string(), z.string()).openapi({ description: 'Map of literal search text (e.g. {{CLIENT}}) to replacement text. Case-sensitive, all occurrences.' }),
+});
+
 documentRoute({ method: 'get', path: '/gdrive/folders/{folderId}', params: FolderIdParam });
 documentRoute({ method: 'get', path: '/gdrive/folders/{folderId}/files', params: FolderIdParam, query: FileTreeQuery });
 documentRoute({ method: 'get', path: '/gdrive/folders/{folderId}/files/{fileId}', params: FolderFileParams });
@@ -115,6 +130,22 @@ documentRoute({
   },
 });
 documentRoute({ method: 'post', path: '/gdrive/folders', body: CreateFolderBody });
+documentRoute({
+  method: 'post',
+  path: '/gdrive/folders/{folderId}/copy',
+  params: FolderIdParam,
+  body: CopyBody,
+  summary: 'Copy a Drive file within a whitelisted folder',
+  description: 'Copies a file (e.g. a Google Docs template) into a destination folder inside the same folder config. Requires gdrive write permission. Returns the new file ID and webViewLink.',
+});
+documentRoute({
+  method: 'post',
+  path: '/gdrive/folders/{folderId}/docs/{fileId}/replace-text',
+  params: ReplaceTextParams,
+  body: ReplaceTextBody,
+  summary: 'Replace placeholder text in a Google Doc',
+  description: 'Runs a Docs batchUpdate replaceAllText for each entry in `replacements` and returns per-key occurrence counts. Zero occurrences is not an error — callers should treat it as a warning. Requires gdrive write permission.',
+});
 
 /**
  * Per-folder read permission for API keys. Absent entry = inherit the
@@ -126,6 +157,19 @@ function canReadFolder(folderConfigId: number, apiKeyId: number | undefined): bo
   const perm = fg?.folderPermissions?.[String(folderConfigId)];
   if (!perm) return true;
   return perm.read !== false;
+}
+
+/**
+ * Per-folder write permission for API keys, mirroring canReadFolder. The
+ * service-level gate is isSendEnabled (checked separately in each write
+ * handler); this only applies the fine-grained per-folder override.
+ */
+function canWriteFolder(folderConfigId: number, apiKeyId: number | undefined): boolean {
+  if (!apiKeyId) return true;
+  const fg = resolveEffectiveFineGrained('gdrive', apiKeyId) as GdriveFineGrained | null;
+  const perm = fg?.folderPermissions?.[String(folderConfigId)];
+  if (!perm) return true;
+  return perm.write !== false;
 }
 
 // ── GET /gdrive/accounts ───────────────────────────────────────────────────────
@@ -362,7 +406,14 @@ router.get('/folders/:folderId/download/*fileId', optionalAuth, requireRead('gdr
 
   try {
     // Use raw Drive API to download as binary
-    const driveApi = (gdrive as unknown as { drive: { files: { get: (p: object, o: object) => Promise<{ data: unknown; headers: Record<string, string> }> } } }).drive;
+    const driveApi = (gdrive as unknown as {
+      drive: {
+        files: {
+          get: (p: object, o: object) => Promise<{ data: unknown; headers: Record<string, string> }>;
+          export: (p: object, o: object) => Promise<{ data: unknown; headers: Record<string, string> }>;
+        };
+      };
+    }).drive;
     const mimeType = cached?.mimeType;
     const fileName = cached?.fileName ?? fileId;
 
@@ -373,9 +424,11 @@ router.get('/folders/:folderId/download/*fileId', optionalAuth, requireRead('gdr
     let downloadName: string;
 
     if (isWorkspace) {
-      // Export as PDF for Google Workspace files
-      const res2 = await driveApi.files.get(
-        { fileId, mimeType: 'application/pdf' } as object,
+      // files.export, not files.get — get ignores mimeType and returns the
+      // file's metadata JSON, so this path used to ship a JSON blob labeled
+      // application/pdf. Export is what the preview route uses too.
+      const res2 = await driveApi.files.export(
+        { fileId, mimeType: 'application/pdf' },
         { responseType: 'arraybuffer' },
       );
       buf = Buffer.from(res2.data as ArrayBuffer);
@@ -452,6 +505,119 @@ router.post('/folders/:folderId/upload', uiOnlyAuth, upload.single('file'), vali
       return res.status(413).json({ error: 'File too large (max 100 MB)' });
     }
     res.status(500).json({ error: msg });
+  }
+});
+
+// ── POST /gdrive/folders/:id/copy — copy a file within the folder config ──────
+
+router.post('/folders/:folderId/copy', optionalAuth, validateParams(FolderIdParam), validateBody(CopyBody), async (req, res) => {
+  const { folderId: id } = paramsOf(FolderIdParam, req);
+  const { fileId, name, targetParentId } = bodyOf(CopyBody, req);
+  const apiKeyId = (req as AuthedRequest).apiKey?.id;
+
+  const db = getDb();
+  const row = db.select().from(googleDriveFolderConfig).where(eq(googleDriveFolderConfig.id, id)).get();
+  if (!row) return res.status(404).json({ error: 'Folder not found' });
+
+  // Source file must be a cached member of this folder config (same rule as download)
+  const cached = db.select().from(googleDriveFileCache).where(eq(googleDriveFileCache.fileId, fileId)).get();
+  if (!cached || cached.folderConfigId !== id) {
+    return res.status(403).json({ error: 'File is not part of this folder (POST /gdrive/folders/:id/sync refreshes the file index)' });
+  }
+
+  // Destination must also live inside this folder config
+  let target = row.folderId;
+  if (targetParentId && targetParentId !== row.folderId) {
+    const targetCached = db.select().from(googleDriveFileCache).where(eq(googleDriveFileCache.fileId, targetParentId)).get();
+    if (!targetCached || targetCached.folderConfigId !== id) {
+      return res.status(403).json({ error: 'targetParentId is not part of this folder (POST /gdrive/folders/:id/sync refreshes the file index)' });
+    }
+    target = targetParentId;
+  }
+
+  if (!isSendEnabled('gdrive', apiKeyId)) {
+    return res.status(403).json({ error: 'Write access to gdrive is not enabled for this actor' });
+  }
+  if (!canWriteFolder(id, apiKeyId)) {
+    return res.status(403).json({ error: 'Write access to this folder is not permitted for this API key' });
+  }
+
+  const manager = getConnectionManager();
+  const gdrive = manager.getGdrive(row.email);
+  if (!gdrive) return res.status(503).json({ error: `No active Drive connection for ${row.email}` });
+
+  try {
+    const driveApi = (gdrive as unknown as { drive: { files: { copy: (p: object) => Promise<{ data: { id?: string; name?: string; webViewLink?: string } }> } } }).drive;
+    const copyRes = await driveApi.files.copy({
+      fileId,
+      supportsAllDrives: true,
+      requestBody: { name, parents: [target] },
+      fields: 'id,name,webViewLink',
+    } as object);
+
+    gdrive.syncFolder(id).catch(() => {});
+    writeAuditLog('send', (req as AuthedRequest).actor, {
+      service: 'gdrive',
+      apiKeyId,
+      targetId: copyRes.data.id ?? fileId,
+      detail: { action: 'copy', sourceFileId: fileId, name },
+    });
+
+    res.status(201).json({
+      fileId: copyRes.data.id,
+      name: copyRes.data.name,
+      webViewLink: copyRes.data.webViewLink,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ── POST /gdrive/folders/:id/docs/:fileId/replace-text — Docs placeholder swap ─
+
+router.post('/folders/:folderId/docs/:fileId/replace-text', optionalAuth, validateParams(ReplaceTextParams), validateBody(ReplaceTextBody), async (req, res) => {
+  const { folderId: id, fileId } = paramsOf(ReplaceTextParams, req);
+  const { replacements } = bodyOf(ReplaceTextBody, req);
+  const apiKeyId = (req as AuthedRequest).apiKey?.id;
+
+  if (!Object.keys(replacements).length) {
+    return res.status(400).json({ error: 'replacements must contain at least one entry' });
+  }
+
+  const db = getDb();
+  const row = db.select().from(googleDriveFolderConfig).where(eq(googleDriveFolderConfig.id, id)).get();
+  if (!row) return res.status(404).json({ error: 'Folder not found' });
+
+  const cached = db.select().from(googleDriveFileCache).where(eq(googleDriveFileCache.fileId, fileId)).get();
+  if (!cached || cached.folderConfigId !== id) {
+    return res.status(403).json({ error: 'File is not part of this folder (POST /gdrive/folders/:id/sync refreshes the file index)' });
+  }
+  if (cached.mimeType !== 'application/vnd.google-apps.document') {
+    return res.status(400).json({ error: 'replace-text only supports Google Docs files' });
+  }
+
+  if (!isSendEnabled('gdrive', apiKeyId)) {
+    return res.status(403).json({ error: 'Write access to gdrive is not enabled for this actor' });
+  }
+  if (!canWriteFolder(id, apiKeyId)) {
+    return res.status(403).json({ error: 'Write access to this folder is not permitted for this API key' });
+  }
+
+  const manager = getConnectionManager();
+  const gdrive = manager.getGdrive(row.email);
+  if (!gdrive) return res.status(503).json({ error: `No active Drive connection for ${row.email}` });
+
+  try {
+    const occurrences = await gdrive.replaceAllTextInDoc(fileId, replacements);
+    writeAuditLog('send', (req as AuthedRequest).actor, {
+      service: 'gdrive',
+      apiKeyId,
+      targetId: fileId,
+      detail: { action: 'replace_text', keys: Object.keys(replacements) },
+    });
+    res.json({ occurrences });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   }
 });
 
