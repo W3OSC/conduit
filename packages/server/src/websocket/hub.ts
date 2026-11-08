@@ -23,6 +23,7 @@ export interface WsEvent {
    
     | 'ai:toolcall'       // AI API access recorded
     | 'update:available'  // new git commits available upstream
+    | 'update:applied'    // auto-update pulled those commits (restart imminent)
     | 'ping'
     | 'error';
   data: unknown;

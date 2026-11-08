@@ -22,6 +22,32 @@ export interface UpdateStatus {
   commitsBehind: number;
   latestCommitSha: string;
   isDocker: boolean;
+  /** Current checkout branch ('' when git is unavailable). */
+  branch: string;
+  /** Uncommitted changes present (auto-update never touches a dirty tree). */
+  dirty: boolean;
+  /** Why auto-update will not run right now (null = it will when behind). */
+  autoUpdateBlocked: string | null;
+}
+
+/**
+ * Pure auto-apply gate — Meridian's rule: only a CLEAN checkout of the
+ * DEFAULT branch self-updates; anything else just reports "blocked" and is
+ * never touched. Returns null when auto-apply may proceed.
+ */
+export function autoUpdateBlockReason(s: {
+  isDocker: boolean;
+  branch: string;
+  defaultBranch: string;
+  dirty: boolean;
+  enabled: boolean;
+}): string | null {
+  if (!s.enabled) return 'disabled (CONDUIT_AUTO_UPDATE=0)';
+  if (s.isDocker) return 'docker image — rebuild to update';
+  if (!s.branch) return 'not a git checkout';
+  if (s.branch !== s.defaultBranch) return `checkout is on ${s.branch}, not ${s.defaultBranch}`;
+  if (s.dirty) return 'working tree has uncommitted changes';
+  return null;
 }
 
 let cachedVersion: string | null = null;
@@ -78,6 +104,7 @@ export async function getAppVersion(): Promise<string> {
  */
 export async function checkForUpdates(): Promise<UpdateStatus | null> {
   const isDocker = process.env.DOCKER === 'true';
+  const enabled = process.env.CONDUIT_AUTO_UPDATE !== '0';
   const version = await getAppVersion();
 
   try {
@@ -92,12 +119,21 @@ export async function checkForUpdates(): Promise<UpdateStatus | null> {
       latestCommitSha = await git('rev-parse --short origin/HEAD');
     } catch { /* ignore */ }
 
+    const branch = await git('rev-parse --abbrev-ref HEAD').catch(() => '');
+    const dirty = (await git('status --porcelain').catch(() => 'unknown')) !== '';
+    // origin/HEAD → "origin/main" → "main"
+    const defaultBranch = (await git('rev-parse --abbrev-ref origin/HEAD').catch(() => 'origin/main'))
+      .replace(/^origin\//, '');
+
     const status: UpdateStatus = {
       version,
       hasUpdate: commitsBehind > 0,
       commitsBehind,
       latestCommitSha,
       isDocker,
+      branch,
+      dirty,
+      autoUpdateBlocked: autoUpdateBlockReason({ isDocker, branch, defaultBranch, dirty, enabled }),
     };
 
     lastKnownStatus = status;
@@ -112,6 +148,9 @@ export async function checkForUpdates(): Promise<UpdateStatus | null> {
       commitsBehind: 0,
       latestCommitSha: '',
       isDocker,
+      branch: '',
+      dirty: false,
+      autoUpdateBlocked: 'git unavailable',
     };
     lastKnownStatus = status;
     return status;
@@ -142,34 +181,84 @@ export async function applyUpdate(): Promise<{ success: boolean; message: string
 }
 
 /**
- * Start a background poller that checks for updates every `intervalMs` ms.
- * Broadcasts a `update:available` WebSocket event when new commits are found.
- * Also performs an initial check immediately on startup.
+ * Auto-apply a pending update when the gate allows it (clean checkout of the
+ * default branch, not Docker, not disabled). The pull itself makes `tsx watch`
+ * restart the server on the new code; when dependencies changed, a detached
+ * shell finishes `npm install` across that restart and then re-touches the
+ * entry file so the watcher reloads once more with modules in place. Under a
+ * plain `node dist` + CONDUIT_SUPERVISED=1, the process exits 0 instead and
+ * the supervisor relaunches it.
  */
-export function startUpdatePoller(intervalMs = 3_600_000): void {
-  // Initial check shortly after startup (don't block the server boot)
-  setTimeout(async () => {
-    try {
-      const status = await checkForUpdates();
-      if (status?.hasUpdate) {
-        broadcast({ type: 'update:available', data: status });
-      }
-    } catch { /* ignore */ }
-  }, 15_000); // 15 s after boot to let connections settle
+async function maybeAutoApply(status: UpdateStatus): Promise<void> {
+  if (!status.hasUpdate || status.autoUpdateBlocked) return;
 
-  pollTimer = setInterval(async () => {
+  const lockfileChanged = await git('diff --name-only HEAD..origin/HEAD')
+    .then((out) => out.split('\n').some((f) => f.trim().endsWith('package-lock.json')))
+    .catch(() => true); // unknown → assume yes, an extra npm install is harmless
+
+  console.log(
+    `[update] auto-applying ${status.commitsBehind} commit(s) → ${status.latestCommitSha}` +
+    (lockfileChanged ? ' (dependencies changed — npm install will follow)' : ''),
+  );
+  const result = await applyUpdate();
+  if (!result.success) {
+    console.warn('[update] auto-apply pull failed:', result.message);
+    return;
+  }
+  broadcast({ type: 'update:applied', data: { ...status, autoApplied: true } });
+
+  if (lockfileChanged) {
+    // Detached so it survives the tsx-watch restart the pull just triggered.
+    const { spawn } = await import('child_process');
+    const child = spawn(
+      'sh',
+      ['-c', 'npm install >> /tmp/conduit-self-update.log 2>&1; touch packages/server/src/index.ts'],
+      { cwd: REPO_ROOT, detached: true, stdio: 'ignore' },
+    );
+    child.unref();
+  }
+
+  if (process.env.CONDUIT_SUPERVISED === '1') {
+    console.log('[update] supervised mode — exiting 0 for relaunch');
+    process.exit(0);
+  }
+}
+
+/**
+ * Start a background poller that checks for updates every `intervalMs` ms
+ * (CONDUIT_UPDATE_INTERVAL_SECS overrides; default 5 min). Broadcasts
+ * `update:available`, then auto-applies when the checkout is a clean default
+ * branch — a feature branch or dirty tree is never touched, it just reports
+ * blocked in /api/update/status. Also performs an initial check on startup.
+ */
+export function startUpdatePoller(intervalMs?: number): void {
+  const envSecs = parseInt(process.env.CONDUIT_UPDATE_INTERVAL_SECS ?? '', 10);
+  const interval = intervalMs ?? (Number.isFinite(envSecs) && envSecs >= 30 ? envSecs * 1000 : 300_000);
+
+  const tick = async () => {
     try {
       const status = await checkForUpdates();
       if (status?.hasUpdate) {
         broadcast({ type: 'update:available', data: status });
+        if (status.autoUpdateBlocked) {
+          console.log(
+            `[update] ${status.commitsBehind} commit(s) behind but auto-update blocked: ${status.autoUpdateBlocked}`,
+          );
+        }
+        await maybeAutoApply(status);
       }
     } catch { /* ignore */ }
-  }, intervalMs);
+  };
+
+  // Initial check shortly after startup (don't block the server boot)
+  setTimeout(tick, 15_000); // 15 s after boot to let connections settle
+
+  pollTimer = setInterval(tick, interval);
 
   // Don't let this timer keep the process alive if everything else shuts down
   if (pollTimer.unref) pollTimer.unref();
 
-  console.log(`[update] Update poller started (interval: ${intervalMs / 60_000} min)`);
+  console.log(`[update] Update poller started (interval: ${interval / 60_000} min, auto-apply ${process.env.CONDUIT_AUTO_UPDATE !== '0' ? 'on' : 'off'})`);
 }
 
 
