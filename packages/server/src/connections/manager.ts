@@ -32,6 +32,11 @@ export interface ServiceStatus {
   accountId?: string;
   displayName?: string;
   lastSync?: string;
+  // Slack identity extras (agent consumers match mentions against accountId;
+  // botId/teamId disambiguate bot-token credentials).
+  botId?: string;
+  teamId?: string;
+  teamName?: string;
 }
 
 export class ConnectionManager {
@@ -399,7 +404,10 @@ export class ConnectionManager {
       const ok = await this.slack.authenticate();
       if (!ok) throw new Error('Authentication failed');
       const info = this.slack.accountInfo;
-      this.setStatus('slack', { status: 'connected', accountId: info?.userId, displayName: info?.displayName });
+      this.setStatus('slack', {
+        status: 'connected', accountId: info?.userId, displayName: info?.displayName,
+        botId: info?.botId, teamId: info?.teamId, teamName: info?.teamName,
+      });
       await this.slack.startSocketMode();
       // Catch-up: realtime-only connects permanently lose anything that arrived
       // while the server (or socket) was down. With per-chat cursors this walk

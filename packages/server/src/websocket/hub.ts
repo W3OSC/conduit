@@ -11,6 +11,8 @@ import { eq } from 'drizzle-orm';
 export interface WsEvent {
   type:
     | 'message:new'       // new chat message (discord/slack/telegram)
+    | 'reaction:added'    // emoji reaction added to a message (slack)
+    | 'reaction:removed'  // emoji reaction removed from a message (slack)
     | 'email:new'         // new Gmail message
     | 'calendar:updated'  // calendar event created/updated
     | 'email:unread'      // Gmail unread count update

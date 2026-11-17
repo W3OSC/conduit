@@ -30,8 +30,13 @@ export class SlackSync {
   private syncRunId: number | null = null;
   private _cancelRequested = false;
   public connected = false;
-  public accountInfo: { userId: string; displayName: string } | null = null;
+  public accountInfo: {
+    userId: string; displayName: string;
+    botId?: string; teamId?: string; teamName?: string;
+  } | null = null;
   get isSocketMode(): boolean { return this.socketClient !== null; }
+  get teamId(): string | undefined { return this.accountInfo?.teamId; }
+  get teamName(): string | undefined { return this.accountInfo?.teamName; }
 
   cancelSync(): void {
     this._cancelRequested = true;
@@ -54,9 +59,13 @@ export class SlackSync {
     try {
       const auth = await this.client.auth.test();
       if (!auth.ok) return false;
+      const authExtra = auth as { bot_id?: string; team_id?: string; team?: string };
       this.accountInfo = {
         userId: auth.user_id as string,
         displayName: (auth.user as string) || auth.user_id as string,
+        botId: authExtra.bot_id,
+        teamId: authExtra.team_id,
+        teamName: authExtra.team,
       };
       const db = getDb();
       const existing = db.select().from(accounts)
@@ -148,6 +157,21 @@ export class SlackSync {
       return name;
     } catch {
       return userId;
+    }
+  }
+
+  private emailCache = new Map<string, string | null>();
+
+  /** uid → workspace email via users.info (needs the users:read.email scope). */
+  async resolveUserEmail(userId: string): Promise<string | null> {
+    if (this.emailCache.has(userId)) return this.emailCache.get(userId)!;
+    try {
+      const info = await this.client.users.info({ user: userId });
+      const email = (info.user as { profile?: { email?: string } })?.profile?.email || null;
+      this.emailCache.set(userId, email);
+      return email;
+    } catch {
+      return null;
     }
   }
 
@@ -401,6 +425,7 @@ export class SlackSync {
         ? JSON.stringify({ files: liveFiles, richAttachments: slackEvent.attachments || [] })
         : (slackEvent.attachments ? JSON.stringify({ files: [], richAttachments: slackEvent.attachments }) : null);
 
+      const threadTs = (event.thread_ts as string) || null;
       const result = db.insert(slackMessages).values({
         messageId: ts,
         channelId,
@@ -409,6 +434,7 @@ export class SlackSync {
         userName,
         content: (event.text as string) || '',
         attachments: liveAttachments,
+        threadTs,
         timestamp,
         rawJson: JSON.stringify(event),
       }).onConflictDoNothing().run();
@@ -424,6 +450,7 @@ export class SlackSync {
           userId,
           userName,
           content: event.text,
+          threadTs,
           timestamp,
         },
       });
@@ -444,6 +471,35 @@ export class SlackSync {
         }
       }
     });
+
+    // Reaction events (needs reaction_added/reaction_removed in the app's
+    // Socket Mode event subscriptions + reactions:read scope). Payloads are
+    // tiny and self-contained — reactions are not stored locally, so the
+    // broadcast is the only surface they exist on.
+    const relayReaction = (kind: 'reaction:added' | 'reaction:removed') =>
+      async ({ event, ack }: { event: Record<string, unknown>; ack: () => void }) => {
+        ack();
+        const item = (event?.item as { type?: string; channel?: string; ts?: string }) || {};
+        if (item.type !== 'message' || !item.channel || !item.ts) return;
+        // Same sync-scope rule as messages: drop non-DM channels outside the allowlist.
+        if (!item.channel.startsWith('D')) {
+          const allowed = getSourceAllowlist('slack');
+          if (allowed && !allowed.has(item.channel)) return;
+        }
+        broadcast({
+          type: kind,
+          data: {
+            source: 'slack',
+            channelId: item.channel,
+            messageTs: item.ts,
+            emoji: (event.reaction as string) || '',
+            userId: (event.user as string) || '',
+            itemUserId: (event.item_user as string) || '',
+          },
+        });
+      };
+    this.socketClient.on('reaction_added', relayReaction('reaction:added'));
+    this.socketClient.on('reaction_removed', relayReaction('reaction:removed'));
 
     await this.socketClient.start();
     this.connected = true;
@@ -483,10 +539,12 @@ export class SlackSync {
     channelId: string,
     text: string,
     attachments: Array<{ filename: string; mime: string; data: string }> = [],
-  ): Promise<void> {
+    opts: { threadTs?: string } = {},
+  ): Promise<{ channel: string; ts?: string }> {
+    const threadArg = opts.threadTs ? { thread_ts: opts.threadTs } : {};
     if (!attachments.length) {
-      await this.client.chat.postMessage({ channel: channelId, text });
-      return;
+      const res = await this.client.chat.postMessage({ channel: channelId, text, ...threadArg });
+      return { channel: (res.channel as string) || channelId, ts: res.ts as string | undefined };
     }
     // files.uploadV2 needs a real channel id — unlike postMessage it does not
     // auto-open a DM from a user id, so resolve U/W ids to their DM channel.
@@ -498,11 +556,54 @@ export class SlackSync {
     await this.client.filesUploadV2({
       channel_id: channel,
       initial_comment: text || undefined,
+      ...threadArg,
       file_uploads: attachments.map((a) => ({
         file: Buffer.from(a.data, 'base64'),
         filename: a.filename,
       })),
     });
+    // uploadV2's completion response does not reliably surface the message ts.
+    return { channel };
+  }
+
+  /** Add or remove an emoji reaction. Tolerates already/no-reaction races. */
+  async setReaction(channelId: string, ts: string, emoji: string, remove = false): Promise<void> {
+    const name = emoji.replace(/^:+|:+$/g, '');
+    try {
+      if (remove) await this.client.reactions.remove({ channel: channelId, timestamp: ts, name });
+      else await this.client.reactions.add({ channel: channelId, timestamp: ts, name });
+    } catch (e) {
+      const code = (e as { data?: { error?: string } })?.data?.error;
+      if (code === 'already_reacted' || code === 'no_reaction') return;
+      throw e;
+    }
+  }
+
+  /** Live read of a thread (root first, oldest → newest). */
+  async fetchThread(channelId: string, threadTs: string, limit = 50): Promise<Array<{
+    ts: string; threadTs: string | null; userId: string; userName: string;
+    content: string; timestamp: string;
+  }>> {
+    const res = await this.client.conversations.replies({
+      channel: channelId, ts: threadTs, limit,
+    });
+    const out: Array<{
+      ts: string; threadTs: string | null; userId: string; userName: string;
+      content: string; timestamp: string;
+    }> = [];
+    for (const msg of (res.messages || [])) {
+      if (msg.type !== 'message') continue;
+      const userId = (msg.user as string) || (msg.bot_id as string) || '';
+      out.push({
+        ts: msg.ts || '',
+        threadTs: msg.thread_ts || null,
+        userId,
+        userName: userId ? await this.resolveUser(userId) : 'Unknown',
+        content: msg.text || '',
+        timestamp: msg.ts ? new Date(parseFloat(msg.ts) * 1000).toISOString() : '',
+      });
+    }
+    return out;
   }
 
   async getLatestDM(): Promise<{ channelName: string; content: string; timestamp: string } | null> {

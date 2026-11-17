@@ -71,6 +71,7 @@ export interface UpsertContactData {
   firstName?: string;
   lastName?: string;
   phone?: string;
+  email?: string;
   avatarUrl?: string;
   bio?: string;
   statusText?: string;
@@ -102,6 +103,7 @@ export function upsertContact(data: UpsertContactData): void {
     firstName:        data.firstName ?? null,
     lastName:         data.lastName ?? null,
     phone:            data.phone ?? null,
+    email:            data.email ?? null,
     avatarUrl:        data.avatarUrl ?? null,
     bio:              data.bio ?? null,
     statusText:       data.statusText ?? null,
@@ -125,6 +127,7 @@ export function upsertContact(data: UpsertContactData): void {
       firstName:        data.firstName   ?? sql`first_name`,
       lastName:         data.lastName    ?? sql`last_name`,
       phone:            data.phone       ?? sql`phone`,
+      email:            data.email       ?? sql`email`,
       avatarUrl:        data.avatarUrl   ?? sql`avatar_url`,
       bio:              data.bio         ?? sql`bio`,
       statusText:       data.statusText  ?? sql`status_text`,
@@ -202,6 +205,7 @@ interface SlackWebClient {
           image_72?: string;
           status_text?: string;
           phone?: string;
+          email?: string;
         };
         is_bot?: boolean;
         deleted?: boolean;
@@ -245,6 +249,7 @@ export async function syncSlackContacts(
         avatarUrl:       member.profile?.image_192 || member.profile?.image_72,
         statusText:      member.profile?.status_text,
         phone:           member.profile?.phone,
+        email:           member.profile?.email,
         isNativeContact: true,
         rawJson:         member as unknown as Record<string, unknown>,
       });
