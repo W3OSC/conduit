@@ -99,11 +99,16 @@ export function startCloudAgent(): void {
       // so an unknown mode can never reach the per-mode tool-posture switch.
       const job = parseAiJobFrame(frame);
       if (!job) {
+        // Same shape executeAiJob errors take: top-level `error` for the
+        // hub's generic job_result path, plus the documented protocol body
+        // (docs/m5b-ai-runner.md) `{error, errorKind}`.
+        const error = 'malformed ai job frame (mode/model/prompt/timeoutSecs)';
         sendFrame(ws, {
           type: 'job_result',
           jobId: frame.jobId,
           ok: false,
-          error: 'malformed ai job frame (mode/model/prompt/timeoutSecs)',
+          error,
+          body: { error, errorKind: 'cli_error' },
         });
         return;
       }

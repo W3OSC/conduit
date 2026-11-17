@@ -4,7 +4,8 @@
  * fake child, so these cover the pure/orchestration layer — argv construction
  * per mode, frame validation, errorKind classification (incl. the empirical
  * exit-1 logged-out envelope), env hygiene, the timeout's process-group kill,
- * and the 2-slot FIFO concurrency gate.
+ * the 2-slot FIFO concurrency gate, and the accepted-at deadline accounting
+ * (queue wait counts against timeoutSecs).
  */
 
 import { EventEmitter } from 'node:events';
@@ -266,6 +267,74 @@ describe('executeAiJob', () => {
     expect(result.error).toContain('timeout');
     expect(groupKills).toEqual([-child.pid]); // negative pid = whole process group
     killSpy.mockRestore();
+  });
+
+  it('deadline counts queue wait: whole budget consumed before spawn → timeout without spawning', async () => {
+    const t0 = 1_700_000_000_000;
+    // First Date.now() = acceptance, second = after slot acquisition: the
+    // whole 60s budget (and then some) elapsed "while queued".
+    vi.spyOn(Date, 'now')
+      .mockReturnValueOnce(t0)
+      .mockReturnValueOnce(t0 + (baseJob.timeoutSecs + 1) * 1000);
+
+    const result = (await executeAiJob(baseJob, { bin: 'claude-fake' })) as Extract<AiJobResult, { ok: false }>;
+
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(result.body.errorKind).toBe('timeout');
+    expect(result.error).toContain('concurrency slot');
+    expect(result.body.error).toBe(result.error);
+    expect(activeAiJobCount()).toBe(0); // slot released even on the no-spawn path
+  });
+
+  it('deadline counts queue wait: only the remaining budget is enforced on the spawned CLI', async () => {
+    const t0 = 1_700_000_000_000;
+    // 59.99s of the 60s budget elapses before the slot frees → ~10ms left.
+    vi.spyOn(Date, 'now').mockReturnValueOnce(t0).mockReturnValueOnce(t0 + 59_990);
+    const child = new FakeChild(); // never exits on its own
+    spawnMock.mockImplementationOnce(() => child as unknown as ReturnType<typeof spawn>);
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((() => {
+      child.emit('close', null); // the SIGKILL'd group's pipes close
+      return true;
+    }) as typeof process.kill);
+
+    // If the full 60s budget were (wrongly) re-granted at spawn, the kill
+    // timer would be 60s out and this await would trip vitest's test timeout;
+    // the ~10ms remaining-budget kill is what lets it resolve.
+    const result = (await executeAiJob(baseJob, {
+      bin: 'claude-fake',
+      killMarginSecs: 0,
+    })) as Extract<AiJobResult, { ok: false }>;
+
+    expect(result.body.errorKind).toBe('timeout');
+    expect(killSpy).toHaveBeenCalled();
+  });
+
+  it('deadline counts queue wait: a job starved in the FIFO queue past its budget never spawns', async () => {
+    const children: FakeChild[] = [];
+    spawnMock.mockImplementation(() => {
+      const child = new FakeChild();
+      children.push(child);
+      return child as unknown as ReturnType<typeof spawn>;
+    });
+    const blockers = [
+      executeAiJob({ ...baseJob, jobId: 'b1' }, { bin: 'x' }),
+      executeAiJob({ ...baseJob, jobId: 'b2' }, { bin: 'x' }),
+    ];
+    const starved = executeAiJob({ ...baseJob, jobId: 'starved', timeoutSecs: 0.02 }, { bin: 'x' });
+    await flush();
+    expect(children).toHaveLength(2); // starved is queued behind the 2-slot gate
+
+    await new Promise((r) => setTimeout(r, 50)); // its whole 20ms budget elapses in the queue
+    finishLater(children[0]!, { stdout: JSON.stringify(OK_ENVELOPE), code: 0 });
+    const result = (await starved) as Extract<AiJobResult, { ok: false }>;
+
+    expect(result.body.errorKind).toBe('timeout');
+    expect(children).toHaveLength(2); // no third child was ever spawned
+
+    finishLater(children[1]!, { stdout: JSON.stringify(OK_ENVELOPE), code: 0 });
+    const settled = await Promise.all(blockers);
+    expect(settled.map((r) => r.ok)).toEqual([true, true]);
+    expect(activeAiJobCount()).toBe(0);
   });
 
   it('runs at most MAX_CONCURRENT_AI_JOBS at once; extras start FIFO as slots free', async () => {

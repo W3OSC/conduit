@@ -46,7 +46,11 @@ export interface AiJob {
   prompt: string;
   /** mode:"json" only — the JSON schema passed to --json-schema. */
   schema?: unknown;
-  /** Cloud-set budget (180 json/chat, 600 research); this runner enforces it +margin. */
+  /**
+   * Cloud-set budget (180 json/chat, 600 research); this runner enforces it
+   * +margin, counted from job *acceptance* — time spent waiting for a
+   * concurrency slot comes out of the same budget (see executeAiJob).
+   */
   timeoutSecs: number;
 }
 
@@ -453,14 +457,32 @@ export interface ExecuteAiJobOptions {
  * process-group kill, and classify the outcome into a `job_result`-ready
  * `AiJobResult`. Never rejects — every failure mode becomes an `ok:false`
  * result so agent.ts can always reply to the cloud.
+ *
+ * The deadline clock starts when the job is *accepted*, not when a
+ * concurrency slot frees up: the cloud gives up at timeoutSecs+30s and
+ * discards a late result, so time spent queued behind the
+ * MAX_CONCURRENT_AI_JOBS gate must come out of the same budget the CLI is
+ * allowed to run under — otherwise a queued job's wall clock would be
+ * unbounded-wait + timeoutSecs + margin. A job whose whole budget is
+ * consumed by the queue wait returns a `timeout` result without spawning;
+ * otherwise only the remaining budget (+margin) is enforced on the child.
  */
 export async function executeAiJob(job: AiJob, opts: ExecuteAiJobOptions = {}): Promise<AiJobResult> {
+  const acceptedAtMs = Date.now();
   await acquireAiSlot();
   try {
+    const remainingSecs = job.timeoutSecs - (Date.now() - acceptedAtMs) / 1000;
+    if (remainingSecs <= 0) {
+      return errResult(
+        job.jobId,
+        `ai job spent its whole ${job.timeoutSecs}s budget waiting for a concurrency slot — CLI not spawned`,
+        'timeout',
+      );
+    }
     const bin = opts.bin ?? resolveClaudeBin(opts.env ?? process.env);
     const args = buildAiArgs(job);
     const killMarginSecs = opts.killMarginSecs ?? KILL_MARGIN_SECS;
-    const raw = await runRawCli(bin, args, job.prompt, job.timeoutSecs, killMarginSecs, opts.env);
+    const raw = await runRawCli(bin, args, job.prompt, remainingSecs, killMarginSecs, opts.env);
     return classifyResult(job.jobId, raw);
   } catch (e) {
     return errResult(job.jobId, e instanceof Error ? e.message : String(e), 'cli_error');
