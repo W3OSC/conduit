@@ -20,6 +20,14 @@ export interface HttpJob {
   method?: string;
   path: string;
   body?: unknown;
+  /**
+   * `"none"` executes the local fetch without the X-API-Key header. Conduit's
+   * `uiOnlyAuth` endpoints (e.g. `chats/:source/:chatId/read`) reject any
+   * request carrying an API key outright, so Meridian's bridge marks those
+   * jobs keyless rather than failing every call through it. Absent (the
+   * default) keeps the key attached, unchanged from before this field existed.
+   */
+  auth?: 'none';
 }
 
 export interface JobResultOk {
@@ -72,7 +80,7 @@ export async function executeHttpJob(job: HttpJob, port: number, apiKey: string)
     const res = await fetch(url, {
       method,
       headers: {
-        'X-API-Key': apiKey,
+        ...(job.auth === 'none' ? {} : { 'X-API-Key': apiKey }),
         Accept: 'application/json',
         ...(job.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       },

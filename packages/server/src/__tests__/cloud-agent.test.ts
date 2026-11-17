@@ -186,3 +186,44 @@ describe('executeHttpJob response bodies', () => {
     expect(result).toEqual({ jobId: 'job-text', ok: true, status: 200, body: 'plain text body' });
   });
 });
+
+describe('executeHttpJob auth header', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubFetchCapturingInit() {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      status: 200,
+      headers: { get: () => 'application/json' },
+      text: async () => '{}',
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    return fetchSpy;
+  }
+
+  it('attaches X-API-Key by default (auth field absent)', async () => {
+    const fetchSpy = stubFetchCapturingInit();
+
+    await executeHttpJob({ jobId: 'job-keyed', kind: 'http', path: '/api/health' }, 3101, 'sk-arb-test');
+
+    const init = fetchSpy.mock.calls[0][1] as { headers: Record<string, string> };
+    expect(init.headers['X-API-Key']).toBe('sk-arb-test');
+  });
+
+  it('omits X-API-Key when auth is "none" — required for uiOnlyAuth endpoints like chats/:source/:chatId/read', async () => {
+    const fetchSpy = stubFetchCapturingInit();
+
+    await executeHttpJob(
+      { jobId: 'job-keyless', kind: 'http', method: 'POST', path: '/api/chats/telegram/123/read', auth: 'none' },
+      3101,
+      'sk-arb-test',
+    );
+
+    const init = fetchSpy.mock.calls[0][1] as { headers: Record<string, string> };
+    expect(init.headers).not.toHaveProperty('X-API-Key');
+    // Everything else about the request is unaffected by going keyless.
+    expect(fetchSpy.mock.calls[0][0]).toBe('http://127.0.0.1:3101/api/chats/telegram/123/read');
+    expect(init.headers.Accept).toBe('application/json');
+  });
+});

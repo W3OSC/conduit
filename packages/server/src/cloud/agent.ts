@@ -29,6 +29,8 @@ interface JobFrame {
   method?: string;
   path?: string;
   body?: unknown;
+  // "none" → executeHttpJob skips the X-API-Key header (see jobs.ts HttpJob.auth).
+  auth?: 'none';
 }
 
 type IncomingFrame = { type: 'ping' } | JobFrame | { type: string; [k: string]: unknown };
@@ -85,6 +87,7 @@ export function startCloudAgent(): void {
       method: frame.method,
       path: frame.path ?? '',
       body: frame.body,
+      auth: frame.auth,
     };
     const result = await executeHttpJob(job, PORT, apiKey);
     sendFrame(ws, { type: 'job_result', ...result });

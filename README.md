@@ -186,6 +186,14 @@ and a slimmed stream of outbox/message events is relayed back to accelerate
 Meridian's polling. The connection reconnects forever with exponential
 backoff (1 → 16 min, capped) if it drops.
 
+A job may mark itself `"auth":"none"`, in which case it runs without that
+API key attached — required for routes behind `uiOnlyAuth` (e.g.
+`chats/:source/:chatId/read`), which reject any request carrying one
+outright. Outbox creates relayed this way also carry
+`metadata.cloudJobId`; because the cloud's queue is at-least-once, a POST
+`/outbox` that arrives twice with the same `cloudJobId` returns the
+original row instead of queueing the send twice.
+
 ---
 
 ## Trust model

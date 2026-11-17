@@ -167,6 +167,14 @@ export const outbox = sqliteTable('outbox', {
   // Client-supplied dedupe token (Idempotency-Key header). A retried POST
   // after a timeout returns the existing item instead of double-queueing.
   idempotencyKey: text('idempotency_key'),
+  /**
+   * Opaque caller-supplied JSON bag, e.g. `{cloudJobId: string}` stamped by
+   * Meridian's home-agent bridge. Used for request-scoped bookkeeping that
+   * doesn't deserve its own column; see `findByCloudJobId` for the one key
+   * we currently index into (cloudJobId, for at-least-once redelivery
+   * dedupe from the cloud's durable queue).
+   */
+  metadata: text('metadata'),
   createdAt: text('created_at').default(sql`(datetime('now'))`),
   approvedAt: text('approved_at'),
   sentAt: text('sent_at'),
