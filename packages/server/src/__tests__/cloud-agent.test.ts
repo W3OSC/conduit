@@ -3,8 +3,11 @@
  * config loading (incl. the fail-loud partial-config case), event-payload
  * slimming (never leaks a message body), and the startCloudAgent dispatch
  * glue — hello capability advertisement (probe-dependent, re-sent on
- * reconnect) and the kind:"ai" job branch (frame validation → executeAiJob →
- * result spread into job_result, incl. the malformed-frame reply shape).
+ * reconnect, incl. "ai.turn" per docs/m5b-phase2.md), the kind:"ai" job
+ * branch (frame validation → executeAiJob/executeTurnJob → result spread
+ * into job_result, incl. the malformed-frame reply shape and ai_delta frame
+ * wiring), job_cancel dispatch, the socket-close turn sweep, and
+ * unknown-frame forward compat.
  */
 
 import os from 'os';
@@ -13,7 +16,14 @@ import { nextBackoffMs, BACKOFF_BASE_MS, BACKOFF_MAX_MS } from '../cloud/backoff
 import { isAllowedJobPath, executeHttpJob } from '../cloud/jobs.js';
 import { loadCloudAgentConfig } from '../cloud/config.js';
 import { shouldRelayEvent, slimEventPayload } from '../cloud/events.js';
-import { discoverAiCapability, executeAiJob, type AiJobResult } from '../cloud/ai.js';
+import {
+  abortAllTurnJobs,
+  cancelTurnJob,
+  discoverAiCapability,
+  executeAiJob,
+  executeTurnJob,
+  type AiJobResult,
+} from '../cloud/ai.js';
 import { startCloudAgent } from '../cloud/agent.js';
 
 // --- startCloudAgent harness: agent.ts dials out over `ws`, mints a DB-backed
@@ -56,11 +66,21 @@ vi.mock('../websocket/hub.js', () => ({ subscribeBroadcast: vi.fn() }));
 vi.mock('../cloud/key.js', () => ({ ensureCloudAgentApiKey: vi.fn(() => 'sk-arb-test') }));
 vi.mock('../cloud/ai.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../cloud/ai.js')>();
-  return { ...actual, discoverAiCapability: vi.fn(async () => true), executeAiJob: vi.fn() };
+  return {
+    ...actual,
+    discoverAiCapability: vi.fn(async () => true),
+    executeAiJob: vi.fn(),
+    executeTurnJob: vi.fn(),
+    cancelTurnJob: vi.fn(),
+    abortAllTurnJobs: vi.fn(),
+  };
 });
 
 const discoverAiCapabilityMock = vi.mocked(discoverAiCapability);
 const executeAiJobMock = vi.mocked(executeAiJob);
+const executeTurnJobMock = vi.mocked(executeTurnJob);
+const cancelTurnJobMock = vi.mocked(cancelTurnJob);
+const abortAllTurnJobsMock = vi.mocked(abortAllTurnJobs);
 
 describe('nextBackoffMs', () => {
   it('doubles from a 1 minute base, capped at 16 minutes', () => {
@@ -297,6 +317,9 @@ describe('startCloudAgent dispatch glue', () => {
     discoverAiCapabilityMock.mockClear();
     discoverAiCapabilityMock.mockResolvedValue(true);
     executeAiJobMock.mockClear();
+    executeTurnJobMock.mockClear();
+    cancelTurnJobMock.mockClear();
+    abortAllTurnJobsMock.mockClear();
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   });
@@ -332,14 +355,19 @@ describe('startCloudAgent dispatch glue', () => {
     sock.emit('message', Buffer.from(JSON.stringify(frame)));
   }
 
-  it('hello advertises ["messaging","ai"] when the CLI probe succeeds', async () => {
+  it('hello advertises ["messaging","ai","ai.turn"] when the CLI probe succeeds', async () => {
     const sock = await bootAndOpen();
     expect(frames(sock)).toEqual([
-      { type: 'hello', deviceName: os.hostname(), ownerEmail: 'joe@auditware.io', capabilities: ['messaging', 'ai'] },
+      {
+        type: 'hello',
+        deviceName: os.hostname(),
+        ownerEmail: 'joe@auditware.io',
+        capabilities: ['messaging', 'ai', 'ai.turn'],
+      },
     ]);
   });
 
-  it('hello advertises only ["messaging"] when the probe fails', async () => {
+  it('hello advertises only ["messaging"] when the probe fails (no "ai", no "ai.turn")', async () => {
     discoverAiCapabilityMock.mockResolvedValue(false);
     const sock = await bootAndOpen();
     const hello = frames(sock).find((f) => f['type'] === 'hello');
@@ -348,7 +376,7 @@ describe('startCloudAgent dispatch glue', () => {
 
   it('re-sends hello capabilities on reconnect without re-probing the CLI', async () => {
     const first = await bootAndOpen();
-    expect(frames(first)[0]?.['capabilities']).toEqual(['messaging', 'ai']);
+    expect(frames(first)[0]?.['capabilities']).toEqual(['messaging', 'ai', 'ai.turn']);
 
     // Drop the connection; the backoff timer (attempt 1 = BACKOFF_BASE_MS)
     // schedules a fresh connect() with a brand-new socket.
@@ -364,7 +392,7 @@ describe('startCloudAgent dispatch glue', () => {
     await flush();
 
     const hello = frames(second).find((f) => f['type'] === 'hello');
-    expect(hello?.['capabilities']).toEqual(['messaging', 'ai']);
+    expect(hello?.['capabilities']).toEqual(['messaging', 'ai', 'ai.turn']);
     // Probed once per process — reconnects reuse the cached result.
     expect(discoverAiCapabilityMock).toHaveBeenCalledTimes(1);
   });
@@ -415,11 +443,14 @@ describe('startCloudAgent dispatch glue', () => {
   it('kind:"ai": a malformed frame replies with the documented body and never invokes the CLI', async () => {
     const sock = await bootAndOpen();
 
-    // mode:"turn" is a phase-2 kind parseAiJobFrame rejects.
+    // A mode:"turn" frame MISSING its phase-2 required fields (system/
+    // sessionId/resume/mcpUrl/mcpSecret/…) is malformed — parseAiJobFrame
+    // rejects it before any executor runs.
     sendJobFrame(sock, { type: 'job', jobId: 'job-bad', kind: 'ai', mode: 'turn', model: 'm1', prompt: 'p', timeoutSecs: 60 });
     await flush();
 
     expect(executeAiJobMock).not.toHaveBeenCalled();
+    expect(executeTurnJobMock).not.toHaveBeenCalled();
     const results = frames(sock).filter((f) => f['type'] === 'job_result');
     expect(results).toHaveLength(1);
     const reply = results[0]!;
@@ -428,5 +459,118 @@ describe('startCloudAgent dispatch glue', () => {
     expect(reply['error']).toBe('malformed ai job frame (mode/model/prompt/timeoutSecs)');
     // Protocol body (docs/m5b-ai-runner.md) with the top-level error mirrored.
     expect(reply['body']).toEqual({ error: reply['error'], errorKind: 'cli_error' });
+  });
+
+  const turnFrame = {
+    type: 'job',
+    jobId: 'turn-1',
+    kind: 'ai',
+    mode: 'turn',
+    model: 'claude-sonnet-4-5',
+    effort: 'medium',
+    system: 'You are the Meridian assistant.',
+    prompt: 'hello',
+    sessionId: 'sess-123',
+    resume: false,
+    mcpUrl: 'https://meridian.auditware.io/api/assistant/mcp',
+    mcpSecret: 'per-turn-secret',
+    allowedTools: 'mcp__meridian__crm_api_get',
+    disallowedTools: '',
+    timeoutSecs: 1800,
+  };
+
+  it('kind:"ai" mode:"turn": dispatches to executeTurnJob, wiring deltas into ai_delta frames before job_result', async () => {
+    const envelope = { type: 'result', is_error: false, result: 'done', total_cost_usd: 0.1 };
+    executeTurnJobMock.mockImplementation(async (job, onDelta) => {
+      onDelta({ type: 'system', subtype: 'init', session_id: 'sess-123' });
+      onDelta(envelope);
+      return { jobId: job.jobId, ok: true, status: 200, body: envelope };
+    });
+    const sock = await bootAndOpen();
+
+    sendJobFrame(sock, turnFrame);
+    await flush();
+
+    expect(executeTurnJobMock).toHaveBeenCalledTimes(1);
+    expect(executeAiJobMock).not.toHaveBeenCalled();
+    // The validated turn job (not the raw frame) reaches the executor.
+    expect(executeTurnJobMock.mock.calls[0]![0]).toEqual({
+      jobId: 'turn-1',
+      mode: 'turn',
+      model: 'claude-sonnet-4-5',
+      effort: 'medium',
+      system: 'You are the Meridian assistant.',
+      prompt: 'hello',
+      sessionId: 'sess-123',
+      resume: false,
+      mcpUrl: 'https://meridian.auditware.io/api/assistant/mcp',
+      mcpSecret: 'per-turn-secret',
+      allowedTools: 'mcp__meridian__crm_api_get',
+      disallowedTools: '',
+      timeoutSecs: 1800,
+    });
+
+    // Deltas ship live as documented ai_delta frames, in order, before the
+    // terminal job_result oneshot.
+    const sent = frames(sock).filter((f) => f['type'] !== 'hello');
+    expect(sent).toEqual([
+      { type: 'ai_delta', jobId: 'turn-1', event: { type: 'system', subtype: 'init', session_id: 'sess-123' } },
+      { type: 'ai_delta', jobId: 'turn-1', event: envelope },
+      { type: 'job_result', jobId: 'turn-1', ok: true, status: 200, body: envelope },
+    ]);
+  });
+
+  it('kind:"ai" mode:"turn": an error result (e.g. resume_failed) rides through to job_result', async () => {
+    const errResult: AiJobResult = {
+      jobId: 'turn-2',
+      ok: false,
+      error: 'claude CLI could not resume session sess-123 (exited 1 with no stream output): gone',
+      body: {
+        error: 'claude CLI could not resume session sess-123 (exited 1 with no stream output): gone',
+        errorKind: 'resume_failed',
+      },
+    };
+    executeTurnJobMock.mockResolvedValue(errResult);
+    const sock = await bootAndOpen();
+
+    sendJobFrame(sock, { ...turnFrame, jobId: 'turn-2', resume: true });
+    await flush();
+
+    const results = frames(sock).filter((f) => f['type'] === 'job_result');
+    expect(results).toEqual([{ type: 'job_result', ...errResult }]);
+  });
+
+  it('job_cancel: forwards a string jobId to cancelTurnJob and never replies on its own', async () => {
+    const sock = await bootAndOpen();
+
+    sock.emit('message', Buffer.from(JSON.stringify({ type: 'job_cancel', jobId: 'turn-9' })));
+    expect(cancelTurnJobMock).toHaveBeenCalledTimes(1);
+    expect(cancelTurnJobMock).toHaveBeenCalledWith('turn-9');
+
+    // Malformed job_cancel frames are ignored (tolerance), as is the frame
+    // itself — the cancelled turn's own executor sends the one job_result.
+    sock.emit('message', Buffer.from(JSON.stringify({ type: 'job_cancel' })));
+    sock.emit('message', Buffer.from(JSON.stringify({ type: 'job_cancel', jobId: 42 })));
+    expect(cancelTurnJobMock).toHaveBeenCalledTimes(1);
+    expect(frames(sock).filter((f) => f['type'] !== 'hello')).toEqual([]);
+  });
+
+  it('socket close sweeps in-flight turns via abortAllTurnJobs', async () => {
+    const sock = await bootAndOpen();
+    expect(abortAllTurnJobsMock).not.toHaveBeenCalled();
+    sock.readyState = 3; // CLOSED
+    sock.emit('close');
+    expect(abortAllTurnJobsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('unknown frame types stay ignored (forward compat)', async () => {
+    const sock = await bootAndOpen();
+    sock.emit('message', Buffer.from(JSON.stringify({ type: 'job_pause', jobId: 'x' })));
+    sock.emit('message', Buffer.from(JSON.stringify({ type: 'totally_new_frame', payload: { a: 1 } })));
+    sock.emit('message', Buffer.from('not json'));
+    await flush();
+    expect(frames(sock).filter((f) => f['type'] !== 'hello')).toEqual([]);
+    expect(executeAiJobMock).not.toHaveBeenCalled();
+    expect(executeTurnJobMock).not.toHaveBeenCalled();
   });
 });

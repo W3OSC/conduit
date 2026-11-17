@@ -152,7 +152,9 @@ describe('parseAiJobFrame / isAiJobMode', () => {
   });
 
   it('rejects unknown modes, bad models, non-string prompts, bad timeouts', () => {
-    expect(parseAiJobFrame({ ...good, mode: 'turn' })).toBeNull(); // phase-2 kind, not ours yet
+    // mode:"turn" exists since phase 2 but REQUIRES its extra fields
+    // (system/sessionId/resume/mcpUrl/…) — this json-shaped frame lacks them.
+    expect(parseAiJobFrame({ ...good, mode: 'turn' })).toBeNull();
     expect(parseAiJobFrame({ ...good, mode: undefined })).toBeNull();
     expect(parseAiJobFrame({ ...good, model: '' })).toBeNull();
     expect(parseAiJobFrame({ ...good, model: 42 })).toBeNull();
