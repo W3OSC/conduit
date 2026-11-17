@@ -73,6 +73,12 @@ const CreateBody = OperationBody.extend({
       `Only for sources: ${ATTACHABLE_SOURCES.join(', ')}. Delivered platform-natively; ` +
       'API responses echo only {filename, mime, size}.',
   }),
+  metadata: z.record(z.string(), z.unknown()).optional().openapi({
+    description:
+      'Opaque caller-supplied bag stored on the row. Meridian\'s home-agent bridge stamps ' +
+      '{cloudJobId} here so a redelivered create (its durable queue is at-least-once) returns ' +
+      'the original row instead of double-queueing.',
+  }),
 });
 
 const BatchCreateBody = z.object({
@@ -607,6 +613,26 @@ export function findByIdempotencyKey(key: string): typeof outbox.$inferSelect | 
   return db.select().from(outbox).where(eq(outbox.idempotencyKey, key)).get() ?? null;
 }
 
+/**
+ * Look up an existing outbox row by `metadata.cloudJobId` — the id Meridian's
+ * home-agent bridge stamps on every outbox create it relays. Its cloud-side
+ * queue is durable and at-least-once, so the same create can arrive here more
+ * than once; this is what lets POST / notice the replay and hand back the
+ * original row instead of queueing a duplicate send. Rows are hard-deleted
+ * (no soft-delete column), so any row this finds is inherently still live.
+ *
+ * `outbox.metadata` is a free-form JSON text column (no dedicated cloudJobId
+ * column — the table only ever needs this one key out of it), so the lookup
+ * goes through SQLite's json_extract rather than a new indexed column; the
+ * outbox table is small enough that this is cheap without an index.
+ */
+export function findByCloudJobId(cloudJobId: string): typeof outbox.$inferSelect | null {
+  const db = getDb();
+  return db.select().from(outbox)
+    .where(sql`json_extract(${outbox.metadata}, '$.cloudJobId') = ${cloudJobId}`)
+    .get() ?? null;
+}
+
 /** True when `e` is a SQLite unique-constraint violation (idempotency-key race). */
 function isUniqueConstraintError(e: unknown): boolean {
   const code = (e as { code?: string } | null)?.code;
@@ -772,7 +798,7 @@ router.get('/:id', optionalAuth, validateParams(IdParam), (req, res) => {
 router.post('/', optionalAuth, validateBody(CreateBody), async (req, res) => {
   const authedReq = req as AuthedRequest;
   const db = getDb();
-  const { source, recipient_id, recipient_name, content, attachments } = bodyOf(CreateBody, req);
+  const { source, recipient_id, recipient_name, content, attachments, metadata } = bodyOf(CreateBody, req);
 
   // Idempotent replay: a retried POST carrying the same Idempotency-Key
   // returns the original row instead of double-queueing.
@@ -785,6 +811,19 @@ router.post('/', optionalAuth, validateBody(CreateBody), async (req, res) => {
         return;
       }
       res.status(200).json({ ...redactAttachments(existing), idempotent: true });
+      return;
+    }
+  }
+
+  // Cloud-bridge redelivery guard: Meridian's home-agent bridge stamps
+  // metadata.cloudJobId on every outbox create it relays, and its queue is
+  // at-least-once, so the same create can arrive here more than once. Return
+  // the row created by the first delivery rather than queueing a duplicate.
+  const cloudJobId = typeof metadata?.cloudJobId === 'string' ? metadata.cloudJobId : null;
+  if (cloudJobId) {
+    const existing = findByCloudJobId(cloudJobId);
+    if (existing && (!authedReq.apiKey?.id || existing.apiKeyId === authedReq.apiKey.id)) {
+      res.status(200).json(redactAttachments(existing));
       return;
     }
   }
@@ -869,6 +908,7 @@ router.post('/', optionalAuth, validateBody(CreateBody), async (req, res) => {
       fuzzyMatchInfo,
       attachments: attachments?.length ? JSON.stringify(attachments) : null,
       idempotencyKey,
+      metadata: metadata ? JSON.stringify(metadata) : null,
     }).returning().get();
   } catch (e) {
     // Unique-constraint race: a concurrent request with the same

@@ -11,6 +11,7 @@ import apiRouter from './api/router.js';
 import uiAuthRouter, { uiAuthMiddleware } from './api/ui-auth.js';
 import { csrfMiddleware } from './auth/csrf.js';
 import { startUpdatePoller } from './update/checker.js';
+import { startCloudAgent } from './cloud/agent.js';
 import { bootstrapContactsIfEmpty } from './sync/contacts.js';
 import { invalidateContextCache } from './api/context.js';
 import { invalidateTopologyCache } from './api/topology.js';
@@ -152,6 +153,10 @@ async function main() {
 
   // Start the background update poller (checks for new commits every hour)
   startUpdatePoller();
+
+  // Start the Meridian cloud-agent bridge (M5 home-agent protocol) — no-op
+  // when CLOUD_AGENT_URL/CLOUD_AGENT_TOKEN aren't configured.
+  startCloudAgent();
 
   // Graceful shutdown
   const shutdown = async (signal: string) => {
