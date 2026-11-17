@@ -19,7 +19,14 @@ import { nextBackoffMs, STABLE_CONNECTION_MS } from './backoff.js';
 import { ensureCloudAgentApiKey } from './key.js';
 import { executeHttpJob, type HttpJob } from './jobs.js';
 import { shouldRelayEvent, slimEventPayload } from './events.js';
-import { discoverAiCapability, executeAiJob, parseAiJobFrame } from './ai.js';
+import {
+  abortAllTurnJobs,
+  cancelTurnJob,
+  discoverAiCapability,
+  executeAiJob,
+  executeTurnJob,
+  parseAiJobFrame,
+} from './ai.js';
 
 const PORT = parseInt(process.env.PORT || '3101', 10);
 
@@ -39,9 +46,22 @@ interface JobFrame {
   prompt?: unknown;
   schema?: unknown;
   timeoutSecs?: unknown;
+  // kind:"ai" mode:"turn" extras (docs/m5b-phase2.md), same untyped treatment.
+  effort?: unknown;
+  system?: unknown;
+  sessionId?: unknown;
+  resume?: unknown;
+  mcpUrl?: unknown;
+  mcpSecret?: unknown;
+  allowedTools?: unknown;
+  disallowedTools?: unknown;
 }
 
-type IncomingFrame = { type: 'ping' } | JobFrame | { type: string; [k: string]: unknown };
+type IncomingFrame =
+  | { type: 'ping' }
+  | JobFrame
+  | { type: 'job_cancel'; jobId?: unknown }
+  | { type: string; [k: string]: unknown };
 
 function sendFrame(ws: WebSocket | null, frame: Record<string, unknown>): void {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(frame));
@@ -60,7 +80,7 @@ export function startCloudAgent(): void {
   const config: CloudAgentConfig = loaded;
 
   const apiKey = ensureCloudAgentApiKey();
-  console.log(`[cloud-agent] Configured — dialing ${config.url}`);
+  console.log(`[cloud-agent] Configured — dialing ${config.url} (protocol v1.2)`);
 
   // Probed once per process (claude --version, 2s budget) rather than on every
   // reconnect — a broken/missing CLI install doesn't change between retries,
@@ -112,6 +132,17 @@ export function startCloudAgent(): void {
         });
         return;
       }
+      if (job.mode === 'turn') {
+        // Streaming turn (docs/m5b-phase2.md): each slimmed stdout line
+        // ships live as an ai_delta frame; the terminal outcome is still the
+        // normal job_result oneshot. The cloud drops deltas for settled/
+        // unknown jobs, so a late frame here is harmless.
+        const result = await executeTurnJob(job, (event) => {
+          sendFrame(ws, { type: 'ai_delta', jobId: job.jobId, event });
+        });
+        sendFrame(ws, { type: 'job_result', ...result });
+        return;
+      }
       const result = await executeAiJob(job);
       sendFrame(ws, { type: 'job_result', ...result });
       return;
@@ -152,7 +183,11 @@ export function startCloudAgent(): void {
             type: 'hello',
             deviceName: os.hostname(),
             ownerEmail: config.ownerEmail,
-            capabilities: aiAvailable ? ['messaging', 'ai'] : ['messaging'],
+            // "ai.turn" (protocol v1.2): same CLI probe as "ai" — this build
+            // implements turn mode + job_cancel, which is the rest of the
+            // gate. The cloud checks each capability independently; a
+            // phase-1 runner advertising only "ai" never sees turn frames.
+            capabilities: aiAvailable ? ['messaging', 'ai', 'ai.turn'] : ['messaging'],
           });
         })
         .catch(() => {
@@ -178,13 +213,24 @@ export function startCloudAgent(): void {
         sendFrame(socket, { type: 'pong' });
       } else if (frame.type === 'job') {
         handleJob(frame as JobFrame).catch((e) => console.error('[cloud-agent] Job handler error:', e));
+      } else if (frame.type === 'job_cancel') {
+        // Operator stop / cloud deadline (docs/m5b-phase2.md): kill the
+        // matching turn's process group; its executor answers the documented
+        // cancelled job_result. Unknown jobId ⇒ silent no-op, no reply.
+        const jobId = (frame as { jobId?: unknown }).jobId;
+        if (typeof jobId === 'string') cancelTurnJob(jobId);
       }
+      // Unknown frame types: ignored (forward compat, both sides).
     });
 
     socket.on('close', () => {
       const lived = connectedAt ? Date.now() - connectedAt : 0;
       if (lived > STABLE_CONNECTION_MS) attempt = 0; // reset backoff after a connection that lived >60s
       connectedAt = 0;
+      // In-flight TURN children die with the socket: their delta stream has
+      // nowhere to go and the cloud has already failed the turn. Phase-1 ai
+      // jobs keep their run-to-completion-and-drop behavior (harmless).
+      abortAllTurnJobs('cloud connection closed mid-turn — CLI killed');
       console.log(`[cloud-agent] Disconnected${lived ? ` (was up ${Math.round(lived / 1000)}s)` : ''}`);
       scheduleReconnect();
     });
