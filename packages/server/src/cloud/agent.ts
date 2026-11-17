@@ -19,6 +19,7 @@ import { nextBackoffMs, STABLE_CONNECTION_MS } from './backoff.js';
 import { ensureCloudAgentApiKey } from './key.js';
 import { executeHttpJob, type HttpJob } from './jobs.js';
 import { shouldRelayEvent, slimEventPayload } from './events.js';
+import { discoverAiCapability, executeAiJob, parseAiJobFrame } from './ai.js';
 
 const PORT = parseInt(process.env.PORT || '3101', 10);
 
@@ -31,6 +32,13 @@ interface JobFrame {
   body?: unknown;
   // "none" → executeHttpJob skips the X-API-Key header (see jobs.ts HttpJob.auth).
   auth?: 'none';
+  // kind:"ai" fields (docs/m5b-ai-runner.md) — present only on kind:"ai"
+  // frames, validated by parseAiJobFrame (wire data is untyped).
+  mode?: unknown;
+  model?: unknown;
+  prompt?: unknown;
+  schema?: unknown;
+  timeoutSecs?: unknown;
 }
 
 type IncomingFrame = { type: 'ping' } | JobFrame | { type: string; [k: string]: unknown };
@@ -54,6 +62,14 @@ export function startCloudAgent(): void {
   const apiKey = ensureCloudAgentApiKey();
   console.log(`[cloud-agent] Configured — dialing ${config.url}`);
 
+  // Probed once per process (claude --version, 2s budget) rather than on every
+  // reconnect — a broken/missing CLI install doesn't change between retries,
+  // and re-probing would mean shelling out on every dropped connection.
+  const aiCapabilityProbe: Promise<boolean> = discoverAiCapability().then((available) => {
+    console.log(`[cloud-agent] AI runner capability: ${available ? 'available' : 'unavailable (claude CLI not found/working)'}`);
+    return available;
+  });
+
   let ws: WebSocket | null = null;
   let attempt = 0;
   let connectedAt = 0;
@@ -76,8 +92,31 @@ export function startCloudAgent(): void {
   };
 
   const handleJob = async (frame: JobFrame): Promise<void> => {
+    if (frame.kind === 'ai') {
+      // mode/model/prompt/timeoutSecs are required by the protocol; validate
+      // up front (parseAiJobFrame) so a malformed frame gets an immediate
+      // job_result instead of an exception deep in the CLI spawn path — and
+      // so an unknown mode can never reach the per-mode tool-posture switch.
+      const job = parseAiJobFrame(frame);
+      if (!job) {
+        // Same shape executeAiJob errors take: top-level `error` for the
+        // hub's generic job_result path, plus the documented protocol body
+        // (docs/m5b-ai-runner.md) `{error, errorKind}`.
+        const error = 'malformed ai job frame (mode/model/prompt/timeoutSecs)';
+        sendFrame(ws, {
+          type: 'job_result',
+          jobId: frame.jobId,
+          ok: false,
+          error,
+          body: { error, errorKind: 'cli_error' },
+        });
+        return;
+      }
+      const result = await executeAiJob(job);
+      sendFrame(ws, { type: 'job_result', ...result });
+      return;
+    }
     if (frame.kind !== 'http') {
-      // Forward-compat: the future "ai" capability (M5b) lands here too.
       sendFrame(ws, { type: 'job_result', jobId: frame.jobId, ok: false, error: 'unsupported kind' });
       return;
     }
@@ -107,12 +146,25 @@ export function startCloudAgent(): void {
     socket.on('open', () => {
       connectedAt = Date.now();
       console.log('[cloud-agent] Connected');
-      sendFrame(socket, {
-        type: 'hello',
-        deviceName: os.hostname(),
-        ownerEmail: config.ownerEmail,
-        capabilities: ['messaging'],
-      });
+      aiCapabilityProbe
+        .then((aiAvailable) => {
+          sendFrame(socket, {
+            type: 'hello',
+            deviceName: os.hostname(),
+            ownerEmail: config.ownerEmail,
+            capabilities: aiAvailable ? ['messaging', 'ai'] : ['messaging'],
+          });
+        })
+        .catch(() => {
+          // discoverAiCapability() never rejects, but hello must go out
+          // regardless of any unforeseen failure in the probe chain.
+          sendFrame(socket, {
+            type: 'hello',
+            deviceName: os.hostname(),
+            ownerEmail: config.ownerEmail,
+            capabilities: ['messaging'],
+          });
+        });
     });
 
     socket.on('message', (raw) => {
