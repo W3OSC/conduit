@@ -26,3 +26,4 @@ logs/
 
 # ── Test / coverage ───────────────────────────────────────────────────────────
 coverage/
+.cloud-agent.env
