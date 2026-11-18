@@ -167,7 +167,7 @@ describe('shouldRelayEvent', () => {
 
 describe('slimEventPayload', () => {
   it('keeps only identifier/status fields and drops message bodies', () => {
-    const slim = slimEventPayload({
+    const slim = slimEventPayload('message:new', {
       source: 'discord',
       messageId: 'm1',
       channelId: 'c1',
@@ -182,8 +182,41 @@ describe('slimEventPayload', () => {
     expect(slim).not.toHaveProperty('attachments');
   });
 
+  it('does not leak sender ids or thread fields on message events', () => {
+    const slim = slimEventPayload('message:new', {
+      source: 'slack',
+      messageId: '1.2',
+      channelId: 'C1',
+      userId: 'U_SENDER',
+      threadTs: '1.1',
+      content: 'body',
+    });
+    expect(slim).toEqual({ source: 'slack', messageId: '1.2', channelId: 'C1' });
+  });
+
+  it('relays the reaction extras only on reaction topics', () => {
+    const data = {
+      source: 'slack',
+      channelId: 'C1',
+      messageTs: '1.2',
+      emoji: 'white_check_mark',
+      userId: 'U1',
+      itemUserId: 'U2',
+      content: 'never',
+    };
+    expect(slimEventPayload('reaction:added', data)).toEqual({
+      source: 'slack',
+      channelId: 'C1',
+      messageTs: '1.2',
+      emoji: 'white_check_mark',
+      userId: 'U1',
+      itemUserId: 'U2',
+    });
+    expect(slimEventPayload('message:new', data)).toEqual({ source: 'slack', channelId: 'C1' });
+  });
+
   it('keeps id/status/error for outbox updates', () => {
-    expect(slimEventPayload({ id: 42, status: 'failed', error: 'boom' })).toEqual({
+    expect(slimEventPayload('outbox:updated', { id: 42, status: 'failed', error: 'boom' })).toEqual({
       id: 42,
       status: 'failed',
       error: 'boom',
@@ -191,9 +224,9 @@ describe('slimEventPayload', () => {
   });
 
   it('handles non-object data', () => {
-    expect(slimEventPayload(null)).toEqual({});
-    expect(slimEventPayload(undefined)).toEqual({});
-    expect(slimEventPayload('x')).toEqual({});
+    expect(slimEventPayload('message:new', null)).toEqual({});
+    expect(slimEventPayload('message:new', undefined)).toEqual({});
+    expect(slimEventPayload('message:new', 'x')).toEqual({});
   });
 });
 

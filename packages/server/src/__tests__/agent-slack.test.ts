@@ -67,11 +67,37 @@ describe('POST /agent/slack/post', () => {
     expect(res.status).toBe(400);
   });
 
+  it('rejects bare user ids — no auto-opened DMs to arbitrary people', async () => {
+    setSendEnabled(true);
+    const res = await call('post', { channel_id: 'U0TARGET', text: 'hi' });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/conversation id/);
+  });
+
   it('403s when sendEnabled is off', async () => {
     setSendEnabled(false);
     const res = await call('post', { channel_id: 'C123', text: 'hi' });
     expect(res.status).toBe(403);
     expect(((await res.json()) as { error: string }).error).toMatch(/not enabled/);
+  });
+
+  it('honours a per-key sendEnabled=false override even when global send is on', async () => {
+    setSendEnabled(true);
+    const db = getDb();
+    const { hashKey } = await import('../auth/middleware.js');
+    const key = db.insert(schema.apiKeys)
+      .values({ name: 'revoked-send', keyHash: hashKey('sk-test-revoked'), keyPrefix: 'sk-test' })
+      .returning().get();
+    db.insert(schema.apiKeyPermissions)
+      .values({ apiKeyId: key.id, service: 'slack', sendEnabled: false })
+      .run();
+
+    const res = await fetch(`${base}/agent/slack/post`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': 'sk-test-revoked' },
+      body: JSON.stringify({ channel_id: 'C123', text: 'hi' }),
+    });
+    expect(res.status).toBe(403);
   });
 
   it('400s on invalid attachment base64 (after gating)', async () => {

@@ -100,7 +100,7 @@ export function startCloudAgent(): void {
   // (via sendFrame's readyState check) while there is no live connection.
   subscribeBroadcast((event) => {
     if (!shouldRelayEvent(event)) return;
-    sendFrame(ws, { type: 'event', topic: event.type, payload: slimEventPayload(event.data) });
+    sendFrame(ws, { type: 'event', topic: event.type, payload: slimEventPayload(event.type, event.data) });
   });
 
   const scheduleReconnect = (): void => {

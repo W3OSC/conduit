@@ -1246,6 +1246,16 @@ router.post('/:id/retry', optionalAuth, validateParams(IdParam), async (req, res
     res.status(409).json({ error: 'Only failed items can be retried' });
     return;
   }
+  // Agent direct sends (POST /agent/slack/post) are history rows, not
+  // retryable work: dispatch here has no thread_ts and the attachment bytes
+  // were never stored — a retry would post to the channel root with files
+  // silently missing. The agent re-issues through its own endpoint instead.
+  try {
+    if (item.metadata && (JSON.parse(item.metadata) as { agentSend?: boolean }).agentSend) {
+      res.status(409).json({ error: 'Agent direct sends cannot be retried — re-issue via POST /agent/slack/post' });
+      return;
+    }
+  } catch { /* unparseable metadata = not an agent send */ }
   if (authedReq.apiKey?.id && !isSendEnabled(item.source, authedReq.apiKey.id)) {
     res.status(403).json({ error: `Sending is not enabled for ${item.source}` });
     return;

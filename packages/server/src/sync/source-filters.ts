@@ -34,6 +34,18 @@ export const SOURCE_FILTER_KEYS = {
 
 export type FilterableService = keyof typeof SOURCE_FILTER_KEYS;
 
+/**
+ * One spelling of the scope rule for ad-hoc channel checks: DMs are always
+ * in scope; anything else must be allowlisted (when a list exists). Slack
+ * DM ids are D-prefixed.
+ */
+export function isChannelInSyncScope(service: FilterableService, channelId: string, isDm?: boolean): boolean {
+  const dm = isDm ?? (service === 'slack' && channelId.startsWith('D'));
+  if (dm) return true;
+  const allowed = getSourceAllowlist(service);
+  return !allowed || allowed.has(channelId);
+}
+
 /** Read a platform's allowlist as stored. Null = no filter (include all). */
 export function getSourceAllowlist(service: FilterableService): Set<string> | null {
   const db = getDb();

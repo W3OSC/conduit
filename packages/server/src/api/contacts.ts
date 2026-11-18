@@ -49,6 +49,7 @@ function formatContact(c: typeof contacts.$inferSelect) {
     firstName:   c.firstName,
     lastName:    c.lastName,
     phone:       c.phone,
+    email:       c.email,
     avatarUrl:   c.avatarUrl,
     bio:         c.bio,
     statusText:  c.statusText,
@@ -385,7 +386,9 @@ router.get('/', optionalAuth, trackAiCall, validateQuery(ListQuery), (req, res) 
       like(contacts.firstName, term),
       like(contacts.lastName, term),
       like(contacts.phone, term),
-      // Email lives in platformId for gmail/calendar-derived contacts.
+      like(contacts.email, term),
+      // Email lives in platformId for gmail/calendar-derived contacts
+      // (the email column covers platforms that expose it, e.g. Slack).
       and(sql`${contacts.platformId} LIKE '%@%'`, like(contacts.platformId, term)),
     ));
   }

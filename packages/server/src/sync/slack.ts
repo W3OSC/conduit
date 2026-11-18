@@ -7,7 +7,7 @@ import { broadcast } from '../websocket/hub.js';
 import {
   syncSlackContacts, upsertContactFromMessage, getContactCriteria,
 } from './contacts.js';
-import { getSourceAllowlist } from './source-filters.js';
+import { getSourceAllowlist, isChannelInSyncScope } from './source-filters.js';
 
 export interface SlackConfig {
   token: string;           // xoxp- user token
@@ -19,6 +19,16 @@ interface SlackChannelInfo {
   name: string;
   type: 'im' | 'mpim' | 'public_channel' | 'private_channel';
   isMember?: boolean;
+}
+
+/** One thread message as served by GET /agent/slack/thread (docs/api.md). */
+export interface SlackThreadMessage {
+  ts: string;
+  threadTs: string | null;
+  userId: string;
+  userName: string;
+  content: string;
+  timestamp: string;
 }
 
 export class SlackSync {
@@ -35,8 +45,6 @@ export class SlackSync {
     botId?: string; teamId?: string; teamName?: string;
   } | null = null;
   get isSocketMode(): boolean { return this.socketClient !== null; }
-  get teamId(): string | undefined { return this.accountInfo?.teamId; }
-  get teamName(): string | undefined { return this.accountInfo?.teamName; }
 
   cancelSync(): void {
     this._cancelRequested = true;
@@ -100,7 +108,16 @@ export class SlackSync {
     return channels.filter((ch) => ch.type === 'im' || allowed.has(ch.id));
   }
 
-  async getChannels(): Promise<SlackChannelInfo[]> {
+  // getChannels walks conversations.list (+ a members call per MPIM) — Tier 2
+  // API budget. A short memo keeps per-request callers (/agent/slack/directory)
+  // from re-walking an unchanged workspace.
+  private channelsMemo: { at: number; data: SlackChannelInfo[] } | null = null;
+  private static readonly CHANNELS_MEMO_TTL_MS = 60_000;
+
+  async getChannels(force = false): Promise<SlackChannelInfo[]> {
+    if (!force && this.channelsMemo && Date.now() - this.channelsMemo.at < SlackSync.CHANNELS_MEMO_TTL_MS) {
+      return this.channelsMemo.data;
+    }
     const channels: SlackChannelInfo[] = [];
     let cursor: string | undefined;
     do {
@@ -143,11 +160,18 @@ export class SlackSync {
       }
       cursor = (res.response_metadata as { next_cursor?: string })?.next_cursor || undefined;
     } while (cursor);
+    this.channelsMemo = { at: Date.now(), data: channels };
     return channels;
   }
 
   async resolveUser(userId: string): Promise<string> {
     if (this.userCache.has(userId)) return this.userCache.get(userId)!;
+    // B… bot ids are never valid users.info targets — don't burn an API
+    // call that can only fail.
+    if (!/^[UW]/.test(userId)) {
+      this.userCache.set(userId, userId);
+      return userId;
+    }
     try {
       const info = await this.client.users.info({ user: userId });
       const name = (info.user as { real_name?: string; name?: string })?.real_name
@@ -156,22 +180,10 @@ export class SlackSync {
       this.userCache.set(userId, name);
       return name;
     } catch {
+      // Negative-cache: an unknown id stays unknown for this process — the
+      // alternative is one doomed users.info round trip per sighting.
+      this.userCache.set(userId, userId);
       return userId;
-    }
-  }
-
-  private emailCache = new Map<string, string | null>();
-
-  /** uid → workspace email via users.info (needs the users:read.email scope). */
-  async resolveUserEmail(userId: string): Promise<string | null> {
-    if (this.emailCache.has(userId)) return this.emailCache.get(userId)!;
-    try {
-      const info = await this.client.users.info({ user: userId });
-      const email = (info.user as { profile?: { email?: string } })?.profile?.email || null;
-      this.emailCache.set(userId, email);
-      return email;
-    } catch {
-      return null;
     }
   }
 
@@ -229,6 +241,10 @@ export class SlackSync {
           ? JSON.stringify({ files: slackFiles, richAttachments: slackMsg.attachments || [] })
           : (slackMsg.attachments ? JSON.stringify({ files: [], richAttachments: slackMsg.attachments }) : null);
 
+        // conversations.history sets thread_ts == ts on roots that have
+        // replies; normalise to null so "threadTs != null" means "is a
+        // reply" on every ingest path (realtime roots carry no thread_ts).
+        const threadTs = msg.thread_ts && msg.thread_ts !== ts ? msg.thread_ts : null;
         const result = db.insert(slackMessages).values({
           messageId: ts,
           channelId,
@@ -237,12 +253,25 @@ export class SlackSync {
           userName,
           content: msg.text || '',
           attachments: combinedAttachments,
-          threadTs: msg.thread_ts || null,
+          threadTs,
           timestamp,
           rawJson: JSON.stringify(msg),
         }).onConflictDoNothing().run();
         if (result.changes > 0) saved++;
         if (!maxTs || timestamp > maxTs) maxTs = timestamp;
+
+        // conversations.history NEVER returns thread replies — only roots.
+        // Without this walk, every reply posted while the socket was down
+        // is silently lost forever (selectively: non-threaded messages in
+        // the same window survive, so the gap is invisible).
+        const replyCount = (msg as { reply_count?: number }).reply_count ?? 0;
+        const latestReply = (msg as { latest_reply?: string }).latest_reply;
+        const repliesAreNew = !sinceEpoch
+          || (latestReply ? parseFloat(latestReply) >= parseFloat(sinceEpoch) : true);
+        if (msg.thread_ts === ts && replyCount > 0 && repliesAreNew) {
+          saved += await this.backfillThreadReplies(channelId, channelName, ts);
+          await sleep(200);
+        }
 
         // Progress is updated per-channel in initialFullSync, not per-message
       }
@@ -279,6 +308,51 @@ export class SlackSync {
     return saved;
   }
 
+  /**
+   * Store a threaded root's replies (catch-up path; the realtime handler
+   * receives replies as ordinary message events). Insert-only, conflict-safe.
+   */
+  private async backfillThreadReplies(
+    channelId: string,
+    channelName: string,
+    rootTs: string,
+  ): Promise<number> {
+    const db = getDb();
+    let saved = 0;
+    let cursor: string | undefined;
+    try {
+      do {
+        const res = await this.client.conversations.replies({
+          channel: channelId, ts: rootTs, limit: 200, ...(cursor ? { cursor } : {}),
+        });
+        if (!res.ok) break;
+        for (const msg of (res.messages || [])) {
+          const ts = msg.ts || '';
+          if (!ts || ts === rootTs || msg.type !== 'message') continue;
+          const userId = msg.user || msg.bot_id || '';
+          const result = db.insert(slackMessages).values({
+            messageId: ts,
+            channelId,
+            channelName,
+            userId,
+            userName: userId ? await this.resolveUser(userId) : 'Unknown',
+            content: msg.text || '',
+            attachments: null,
+            threadTs: rootTs,
+            timestamp: new Date(parseFloat(ts) * 1000).toISOString(),
+            rawJson: JSON.stringify(msg),
+          }).onConflictDoNothing().run();
+          if (result.changes > 0) saved++;
+        }
+        cursor = (res.response_metadata as { next_cursor?: string })?.next_cursor || undefined;
+        if (cursor) await sleep(300);
+      } while (cursor);
+    } catch (e) {
+      console.error(`[slack] Thread backfill failed for ${channelId}/${rootTs}:`, e);
+    }
+    return saved;
+  }
+
   /** Advance the per-channel cursor from a realtime event (monotonic). */
   private advanceCursor(channelId: string, channelName: string, timestamp: string): void {
     const db = getDb();
@@ -312,7 +386,7 @@ export class SlackSync {
     broadcast({ type: 'sync:progress', data: { service: 'slack', status: 'running', type: 'full' } });
 
     try {
-      const channels = this.filterAllowedChannels(await this.getChannels());
+      const channels = this.filterAllowedChannels(await this.getChannels(true));
       let totalSaved = 0;
       let totalChats = 0;
 
@@ -479,24 +553,27 @@ export class SlackSync {
     const relayReaction = (kind: 'reaction:added' | 'reaction:removed') =>
       async ({ event, ack }: { event: Record<string, unknown>; ack: () => void }) => {
         ack();
-        const item = (event?.item as { type?: string; channel?: string; ts?: string }) || {};
-        if (item.type !== 'message' || !item.channel || !item.ts) return;
-        // Same sync-scope rule as messages: drop non-DM channels outside the allowlist.
-        if (!item.channel.startsWith('D')) {
-          const allowed = getSourceAllowlist('slack');
-          if (allowed && !allowed.has(item.channel)) return;
+        try {
+          const item = (event?.item as { type?: string; channel?: string; ts?: string }) || {};
+          if (item.type !== 'message' || !item.channel || !item.ts) return;
+          // Same sync-scope rule as messages: drop non-DM channels outside the allowlist.
+          if (!isChannelInSyncScope('slack', item.channel)) return;
+          broadcast({
+            type: kind,
+            data: {
+              source: 'slack',
+              channelId: item.channel,
+              messageTs: item.ts,
+              emoji: (event.reaction as string) || '',
+              userId: (event.user as string) || '',
+              itemUserId: (event.item_user as string) || '',
+            },
+          });
+        } catch (e) {
+          // An async EventEmitter listener must not reject (unhandled
+          // rejection); reactions are relay-only, so log and move on.
+          console.error('[slack] Reaction relay failed:', e);
         }
-        broadcast({
-          type: kind,
-          data: {
-            source: 'slack',
-            channelId: item.channel,
-            messageTs: item.ts,
-            emoji: (event.reaction as string) || '',
-            userId: (event.user as string) || '',
-            itemUserId: (event.item_user as string) || '',
-          },
-        });
       };
     this.socketClient.on('reaction_added', relayReaction('reaction:added'));
     this.socketClient.on('reaction_removed', relayReaction('reaction:removed'));
@@ -579,26 +656,46 @@ export class SlackSync {
     }
   }
 
-  /** Live read of a thread (root first, oldest → newest). */
-  async fetchThread(channelId: string, threadTs: string, limit = 50): Promise<Array<{
-    ts: string; threadTs: string | null; userId: string; userName: string;
-    content: string; timestamp: string;
-  }>> {
-    const res = await this.client.conversations.replies({
-      channel: channelId, ts: threadTs, limit,
-    });
-    const out: Array<{
-      ts: string; threadTs: string | null; userId: string; userName: string;
-      content: string; timestamp: string;
-    }> = [];
-    for (const msg of (res.messages || [])) {
-      if (msg.type !== 'message') continue;
-      const userId = (msg.user as string) || (msg.bot_id as string) || '';
+  /**
+   * Live read of a thread, root first then the NEWEST `limit - 1` replies
+   * (a responding agent needs the fresh tail, not the stale head). Pages
+   * conversations.replies — Slack serves a thread oldest-first.
+   */
+  async fetchThread(channelId: string, threadTs: string, limit = 50): Promise<SlackThreadMessage[]> {
+    const raw: Array<{ ts?: string; thread_ts?: string; user?: string; bot_id?: string; text?: string; type?: string; username?: string }> = [];
+    let cursor: string | undefined;
+    do {
+      const res = await this.client.conversations.replies({
+        channel: channelId, ts: threadTs, limit: 200, ...(cursor ? { cursor } : {}),
+      });
+      if (!res.ok) break;
+      for (const msg of (res.messages || [])) {
+        if (msg.type === 'message') raw.push(msg);
+      }
+      cursor = (res.response_metadata as { next_cursor?: string })?.next_cursor || undefined;
+      if (cursor) await sleep(300);
+    } while (cursor && raw.length < 1000);
+
+    const root = raw.filter((m) => m.ts === threadTs);
+    const replies = raw.filter((m) => m.ts !== threadTs);
+    const tail = replies.slice(Math.max(0, replies.length - Math.max(1, limit - root.length)));
+    const windowed = [...root, ...tail];
+
+    // Resolve distinct authors in parallel off the warm cache (the same
+    // idiom getChannels uses for mpim members).
+    const ids = [...new Set(windowed.map((m) => m.user || m.bot_id || '').filter(Boolean))];
+    await Promise.all(ids.map((id) => this.resolveUser(id)));
+
+    const out: SlackThreadMessage[] = [];
+    for (const msg of windowed) {
+      const userId = msg.user || msg.bot_id || '';
       out.push({
         ts: msg.ts || '',
-        threadTs: msg.thread_ts || null,
+        threadTs: msg.thread_ts && msg.thread_ts !== msg.ts ? msg.thread_ts : null,
         userId,
-        userName: userId ? await this.resolveUser(userId) : 'Unknown',
+        userName: userId
+          ? this.userCache.get(userId) || msg.username || userId
+          : msg.username || 'Unknown',
         content: msg.text || '',
         timestamp: msg.ts ? new Date(parseFloat(msg.ts) * 1000).toISOString() : '',
       });

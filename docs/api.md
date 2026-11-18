@@ -776,7 +776,9 @@ Add or remove an emoji reaction.
 
 #### `GET /agent/slack/thread`
 
-Live read of one thread — root message plus replies, oldest first.
+Live read of one thread — the root message plus the **newest** `limit - 1`
+replies, oldest first. Reads are gated by the same per-key channel read
+allowlist as `GET /messages`, plus the sync-scope allowlist.
 
 **Query parameters**: `channel_id`, `thread_ts`, `limit` (default 50, max 200).
 
@@ -798,13 +800,20 @@ Identity map for the agent: who it is, where it can hear, and who everyone is.
 }
 ```
 
-Channels reflect the sync allowlist. Member `email` requires the
-`users:read.email` scope and a contact sync after it was granted.
+Channels reflect the sync allowlist and the key's fine-grained read allowlist.
+Member `email` requires the `users:read.email` scope and a contact sync after
+it was granted. `self.botId`/`teamId`/`teamName` are absent on user-token
+(xoxp) connections — only `auth.test` fields the token exposes are present.
+
+Agent posts are recorded as already-`sent` outbox rows and are **not**
+retryable through `POST /outbox/{id}/retry` (thread target and attachment
+bytes are not stored there) — re-issue through this endpoint instead.
 
 Reaction events arrive on the WebSocket as `reaction:added` / `reaction:removed`
 with `{ source, channelId, messageTs, emoji, userId, itemUserId }` (requires the
-`reactions:read` scope plus `reaction_added`/`reaction_removed` event
-subscriptions on the Slack app).
+`reactions:read` scope, `reaction_added`/`reaction_removed` event subscriptions
+on the Slack app, **and Socket Mode** — polling-mode connections receive no
+reaction events).
 
 ---
 
