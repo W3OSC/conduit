@@ -61,6 +61,7 @@ A single message from any connected platform.
 | `senderName` | string | Display name, resolved from contacts table when available |
 | `senderAvatarUrl` | string \| null | Avatar URL |
 | `isMe` | boolean | True when sent by the authenticated Conduit user |
+| `threadTs` | string \| null | Slack only: parent-message ts when the message is a thread reply |
 | `timestamp` | datetime | ISO 8601 timestamp |
 
 ### ActivityItem
@@ -93,6 +94,7 @@ A person you have communicated with across any connected platform.
 | `displayName` | string \| null | |
 | `username` | string \| null | |
 | `phone` | string \| null | |
+| `email` | string \| null | Slack: workspace profile email (needs the `users:read.email` scope) |
 | `avatarUrl` | string \| null | |
 | `bio` | string \| null | |
 | `mutualGroupIds` | string[] | IDs of groups/channels you both participate in |
@@ -730,6 +732,88 @@ For structured services (`gmail`, `calendar`, `notion`), `content` should be a J
 **Response**: `{ batchId: string, items: OutboxItem[] }`
 
 Returns `403` if `sendEnabled` is not set for any of the specified services.
+
+---
+
+### Agent Slack
+
+Primitives for an agent identity living in the team's own Slack workspace
+(threaded conversation, reactions, directory). Sends here bypass the outbox
+approval queue — same trust model as `POST /notify/internal`: these are
+system-to-team messages, never third-party outreach. Each delivery is still
+recorded as a `sent` outbox row. Gated by the slack `sendEnabled` permission
+and the per-key fine-grained write allowlist; reads need `readEnabled`.
+
+---
+
+#### `POST /agent/slack/post`
+
+Post a message as the agent, optionally inside a thread and with file uploads.
+
+**Request body**
+
+```json
+{
+  "channel_id": "C04ABC",
+  "text": "On it — summary coming up.",
+  "thread_ts": "1700000000.000100",
+  "attachments": [ { "filename": "report.pdf", "mime": "application/pdf", "data": "<base64>" } ]
+}
+```
+
+**Response**: `{ success: true, id, channel, ts }` — `ts` is the posted message
+timestamp (null when the message was delivered via file upload).
+
+---
+
+#### `POST /agent/slack/reactions`
+
+Add or remove an emoji reaction.
+
+**Request body**: `{ "channel_id": "C04ABC", "ts": "1700000000.000100", "emoji": "white_check_mark", "remove": false }`
+
+---
+
+#### `GET /agent/slack/thread`
+
+Live read of one thread — the root message plus the **newest** `limit - 1`
+replies, oldest first. Reads are gated by the same per-key channel read
+allowlist as `GET /messages`, plus the sync-scope allowlist.
+
+**Query parameters**: `channel_id`, `thread_ts`, `limit` (default 50, max 200).
+
+**Response**: `{ messages: [ { ts, threadTs, userId, userName, content, timestamp } ] }`
+
+---
+
+#### `GET /agent/slack/directory`
+
+Identity map for the agent: who it is, where it can hear, and who everyone is.
+
+**Response**
+
+```json
+{
+  "self": { "userId": "U0SELF", "displayName": "merlin", "botId": "B0…", "teamId": "T0…", "teamName": "Acme" },
+  "channels": [ { "id": "C04ABC", "name": "agentic-meridian", "type": "public_channel", "isMember": true } ],
+  "members": [ { "userId": "U123", "displayName": "Joe", "username": "joe", "email": "joe@acme.io" } ]
+}
+```
+
+Channels reflect the sync allowlist and the key's fine-grained read allowlist.
+Member `email` requires the `users:read.email` scope and a contact sync after
+it was granted. `self.botId`/`teamId`/`teamName` are absent on user-token
+(xoxp) connections — only `auth.test` fields the token exposes are present.
+
+Agent posts are recorded as already-`sent` outbox rows and are **not**
+retryable through `POST /outbox/{id}/retry` (thread target and attachment
+bytes are not stored there) — re-issue through this endpoint instead.
+
+Reaction events arrive on the WebSocket as `reaction:added` / `reaction:removed`
+with `{ source, channelId, messageTs, emoji, userId, itemUserId }` (requires the
+`reactions:read` scope, `reaction_added`/`reaction_removed` event subscriptions
+on the Slack app, **and Socket Mode** — polling-mode connections receive no
+reaction events).
 
 ---
 

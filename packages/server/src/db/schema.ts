@@ -345,6 +345,7 @@ export const contacts = sqliteTable('contacts', {
   firstName:       text('first_name'),
   lastName:        text('last_name'),
   phone:           text('phone'),                     // Telegram only
+  email:           text('email'),                     // Slack (users:read.email scope)
 
   // Avatar & profile
   avatarUrl:       text('avatar_url'),

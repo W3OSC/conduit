@@ -128,10 +128,8 @@ async function buildSlackTopology() {
   const countMap = new Map(counts.map((r) => [r.channelId, { count: r.count, lastTs: r.lastTs }]));
 
   // Resolve workspace name from Slack API auth info if available
-  const workspaceName = (slack as unknown as { teamName?: string } | null)?.teamName
-    ?? status.displayName
-    ?? 'Workspace';
-  const workspaceId = (slack as unknown as { teamId?: string } | null)?.teamId ?? 'unknown';
+  const workspaceName = slack?.accountInfo?.teamName ?? status.displayName ?? 'Workspace';
+  const workspaceId = slack?.accountInfo?.teamId ?? 'unknown';
 
   return {
     id: 'slack',

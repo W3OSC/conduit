@@ -113,6 +113,7 @@ export function buildSpec(baseUrl: string): Record<string, unknown> {
             displayName:   { type: 'string', nullable: true },
             username:      { type: 'string', nullable: true },
             phone:         { type: 'string', nullable: true },
+            email:         { type: 'string', nullable: true, description: 'Workspace profile email where the platform exposes it (Slack: users:read.email scope)' },
             avatarUrl:     { type: 'string', nullable: true },
             bio:           { type: 'string', nullable: true },
             mutualGroupIds: { type: 'array', items: { type: 'string' }, description: 'IDs of groups/channels you both participate in' },
