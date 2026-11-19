@@ -56,12 +56,31 @@ Open **http://localhost:3101** and configure services from the Settings page. Al
 
 ## Docker
 
+Two ways to run in a container:
+
+**Baked image** — code is built into the image; update by rebuilding.
+
 ```bash
 make docker-up    # build image and start
 make docker-down  # stop
 ```
 
 The SQLite database persists in `./data/` on the host and survives container rebuilds.
+
+**Self-updating** — set-and-forget. The image is just a Node toolchain; it
+clones the repo into a volume, builds it, and the running app pulls new
+default-branch commits every 5 minutes (same rule as a bare-metal checkout),
+then the container rebuilds and relaunches itself. No image rebuilds, no
+registry.
+
+```bash
+make docker-selfupdate    # or: docker compose -f docker-compose.selfupdate.yml up -d --build
+```
+
+First start clones and builds (several minutes — watch with
+`docker compose -f docker-compose.selfupdate.yml logs -f`); after that it stays
+current on its own. Data lives in the `conduit-data` volume. Set
+`CONDUIT_REPO` to follow a fork, or `CONDUIT_AUTO_UPDATE=0` to pin.
 
 ---
 
@@ -158,6 +177,8 @@ Conduit has no configuration files. All credentials are entered through the web 
 | `DATABASE_PATH` | `data/conduit.db` | Path to the SQLite database file |
 | `TRUST_PROXY` | _(unset)_ | Set to `true` to trust `X-Forwarded-*` headers from a reverse proxy |
 | `DOCKER` | _(unset)_ | Set to `true` in Docker to adjust update behaviour |
+| `CONDUIT_SUPERVISED` | _(unset)_ | Set to `1` when a supervisor relaunches the process: self-update exits 0 after pulling instead of hot-reloading, and the supervisor rebuilds (set automatically by the self-updating container) |
+| `CONDUIT_REPO` | upstream repo | Git URL the self-updating container clones on first start — point at a fork to follow it |
 | `CLOUD_AGENT_URL` | _(unset)_ | Cloud-bridge WebSocket URL of a remote orchestrator, e.g. `wss://your-crm.example.com/api/agent/ws` — see [Cloud bridge](#cloud-bridge-cloud-agent). Env config takes precedence over the UI/API. |
 | `CLOUD_AGENT_TOKEN` | _(unset)_ | Device bearer token for the cloud-agent connection |
 | `CLOUD_AGENT_OWNER_EMAIL` | _(unset)_ | Advisory email sent in `hello`; the cloud-side device row is authoritative |
@@ -220,5 +241,7 @@ Conduit runs entirely on your machine. All credentials, tokens, and message data
 A clean checkout of the default branch auto-pulls new commits every 5 minutes
 (`CONDUIT_UPDATE_INTERVAL_SECS`; opt out with `CONDUIT_AUTO_UPDATE=0`). Feature
 branches and dirty trees are never touched — `/api/update/status` shows why.
-Dependency changes trigger `npm install` automatically; Docker images still
+Dependency changes trigger `npm install` automatically. In Docker, use the
+self-updating container (`docker-compose.selfupdate.yml`) to get the same
+behaviour — its supervisor rebuilds and relaunches after each pull; baked images still
 rebuild manually.

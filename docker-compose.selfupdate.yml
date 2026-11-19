@@ -1,0 +1,39 @@
+# Self-updating Conduit: the container clones the repo into a volume, builds
+# it, and keeps itself on the latest default-branch commit (same rule as a
+# bare-metal checkout — feature branches and dirty trees are never touched).
+# Set-and-forget alternative to docker-compose.yml's baked image.
+#
+#   docker compose -f docker-compose.selfupdate.yml up -d --build
+#
+# First start clones + builds (several minutes); updates apply within
+# CONDUIT_UPDATE_INTERVAL_SECS (default 5 min) of landing on the default branch.
+
+services:
+  conduit:
+    build:
+      context: docker/selfupdate
+    ports:
+      - "3101:3101"
+    volumes:
+      # Source checkout — survives restarts so updates are incremental pulls,
+      # not fresh clones. Safe to delete; it will re-clone and rebuild.
+      - conduit-src:/src
+      # SQLite database, sessions, and credentials. Never remove this volume.
+      - conduit-data:/data
+    environment:
+      - DATABASE_PATH=/data/conduit.db
+      - PORT=3101
+      # Point at a fork to follow it instead (only used for the initial clone):
+      # - CONDUIT_REPO=https://github.com/you/conduit.git
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3101/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # First boot clones + npm installs + builds — give it time.
+      start_period: 15m
+
+volumes:
+  conduit-src:
+  conduit-data:
