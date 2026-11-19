@@ -11,7 +11,7 @@ import {
   MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS,
   attachmentMetas, decodedSize, parseStoredAttachments, redactAttachments, validateAttachments,
 } from '../util/attachments.js';
-import { buildRfc822Message } from '../sync/gmail.js';
+import { buildRfc822Message } from '../sync/gmail-message.js';
 
 const PDF_B64 = Buffer.from('%PDF-1.4 tiny').toString('base64');
 
