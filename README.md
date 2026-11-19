@@ -82,6 +82,11 @@ First start clones and builds (several minutes — watch with
 current on its own. Data lives in the `conduit-data` volume. Set
 `CONDUIT_REPO` to follow a fork, or `CONDUIT_AUTO_UPDATE=0` to pin.
 
+Deploying through a UI that can't build images from a stack (Portainer,
+Dockge)? Use [`docker-compose.selfupdate.nobuild.yml`](docker-compose.selfupdate.nobuild.yml)
+instead — same behaviour on the stock Node image, deployable as a single
+pasted compose file.
+
 ---
 
 ## AI agent integration
