@@ -71,6 +71,7 @@ export interface UiAuthMethodStatus {
 export interface UiAuthStatus {
   anyEnabled: boolean;
   authenticated: boolean;
+  version?: string;
   methods: {
     password: UiAuthMethodStatus & { hasPassword: boolean };
     totp: UiAuthMethodStatus & { totpEnabled: boolean };

@@ -70,6 +70,7 @@ import type {
   AuthenticatorTransportFuture,
 } from '@simplewebauthn/server';
 import { getDb } from '../db/client.js';
+import { getAppVersion } from '../update/checker.js';
 import { findValidApiKey } from '../auth/middleware.js';
 import { settings, passkeyCredentials } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
@@ -253,20 +254,12 @@ function anyMethodEnabled(cfg: UiAuthConfig): boolean {
   return cfg.password.enabled || cfg.totp.enabled || cfg.passkey.enabled;
 }
 
-function sessionDurationMs(cfg: UiAuthConfig): number {
-  // Use the duration for whichever method last authenticated.
-  const method = cfg.sessionMethod;
-  let hours = 0;
-  if (method === 'password') hours = cfg.password.sessionDurationHours;
-  else if (method === 'totp') hours = cfg.totp.sessionDurationHours;
-  else if (method === 'passkey') hours = cfg.passkey.sessionDurationHours;
-  return hours > 0 ? hours * 60 * 60 * 1000 : 0;
-}
-
 function isSessionValid(cfg: UiAuthConfig, token: string): boolean {
   if (!cfg.sessionTokenHash) return false;
-  // Duration 0 means "always require" — treat as expired
-  if (sessionDurationMs(cfg) === 0) return false;
+  // The expiry stamped at issue time is the single source of truth — duration 0
+  // gets a 24 h-capped browser session there. A duration check here would
+  // re-reject every duration-0 session the instant it was issued (the login
+  // loop that locked users out: password accepted, next request bounced).
   if (!cfg.sessionExpiry || new Date(cfg.sessionExpiry) < new Date()) return false;
   return hashToken(token) === cfg.sessionTokenHash;
 }
@@ -339,6 +332,9 @@ export function uiAuthMiddleware(req: Request, res: Response, next: NextFunction
   if (req.path.startsWith('/api/ui-auth')) { next(); return; }
   // The skill file is public documentation (also served from the GitHub repo).
   if (req.path === '/api/skill') { next(); return; }
+  // Liveness probe — container healthchecks and monitors must work while
+  // logged out; it exposes nothing beyond "the process is up".
+  if (req.path === '/api/health') { next(); return; }
 
   const cfg = getConfig();
   if (!anyMethodEnabled(cfg)) { next(); return; }
@@ -352,7 +348,7 @@ export function uiAuthMiddleware(req: Request, res: Response, next: NextFunction
 // ── Status / Config routes ─────────────────────────────────────────────────────
 
 // GET /api/ui-auth/status
-router.get('/status', (req, res) => {
+router.get('/status', async (req, res) => {
   const cfg = getConfig();
   const token = getSessionToken(req);
   const enabled = anyMethodEnabled(cfg);
@@ -364,6 +360,8 @@ router.get('/status', (req, res) => {
   res.json({
     anyEnabled: enabled,
     authenticated,
+    // Shown on the login page so a user can confirm which build they're on.
+    version: await getAppVersion(),
     methods: {
       password: {
         enabled: cfg.password.enabled,

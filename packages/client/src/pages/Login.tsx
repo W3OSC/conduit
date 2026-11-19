@@ -359,6 +359,12 @@ export default function Login({ onAuthenticated }: LoginProps) {
 
           </AnimatePresence>
         </div>
+
+        {authStatus?.version && (
+          <p className="text-[10px] text-muted-foreground/60 text-center mt-4 font-mono">
+            {authStatus.version}
+          </p>
+        )}
       </motion.div>
     </div>
   );
