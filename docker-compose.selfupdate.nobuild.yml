@@ -1,0 +1,54 @@
+# Self-updating Conduit without an image build — for UIs that can't build
+# images from a compose file (Portainer stacks, Dockge, plain `docker compose`
+# on a host without the repo). Single file: paste it into the stack editor and
+# deploy.
+#
+# Same design as docker-compose.selfupdate.yml: the stock Node image clones
+# the repo into a volume, builds it, and supervises the server; the app pulls
+# new default-branch commits every 5 minutes and the supervisor rebuilds +
+# relaunches (docker/selfupdate/entrypoint.sh — copied out of the checkout
+# before running, since a script must not change on disk mid-execution; each
+# container restart picks up the then-current supervisor).
+#
+# First start clones + builds (10-20 min depending on hardware; watch the
+# container logs). Data lives in the conduit-data volume — never delete it.
+# Set CONDUIT_REPO under environment: to follow a fork (initial clone only),
+# or CONDUIT_AUTO_UPDATE=0 to pin.
+
+services:
+  conduit:
+    image: node:20-bookworm
+    ports:
+      - "3101:3101"
+    volumes:
+      - conduit-src:/src
+      - conduit-data:/data
+    environment:
+      - DATABASE_PATH=/data/conduit.db
+      - PORT=3101
+      # - CONDUIT_REPO=https://github.com/you/conduit.git
+      # - CONDUIT_AUTO_UPDATE=0
+    restart: unless-stopped
+    # $$ keeps compose from interpolating — the shell resolves these at runtime.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -u
+        SRC="$${CONDUIT_SRC:-/src}"
+        if [ ! -d "$$SRC/.git" ]; then
+          echo "[bootstrap] cloning $${CONDUIT_REPO:-https://github.com/W3OSC/conduit.git} into $$SRC"
+          git clone "$${CONDUIT_REPO:-https://github.com/W3OSC/conduit.git}" "$$SRC" || exit 1
+        fi
+        cp "$$SRC/docker/selfupdate/entrypoint.sh" /tmp/conduit-supervise.sh
+        exec sh /tmp/conduit-supervise.sh
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3101/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20m
+
+volumes:
+  conduit-src:
+  conduit-data:
