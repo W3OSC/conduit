@@ -81,6 +81,8 @@ First start clones and builds (several minutes — watch with
 `docker compose -f docker-compose.selfupdate.yml logs -f`); after that it stays
 current on its own. Data lives in the `conduit-data` volume. Set
 `CONDUIT_REPO` to follow a fork, or `CONDUIT_AUTO_UPDATE=0` to pin.
+Restarting the container force-syncs to the latest default-branch commit —
+the quickest way to apply an update on demand.
 
 Deploying through a UI that can't build images from a stack (Portainer,
 Dockge)? Use [`docker-compose.selfupdate.nobuild.yml`](docker-compose.selfupdate.nobuild.yml)

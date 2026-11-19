@@ -5,4 +5,8 @@
 set -eu
 
 npm install --no-audit --no-fund
+# npm install may rewrite the lockfile (platform-specific optional deps); a
+# dirty tree would block the in-app auto-updater, so restore it. node_modules
+# is unaffected — this only keeps git clean.
+git checkout -- package-lock.json 2>/dev/null || true
 npm run build
