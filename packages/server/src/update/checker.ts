@@ -41,9 +41,11 @@ export function autoUpdateBlockReason(s: {
   defaultBranch: string;
   dirty: boolean;
   enabled: boolean;
+  /** CONDUIT_SUPERVISED=1 — a supervisor rebuilds and relaunches after exit 0. */
+  supervised?: boolean;
 }): string | null {
   if (!s.enabled) return 'disabled (CONDUIT_AUTO_UPDATE=0)';
-  if (s.isDocker) return 'docker image — rebuild to update';
+  if (s.isDocker && !s.supervised) return 'docker image — rebuild to update';
   if (!s.branch) return 'not a git checkout';
   if (s.branch !== s.defaultBranch) return `checkout is on ${s.branch}, not ${s.defaultBranch}`;
   if (s.dirty) return 'working tree has uncommitted changes';
@@ -105,6 +107,7 @@ export async function getAppVersion(): Promise<string> {
 export async function checkForUpdates(): Promise<UpdateStatus | null> {
   const isDocker = process.env.DOCKER === 'true';
   const enabled = process.env.CONDUIT_AUTO_UPDATE !== '0';
+  const supervised = process.env.CONDUIT_SUPERVISED === '1';
   const version = await getAppVersion();
 
   try {
@@ -133,7 +136,7 @@ export async function checkForUpdates(): Promise<UpdateStatus | null> {
       isDocker,
       branch,
       dirty,
-      autoUpdateBlocked: autoUpdateBlockReason({ isDocker, branch, defaultBranch, dirty, enabled }),
+      autoUpdateBlocked: autoUpdateBlockReason({ isDocker, branch, defaultBranch, dirty, enabled, supervised }),
     };
 
     lastKnownStatus = status;
@@ -207,7 +210,9 @@ async function maybeAutoApply(status: UpdateStatus): Promise<void> {
   }
   broadcast({ type: 'update:applied', data: { ...status, autoApplied: true } });
 
-  if (lockfileChanged) {
+  // Under a supervisor the relaunch loop owns npm install + build — spawning a
+  // second install here would race it over node_modules.
+  if (lockfileChanged && process.env.CONDUIT_SUPERVISED !== '1') {
     // Detached so it survives the tsx-watch restart the pull just triggered.
     const { spawn } = await import('child_process');
     const child = spawn(

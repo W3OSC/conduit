@@ -22,6 +22,13 @@ describe('autoUpdateBlockReason', () => {
     expect(autoUpdateBlockReason({ ...base, branch: '' })).toMatch(/not a git checkout/);
   });
 
+  it('allows docker when supervised (source-mode container rebuilds on relaunch)', () => {
+    expect(autoUpdateBlockReason({ ...base, isDocker: true, supervised: true })).toBeNull();
+    // Supervision does not bypass the other gates
+    expect(autoUpdateBlockReason({ ...base, isDocker: true, supervised: true, dirty: true })).toMatch(/uncommitted/);
+    expect(autoUpdateBlockReason({ ...base, isDocker: true, supervised: true, branch: 'feat/x' })).toMatch(/not main/);
+  });
+
   it('respects a non-main default branch', () => {
     expect(autoUpdateBlockReason({ ...base, branch: 'trunk', defaultBranch: 'trunk' })).toBeNull();
     expect(autoUpdateBlockReason({ ...base, branch: 'main', defaultBranch: 'trunk' })).toMatch(/not trunk/);

@@ -1,4 +1,4 @@
-.PHONY: help dev build start stop migrate docker-up docker-down test lint clean install
+.PHONY: help dev build start stop migrate docker-up docker-down docker-selfupdate test lint clean install
 
 # ── Conduit Makefile ──────────────────────────────────────────────────────────
 
@@ -16,6 +16,7 @@ help:
 	@echo "    make migrate      Run database migrations"
 	@echo "    make docker-up    Build and start Docker containers"
 	@echo "    make docker-down  Stop Docker containers"
+	@echo "    make docker-selfupdate  Start the self-updating container (set-and-forget)"
 	@echo ""
 	@echo "  Other:"
 	@echo "    make install      Install npm dependencies"
@@ -47,6 +48,9 @@ docker-up:
 
 docker-down:
 	docker-compose down
+
+docker-selfupdate:
+	docker compose -f docker-compose.selfupdate.yml up -d --build
 
 test:
 	npm run test --workspace=packages/server

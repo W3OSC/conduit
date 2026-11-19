@@ -19,6 +19,9 @@ packages/client/dist/
 /data/*
 !/data/.gitkeep
 .service.pid
+# Written by docker/selfupdate/entrypoint.sh after each successful build —
+# must be ignored or it would dirty the tree and block auto-update.
+.docker-build-stamp
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
 *.log
