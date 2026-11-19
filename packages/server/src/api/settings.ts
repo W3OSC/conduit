@@ -26,7 +26,7 @@ const SETTINGS_WHITELIST = new Set([
  * Key prefixes that are always excluded from the GET /settings response,
  * regardless of whitelist, to prevent accidental credential exposure.
  */
-const SENSITIVE_PREFIXES = ['credentials.', 'ui.auth', 'ai.gatewayToken'];
+const SENSITIVE_PREFIXES = ['credentials.', 'ui.auth', 'ai.gatewayToken', 'cloudAgent.token'];
 
 function isSensitive(key: string): boolean {
   return SENSITIVE_PREFIXES.some((prefix) => key === prefix || key.startsWith(prefix));

@@ -158,32 +158,47 @@ Conduit has no configuration files. All credentials are entered through the web 
 | `DATABASE_PATH` | `data/conduit.db` | Path to the SQLite database file |
 | `TRUST_PROXY` | _(unset)_ | Set to `true` to trust `X-Forwarded-*` headers from a reverse proxy |
 | `DOCKER` | _(unset)_ | Set to `true` in Docker to adjust update behaviour |
-| `CLOUD_AGENT_URL` | _(unset)_ | Meridian cloud-agent WebSocket URL, e.g. `wss://meridian.auditware.io/api/agent/ws` — see [Cloud agent](#cloud-agent) |
+| `CLOUD_AGENT_URL` | _(unset)_ | Cloud-bridge WebSocket URL of a remote orchestrator, e.g. `wss://your-crm.example.com/api/agent/ws` — see [Cloud bridge](#cloud-bridge-cloud-agent). Env config takes precedence over the UI/API. |
 | `CLOUD_AGENT_TOKEN` | _(unset)_ | Device bearer token for the cloud-agent connection |
 | `CLOUD_AGENT_OWNER_EMAIL` | _(unset)_ | Advisory email sent in `hello`; the cloud-side device row is authoritative |
 | `CLOUD_AGENT_ENABLED` | _(unset)_ | Defaults to enabled once URL + token are both set; `0`/`false` forces it off |
 
 ---
 
-## Cloud agent
+## Cloud bridge (cloud agent)
 
-Conduit can dial out to a hosted Meridian instance over one persistent,
-bearer-authenticated WebSocket, so the cloud CRM can route calls into your
-home-network Conduit without it ever needing to be reachable from the
-internet. This is off by default and entirely optional.
+Conduit can dial out to a remote orchestrator — any service implementing the
+agent protocol; [Meridian](https://github.com/Auditware/auditware-crm) is the
+reference consumer — over one persistent, bearer-authenticated WebSocket, so
+that service can route calls into your home-network Conduit without it ever
+needing to be reachable from the internet. This is off by default and
+entirely optional.
 
-**Setup:** in Meridian, go to **Settings → Devices** and mint a token. Set
-`CLOUD_AGENT_URL` (the `wss://.../api/agent/ws` endpoint shown there) and
-`CLOUD_AGENT_TOKEN` (the minted token) in Conduit's environment and restart —
-the agent connects automatically once both are present. `CLOUD_AGENT_URL`
-and `CLOUD_AGENT_TOKEN` must be set together; setting only one logs an error
-and leaves the agent off.
+**Setup (UI/API):** mint a device token on the orchestrator (Meridian:
+**Settings → Devices**), then either configure the bridge in Conduit's UI
+(**Services → Cloud Bridge** — pasting the orchestrator's JSON connect blob
+fills the form in one go) or call the local API:
 
-Once connected, Meridian's calls arrive as `http` jobs scoped to this
+```bash
+curl -sS -X PUT http://localhost:3101/api/cloud-agent \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"wss://your-crm.example.com/api/agent/ws","token":"<minted token>","ownerEmail":"you@company.com"}'
+```
+
+The config persists in Conduit's database and the bridge (re)connects
+immediately — no restart. `GET /api/cloud-agent` reports live status (never
+the token); `DELETE /api/cloud-agent` forgets the config and disconnects.
+
+**Setup (environment):** set `CLOUD_AGENT_URL` and `CLOUD_AGENT_TOKEN` and
+restart. Env config wins: while either is set the bridge is env-managed and
+the UI/API are read-only status surfaces. The two must be set together;
+setting only one logs an error and leaves the agent off.
+
+Once connected, the orchestrator's calls arrive as `http` jobs scoped to this
 server's own `/api/*` routes — executed with a dedicated `cloud-agent` API
 key minted locally (Settings → Permissions shows it like any other key) —
 and a slimmed stream of outbox/message events is relayed back to accelerate
-Meridian's polling. The connection reconnects forever with exponential
+the remote's polling. The connection reconnects forever with exponential
 backoff (1 → 16 min, capped) if it drops.
 
 A job may mark itself `"auth":"none"`, in which case it runs without that

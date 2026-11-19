@@ -14,7 +14,7 @@ import os from 'os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { nextBackoffMs, BACKOFF_BASE_MS, BACKOFF_MAX_MS } from '../cloud/backoff.js';
 import { isAllowedJobPath, executeHttpJob } from '../cloud/jobs.js';
-import { loadCloudAgentConfig } from '../cloud/config.js';
+import { loadCloudAgentConfig, readCloudAgentSettings, resolveCloudAgentConfig } from '../cloud/config.js';
 import { shouldRelayEvent, slimEventPayload } from '../cloud/events.js';
 import {
   abortAllTurnJobs,
@@ -24,7 +24,7 @@ import {
   executeTurnJob,
   type AiJobResult,
 } from '../cloud/ai.js';
-import { startCloudAgent } from '../cloud/agent.js';
+import { startCloudAgent, stopCloudAgent } from '../cloud/agent.js';
 
 // --- startCloudAgent harness: agent.ts dials out over `ws`, mints a DB-backed
 // API key, and subscribes to the live broadcast hub — all faked here so the
@@ -152,6 +152,75 @@ describe('loadCloudAgentConfig', () => {
     expect(
       loadCloudAgentConfig({ CLOUD_AGENT_URL: 'wss://example.test/ws', CLOUD_AGENT_TOKEN: 'tok', CLOUD_AGENT_ENABLED: '1' }),
     ).not.toBeNull();
+  });
+});
+
+describe('resolveCloudAgentConfig (env vs settings precedence)', () => {
+  const reader = (map: Record<string, unknown>) => (key: string) => map[key];
+  const STORED = {
+    'cloudAgent.url': 'wss://stored.test/ws',
+    'cloudAgent.token': 'stored-tok',
+    'cloudAgent.ownerEmail': 'joe@auditware.io',
+  };
+
+  it('env wins when CLOUD_AGENT_URL/TOKEN are set — settings are never consulted', () => {
+    const read = vi.fn(reader(STORED));
+    const resolved = resolveCloudAgentConfig(
+      { CLOUD_AGENT_URL: 'wss://env.test/ws', CLOUD_AGENT_TOKEN: 'env-tok' },
+      read,
+    );
+    expect(resolved).toEqual({
+      config: { url: 'wss://env.test/ws', token: 'env-tok', ownerEmail: '' },
+      source: 'env',
+      envManaged: true,
+    });
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('a PARTIAL env config still claims env-managed (bridge off) rather than falling to settings', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const resolved = resolveCloudAgentConfig({ CLOUD_AGENT_URL: 'wss://env.test/ws' }, reader(STORED));
+    expect(resolved.config).toBeNull();
+    expect(resolved.envManaged).toBe(true);
+    spy.mockRestore();
+  });
+
+  it('falls back to a complete settings config when env is unset', () => {
+    const resolved = resolveCloudAgentConfig({}, reader(STORED));
+    expect(resolved).toEqual({
+      config: { url: 'wss://stored.test/ws', token: 'stored-tok', ownerEmail: 'joe@auditware.io' },
+      source: 'settings',
+      envManaged: false,
+    });
+  });
+
+  it('cloudAgent.enabled === false keeps the bridge off but still reports source settings', () => {
+    const resolved = resolveCloudAgentConfig({}, reader({ ...STORED, 'cloudAgent.enabled': false }));
+    expect(resolved.config).toBeNull();
+    expect(resolved.source).toBe('settings');
+  });
+
+  it('a partial settings config (url without token) stays off, source settings', () => {
+    const resolved = resolveCloudAgentConfig({}, reader({ 'cloudAgent.url': 'wss://stored.test/ws' }));
+    expect(resolved.config).toBeNull();
+    expect(resolved.source).toBe('settings');
+  });
+
+  it('nothing configured anywhere → off, source null', () => {
+    expect(resolveCloudAgentConfig({}, reader({}))).toEqual({ config: null, source: null, envManaged: false });
+  });
+});
+
+describe('readCloudAgentSettings', () => {
+  it('trims strings, nulls empties, and defaults enabled to true', () => {
+    const read = (key: string) =>
+      ({ 'cloudAgent.url': '  wss://x.test/ws  ', 'cloudAgent.token': '', 'cloudAgent.ownerEmail': 42 })[key];
+    expect(readCloudAgentSettings(read)).toEqual({
+      url: 'wss://x.test/ws',
+      token: null,
+      ownerEmail: null,
+      enabled: true,
+    });
   });
 });
 
@@ -346,6 +415,10 @@ describe('startCloudAgent dispatch glue', () => {
     process.env['CLOUD_AGENT_URL'] = 'wss://example.test/ws';
     process.env['CLOUD_AGENT_TOKEN'] = 'tok';
     process.env['CLOUD_AGENT_OWNER_EMAIL'] = 'joe@auditware.io';
+    // The agent is a module-level singleton since the hot-restart refactor —
+    // tear down the previous test's runtime BEFORE clearing mocks, so its
+    // stop-sweep (abortAllTurnJobs) never pollutes this test's call counts.
+    stopCloudAgent();
     wsHarness.instances.length = 0;
     discoverAiCapabilityMock.mockClear();
     discoverAiCapabilityMock.mockResolvedValue(true);

@@ -154,8 +154,8 @@ async function main() {
   // Start the background update poller (checks for new commits every hour)
   startUpdatePoller();
 
-  // Start the Meridian cloud-agent bridge (M5 home-agent protocol) — no-op
-  // when CLOUD_AGENT_URL/CLOUD_AGENT_TOKEN aren't configured.
+  // Start the cloud-agent bridge (agent protocol, M5) — no-op until it is
+  // configured via env (CLOUD_AGENT_URL/TOKEN) or /api/cloud-agent settings.
   startCloudAgent();
 
   // Graceful shutdown

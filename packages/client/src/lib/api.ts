@@ -93,6 +93,21 @@ export interface PasskeyCredential {
   lastUsedAt: string | null;
 }
 
+/** GET/PUT/DELETE /api/cloud-agent — the token itself is never returned. */
+export interface CloudAgentStatus {
+  configured: boolean;
+  source: 'env' | 'settings' | null;
+  envManaged: boolean;
+  state: 'off' | 'connecting' | 'connected';
+  url: string | null;
+  ownerEmail: string | null;
+  connectedAt: string | null;
+  lastError: string | null;
+  capabilities: string[] | null;
+  enabled: boolean;
+  tokenSet: boolean;
+}
+
 export const uiAuth = {
   status: () => uiAuthRequest<UiAuthStatus>('/status'),
   config: () => uiAuthRequest<UiAuthConfig>('/config'),
@@ -255,6 +270,12 @@ export const api = {
   settings: () => request<Record<string, unknown>>('/settings'),
   updateSettings: (updates: Record<string, unknown>) =>
     request<Record<string, unknown>>('/settings', { method: 'PUT', body: JSON.stringify(updates) }),
+
+  // Cloud-agent bridge (outbound connection to a remote orchestrator)
+  cloudAgentStatus: () => request<CloudAgentStatus>('/cloud-agent'),
+  cloudAgentConfigure: (body: { url: string; token?: string; ownerEmail?: string; enabled?: boolean }) =>
+    request<CloudAgentStatus>('/cloud-agent', { method: 'PUT', body: JSON.stringify(body) }),
+  cloudAgentClear: () => request<CloudAgentStatus>('/cloud-agent', { method: 'DELETE' }),
 
   // Credentials
   credentials: () => request<CredentialsResponse>('/credentials'),
