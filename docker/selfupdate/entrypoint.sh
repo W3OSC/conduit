@@ -34,7 +34,26 @@ term() {
 }
 trap term TERM INT
 
+# Force-sync the checkout to the latest default-branch commit. Runs before
+# every launch so a container restart always picks up the newest code, and a
+# tree accidentally dirtied by tooling (the auto-update gate refuses to touch
+# it) self-heals. The checkout is machine-managed — nobody edits it by hand —
+# so a hard reset is safe. A checkout deliberately moved to another branch is
+# left alone, and a fetch failure (offline) falls through to what's on disk.
+sync_checkout() {
+  [ "${CONDUIT_AUTO_UPDATE:-1}" = "0" ] && return 0
+  branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+  default="$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed 's|^origin/||')"
+  [ -n "$branch" ] && [ -n "$default" ] && [ "$branch" = "$default" ] || return 0
+  if git fetch origin 2>/dev/null; then
+    git reset --hard "origin/$default" --quiet && echo "[supervise] synced to origin/$default ($(git rev-parse --short HEAD))"
+  else
+    echo "[supervise] fetch failed — starting with the code on disk"
+  fi
+}
+
 while :; do
+  sync_checkout
   head="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
   built="$(cat "$STAMP" 2>/dev/null || true)"
   if [ "$head" = "unknown" ] || [ "$head" != "$built" ]; then
