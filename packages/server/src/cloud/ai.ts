@@ -30,12 +30,15 @@
  * terminal outcome still arriving as the normal `job_result`. The runner is
  * a remote stdout pipe, not a parser — the cloud owns event semantics.
  *
- * Unlike claude.rs, this module never injects credentials (no pasted-token
- * env var, no isolated CLAUDE_CONFIG_DIR) — the whole point is to ride the
- * user's own local `claude /login` session, so touching their config dir
- * would defeat it. It only strips nested-session env vars so a Conduit
- * process itself launched from inside a Claude Code session doesn't leak
- * that session into the child.
+ * Credentials: by default this module rides the host user's own local
+ * `claude /login` session — it never touches CLAUDE_CONFIG_DIR. Installs
+ * without such a session (headless/docker) may instead store a setup token
+ * (`claude setup-token`) via Settings → AI / /api/ai-runner, or set
+ * CLAUDE_CODE_OAUTH_TOKEN in the environment; the resolved token
+ * (cloud/ai-config.ts, env wins) is injected into every spawned CLI. It
+ * still strips nested-session env vars so a Conduit process itself launched
+ * from inside a Claude Code session doesn't leak that session into the
+ * child.
  */
 
 import { spawn } from 'node:child_process';
@@ -43,6 +46,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+import { resolveAiRunnerConfig } from './ai-config.js';
 
 export const AI_JOB_MODES = ['json', 'research', 'chat'] as const;
 export type AiJobMode = (typeof AI_JOB_MODES)[number];
@@ -257,24 +261,41 @@ export const TURN_TOOL_RESULT_TEXT_CAP = 4000;
 export const TURN_MCP_TOOL_TIMEOUT_MS = '1500000';
 export const TURN_MCP_TIMEOUT_MS = '30000';
 
-/** `CLOUD_AGENT_CLAUDE_BIN` override, else `claude` resolved off PATH. */
+/** CLOUD_AGENT_CLAUDE_BIN → stored aiRunner.claudeBin → `claude` off PATH (ai-config.ts). */
 export function resolveClaudeBin(env: NodeJS.ProcessEnv = process.env): string {
-  return env['CLOUD_AGENT_CLAUDE_BIN']?.trim() || 'claude';
+  return resolveAiRunnerConfig(env).bin;
+}
+
+/**
+ * Spawn env for a CLI child: strip nested-session vars, then inject the
+ * resolved setup token (if any) as CLAUDE_CODE_OAUTH_TOKEN. The env-var form
+ * survives the strip loop and wins inside resolveAiRunnerConfig too, so both
+ * sources land in the same place.
+ */
+function buildSpawnEnv(envOverride?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const base = envOverride ?? process.env;
+  const env: NodeJS.ProcessEnv = { ...base };
+  for (const key of ENV_STRIP) delete env[key];
+  const token = resolveAiRunnerConfig(base).token;
+  if (token) env['CLAUDE_CODE_OAUTH_TOKEN'] = token;
+  return env;
 }
 
 /**
  * Probe a candidate CLI binary with `--version`, bounded by `timeoutMs`.
- * Resolves `true`/`false` — never throws/rejects — so startup capability
- * discovery can't block or crash `hello` on a missing/broken install.
+ * Resolves the trimmed version string on success, null otherwise — never
+ * throws/rejects — so startup capability discovery can't block or crash
+ * `hello` on a missing/broken install.
  */
-export function probeClaudeCli(bin: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<boolean> {
+export function probeClaudeVersion(bin: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<string | null> {
   return new Promise((resolve) => {
     let settled = false;
+    const stdoutChunks: Buffer[] = [];
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(bin, ['--version'], { stdio: 'ignore' });
+      child = spawn(bin, ['--version'], { stdio: ['ignore', 'pipe', 'ignore'] });
     } catch {
-      resolve(false);
+      resolve(null);
       return;
     }
 
@@ -282,7 +303,7 @@ export function probeClaudeCli(bin: string, timeoutMs = PROBE_TIMEOUT_MS): Promi
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve(ok);
+      resolve(ok ? Buffer.concat(stdoutChunks).toString('utf8').trim() || 'unknown' : null);
     };
 
     const timer = setTimeout(() => {
@@ -295,18 +316,28 @@ export function probeClaudeCli(bin: string, timeoutMs = PROBE_TIMEOUT_MS): Promi
     }, timeoutMs);
     if (timer.unref) timer.unref();
 
+    child.stdout?.on('data', (d: Buffer) => stdoutChunks.push(d));
     child.on('error', () => finish(false));
-    child.on('exit', (code) => finish(code === 0));
+    child.on('close', (code) => finish(code === 0));
   });
 }
 
+/** Boolean wrapper around probeClaudeVersion. */
+export async function probeClaudeCli(bin: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<boolean> {
+  return (await probeClaudeVersion(bin, timeoutMs)) !== null;
+}
+
 /**
- * Startup capability discovery: resolves the configured/PATH binary and
- * probes it once. The result decides whether `hello.capabilities` advertises
- * `"ai"` (agent.ts).
+ * Startup capability discovery: resolves the configured binary and probes it
+ * once. The result decides whether `hello.capabilities` advertises `"ai"`
+ * (agent.ts). An operator who disabled the runner in settings
+ * (aiRunner.enabled:false) reads as unavailable regardless of the install —
+ * the cloud must not route AI work here.
  */
 export async function discoverAiCapability(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
-  return probeClaudeCli(resolveClaudeBin(env));
+  const cfg = resolveAiRunnerConfig(env);
+  if (!cfg.enabled) return false;
+  return probeClaudeCli(cfg.bin);
 }
 
 /**
@@ -401,8 +432,7 @@ function runRawCli(
   envOverride?: NodeJS.ProcessEnv,
 ): Promise<RawCliRun> {
   return new Promise((resolve) => {
-    const env: NodeJS.ProcessEnv = { ...(envOverride ?? process.env) };
-    for (const key of ENV_STRIP) delete env[key];
+    const env = buildSpawnEnv(envOverride);
 
     let child: ReturnType<typeof spawn>;
     try {
@@ -475,7 +505,10 @@ function tryParseJson(text: string): unknown {
  * key" is the older CLI's phrasing of the same state, kept as a
  * belt-and-braces pattern.
  */
-const NOT_LOGGED_IN_PATTERNS = ['Not logged in', 'Please run /login', 'Invalid API key'] as const;
+// "Failed to authenticate" observed live (claude 2.1.233, expired OAuth
+// session: "Failed to authenticate: OAuth session expired and could not be
+// refreshed", exit 1) — same actionable state as logged-out.
+const NOT_LOGGED_IN_PATTERNS = ['Not logged in', 'Please run /login', 'Invalid API key', 'Failed to authenticate'] as const;
 
 export function isNotLoggedInMessage(message: string): boolean {
   return NOT_LOGGED_IN_PATTERNS.some((p) => message.includes(p));
@@ -898,8 +931,7 @@ function runTurnCli(
   envOverride?: NodeJS.ProcessEnv,
 ): Promise<RawTurnRun> {
   return new Promise((resolve) => {
-    const env: NodeJS.ProcessEnv = { ...(envOverride ?? process.env) };
-    for (const key of ENV_STRIP) delete env[key];
+    const env = buildSpawnEnv(envOverride);
     env['MCP_TOOL_TIMEOUT'] = TURN_MCP_TOOL_TIMEOUT_MS;
     env['MCP_TIMEOUT'] = TURN_MCP_TIMEOUT_MS;
 

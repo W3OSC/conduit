@@ -1,10 +1,11 @@
-import { useQuery } from '@tanstack/react-query';
+import { useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import {
-  Key, Copy, X, Settings, Zap, Bot, Download,
+  Key, Copy, X, Settings, Zap, Bot, Download, Terminal, Loader2,
 } from 'lucide-react';
 import {
-  api,
+  api, type AiRunnerStatus,
 } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { CopyButton } from '@/components/shared/CopyButton';
@@ -96,6 +97,176 @@ function SkillInstallPanel() {
   );
 }
 
+// ─── AI Runner Panel ──────────────────────────────────────────────────────────
+// The reverse direction of this tab: a connected orchestrator (Settings →
+// Cloud bridge) can route its AI work HERE, running it on this machine's
+// Claude Code CLI. Resolution is env-first (ai-config.ts); this panel edits
+// the stored settings and goes read-only per field when env-managed.
+
+function dotClass(ok: boolean): string {
+  return ok ? 'bg-emerald-500' : 'bg-muted-foreground/40';
+}
+
+function authLabel(s: AiRunnerStatus): string {
+  if (s.tokenSet) return s.tokenSource === 'env' ? 'Setup token (from environment)' : 'Setup token (stored)';
+  return 'This machine’s own claude login';
+}
+
+function AiRunnerPanel() {
+  const queryClient = useQueryClient();
+  const [tokenInput, setTokenInput] = useState('');
+  const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const { data: s } = useQuery({
+    queryKey: ['ai-runner'],
+    queryFn: api.aiRunnerStatus,
+    refetchInterval: 30_000,
+  });
+
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['ai-runner'] });
+
+  const configure = useMutation({
+    mutationFn: api.aiRunnerConfigure,
+    onSuccess: () => {
+      setTokenInput('');
+      setTestResult(null);
+      refresh();
+    },
+  });
+
+  const test = useMutation({
+    mutationFn: api.aiRunnerTest,
+    onMutate: () => setTestResult(null),
+    onSuccess: (r) => {
+      setTestResult(
+        r.ok
+          ? { ok: true, text: 'Working — a real AI call completed through this runner.' }
+          : { ok: false, text: r.error ?? r.errorKind ?? 'Test failed' },
+      );
+      refresh();
+    },
+    onError: (e) => setTestResult({ ok: false, text: e instanceof Error ? e.message : 'Test failed' }),
+  });
+
+  if (!s) return null;
+
+  const tokenEnvManaged = s.tokenSource === 'env';
+
+  return (
+    <div className="rounded-xl border border-border bg-secondary/30 overflow-hidden">
+      <div className="px-3 py-2 border-b border-border flex items-center gap-1.5">
+        <Terminal className="w-3 h-3 text-muted-foreground" />
+        <p className="text-xs font-semibold text-foreground">Serve AI to a connected orchestrator</p>
+        <label className="ml-auto flex items-center gap-1.5 text-[10px] text-muted-foreground cursor-pointer">
+          <input
+            type="checkbox"
+            checked={s.enabled}
+            onChange={(e) => configure.mutate({ enabled: e.target.checked })}
+            className="accent-primary"
+          />
+          Enabled
+        </label>
+      </div>
+      <div className="p-3 space-y-3">
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          When a remote orchestrator is connected via the cloud bridge, it can run its AI work through
+          this machine&rsquo;s Claude Code CLI. By default the runner rides this machine&rsquo;s own{' '}
+          <code className="font-mono text-[11px]">claude /login</code> session; headless installs
+          (e.g. the Docker container) paste a setup token instead.
+        </p>
+
+        {/* Status facts */}
+        <div className="rounded-lg border border-border bg-background p-2.5 space-y-1 text-xs">
+          <p className="flex items-center gap-2 text-muted-foreground">
+            <span className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0', dotClass(s.cliAvailable))} />
+            CLI{' '}
+            {s.cliAvailable ? (
+              <span className="text-foreground/80">
+                found <span className="font-mono text-[11px]">{s.cliVersion}</span>
+              </span>
+            ) : (
+              <span>
+                not found (<span className="font-mono text-[11px]">{s.bin}</span>)
+              </span>
+            )}
+            {s.binSource !== 'default' && (
+              <span className="text-[10px] text-muted-foreground/70">path via {s.binSource}</span>
+            )}
+          </p>
+          <p className="flex items-center gap-2 text-muted-foreground">
+            <span className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0', dotClass(s.tokenSet || s.cliAvailable))} />
+            Auth <span className="text-foreground/80">{authLabel(s)}</span>
+          </p>
+        </div>
+
+        {/* Token */}
+        <div className="space-y-1.5">
+          <p className="text-xs font-semibold text-foreground">
+            Setup token{' '}
+            <span className="font-normal text-muted-foreground">
+              (from <code className="font-mono text-[11px]">claude setup-token</code> on a logged-in machine)
+            </span>
+          </p>
+          {tokenEnvManaged ? (
+            <p className="text-[11px] text-muted-foreground">
+              Managed by the <code className="font-mono">CLAUDE_CODE_OAUTH_TOKEN</code> environment variable.
+            </p>
+          ) : (
+            <div className="flex items-center gap-2">
+              <input
+                type="password"
+                value={tokenInput}
+                onChange={(e) => setTokenInput(e.target.value)}
+                placeholder={s.tokenSet ? 'Token stored — paste to replace' : 'sk-ant-oat01-…'}
+                className="flex-1 text-xs font-mono bg-background border border-border rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-primary/50"
+              />
+              <button
+                onClick={() => configure.mutate({ token: tokenInput.trim() })}
+                disabled={!tokenInput.trim() || configure.isPending}
+                className="text-xs px-3 py-1.5 rounded-lg bg-primary text-primary-foreground font-semibold disabled:opacity-40 cursor-pointer"
+              >
+                Save
+              </button>
+              {s.tokenSet && (
+                <button
+                  onClick={() => configure.mutate({ token: '' })}
+                  disabled={configure.isPending}
+                  className="text-xs px-2.5 py-1.5 rounded-lg border border-border text-muted-foreground hover:text-foreground cursor-pointer"
+                  title="Remove the stored token and fall back to this machine's claude login"
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+          )}
+          {configure.isError && (
+            <p className="text-[11px] text-red-400">
+              {configure.error instanceof Error ? configure.error.message : 'Save failed'}
+            </p>
+          )}
+        </div>
+
+        {/* Test */}
+        <div className="flex items-center gap-2.5">
+          <button
+            onClick={() => test.mutate()}
+            disabled={test.isPending || !s.enabled}
+            className="text-xs px-3 py-1.5 rounded-lg border border-border font-semibold text-foreground hover:bg-secondary disabled:opacity-40 cursor-pointer flex items-center gap-1.5"
+          >
+            {test.isPending && <Loader2 className="w-3 h-3 animate-spin" />}
+            {test.isPending ? 'Running a real AI call…' : 'Test'}
+          </button>
+          {testResult && (
+            <p className={cn('text-[11px] leading-snug', testResult.ok ? 'text-emerald-500' : 'text-red-400')}>
+              {testResult.text}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Agent Access Tab ─────────────────────────────────────────────────────────
 // Provider-agnostic: external AI agents connect to Conduit over the REST API
 // with an API key — no in-app chat, no vendor-specific wiring.
@@ -157,6 +328,9 @@ export function AgentAccessTab() {
 
       {/* Skill install */}
       <SkillInstallPanel />
+
+      {/* AI runner (outbound: serve AI to a connected orchestrator) */}
+      <AiRunnerPanel />
     </div>
   );
 }
