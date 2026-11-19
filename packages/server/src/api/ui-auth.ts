@@ -193,10 +193,12 @@ interface UiAuthConfig {
   sessionMethod?: 'password' | 'totp' | 'passkey';
 }
 
+// 30-day sessions by default — 0 is a deliberate opt-in meaning "log in again
+// when the browser closes" (session cookie), never a lockout.
 const DEFAULT_CONFIG: UiAuthConfig = {
-  password: { enabled: false, sessionDurationHours: 0, passwordHash: '' },
-  totp:     { enabled: false, sessionDurationHours: 0 },
-  passkey:  { enabled: false, sessionDurationHours: 0 },
+  password: { enabled: false, sessionDurationHours: 720, passwordHash: '' },
+  totp:     { enabled: false, sessionDurationHours: 720 },
+  passkey:  { enabled: false, sessionDurationHours: 720 },
 };
 
 function getConfig(): UiAuthConfig {
@@ -275,7 +277,9 @@ function getSessionToken(req: Request): string | null {
   return fromCookie || fromHeader || null;
 }
 
-function issueSession(
+// Exported for tests (the 0-duration path once issued a 1-second session —
+// a lockout loop — and must stay a browser-session cookie).
+export function issueSession(
   cfg: UiAuthConfig,
   method: 'password' | 'totp' | 'passkey',
   req: Request,
@@ -291,15 +295,17 @@ function issueSession(
   const secure = req.secure;
 
   if (durationMs === 0) {
-    // Duration 0 → always require login; still issue a very short session so the
-    // current page load works, but it expires immediately (1 second).
+    // Duration 0 → log in again when the browser closes: a cookie without
+    // maxAge lasts the browser session, capped server-side at 24 h. (This was
+    // once a 1-second session, which locked the user into an accept-password-
+    // then-bounce-back loop the moment they enabled login.)
     const token = randomBytes(32).toString('hex');
     cfg.sessionTokenHash = hashToken(token);
-    cfg.sessionExpiry    = new Date(Date.now() + 1000).toISOString();
+    cfg.sessionExpiry    = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
     cfg.sessionMethod    = method;
     saveConfig(cfg);
     res.cookie(SESSION_COOKIE_NAME, token, {
-      httpOnly: true, sameSite: 'lax', secure, maxAge: 1, path: '/',
+      httpOnly: true, sameSite: 'lax', secure, path: '/',
     });
     return;
   }

@@ -17,7 +17,7 @@ import { MiniToggle } from './shared';
 
 /** Small helper: session duration label */
 function sessionLabel(hours: number): string {
-  if (hours === 0) return 'Always require login';
+  if (hours === 0) return 'Session ends when browser closes';
   if (hours < 24) return `${hours}h session`;
   const days = hours / 24;
   return `${days}d session`;
@@ -56,7 +56,7 @@ function SessionDurationField({
           onKeyDown={(e) => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') { setRaw(String(value)); setEditing(false); } }}
           className="input-warm text-xs py-1 px-2 w-20"
         />
-        <span className="text-xs text-muted-foreground">hours (0 = always)</span>
+        <span className="text-xs text-muted-foreground">hours (0 = until browser closes)</span>
       </div>
     );
   }

@@ -22,7 +22,7 @@ process.env.DATABASE_PATH = path.join(
 const { runMigrations, getDb } = await import('../db/client.js');
 const { optionalAuth, apiKeyAuth, uiOnlyAuth, hashKey } =
   await import('../auth/middleware.js');
-const { uiAuthMiddleware } = await import('../api/ui-auth.js');
+const { uiAuthMiddleware, issueSession } = await import('../api/ui-auth.js');
 const { isReadEnabled, isSendEnabled, isApprovalRequired, requireRead } =
   await import('../api/permissions-utils.js');
 const schema = await import('../db/schema.js');
@@ -263,5 +263,52 @@ describe('permission toggles', () => {
     let called2 = false;
     middleware(uiReq, res2, () => { called2 = true; });
     expect(called2).toBe(true);
+  });
+});
+
+describe('issueSession', () => {
+  function cookieCapturingRes() {
+    const res = mockRes() as ReturnType<typeof mockRes> & {
+      cookies: Array<{ name: string; opts: Record<string, unknown> }>;
+    };
+    res.cookies = [];
+    res.cookie = ((name: string, _value: string, opts: Record<string, unknown>) => {
+      res.cookies.push({ name, opts });
+      return res;
+    }) as never;
+    return res;
+  }
+
+  function freshCfg(hours: number) {
+    return {
+      password: { enabled: true, sessionDurationHours: hours, passwordHash: '$2a$10$x' },
+      totp:     { enabled: false, sessionDurationHours: 0 },
+      passkey:  { enabled: false, sessionDurationHours: 0 },
+    };
+  }
+
+  it('duration 0 issues a browser-session cookie, not a 1-second lockout', () => {
+    const cfg = freshCfg(0);
+    const res = cookieCapturingRes();
+    issueSession(cfg as never, 'password', mockReq() as never, res as never);
+
+    const session = res.cookies.find((c) => c.name === 'conduit-session');
+    expect(session).toBeDefined();
+    // No maxAge → the cookie lives until the browser closes
+    expect(session!.opts.maxAge).toBeUndefined();
+    // Server-side expiry is a real window (~24 h), not 1 second
+    const cfgAfter = cfg as unknown as { sessionExpiry?: string; sessionTokenHash?: string };
+    expect(cfgAfter.sessionTokenHash).toBeTruthy();
+    const msLeft = new Date(cfgAfter.sessionExpiry!).getTime() - Date.now();
+    expect(msLeft).toBeGreaterThan(23 * 60 * 60 * 1000);
+  });
+
+  it('positive duration sets maxAge and matching server expiry', () => {
+    const cfg = freshCfg(24);
+    const res = cookieCapturingRes();
+    issueSession(cfg as never, 'password', mockReq() as never, res as never);
+
+    const session = res.cookies.find((c) => c.name === 'conduit-session');
+    expect(session!.opts.maxAge).toBe(24 * 60 * 60 * 1000);
   });
 });
