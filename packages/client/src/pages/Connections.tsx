@@ -13,7 +13,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  LayoutGrid, Server, Bot, Zap, Shield, Bell, Lock, Palette,
+  LayoutGrid, Server, Bot, Zap, Shield, Bell, Lock, Palette, Cloud,
   ChevronRight, RefreshCw, AlertTriangle,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -31,6 +31,7 @@ import { ObsidianVaultTab } from '@/components/settings/ObsidianTab';
 import { GoogleDriveTab } from '@/components/settings/GoogleDriveTab';
 import { SmbSharesTab } from '@/components/settings/SmbTab';
 import { AgentAccessTab } from '@/components/settings/AgentAccessTab';
+import { CloudBridgeTab } from '@/components/settings/CloudBridgeTab';
 import { InstallTab } from '@/components/settings/InstallTab';
 import { PermissionsTab } from '@/components/settings/PermissionsTab';
 import { NotificationsTab } from '@/components/settings/NotificationsTab';
@@ -45,7 +46,7 @@ const PANE_IDS = [
   'overview',
   'slack', 'discord', 'telegram', 'twitter', 'google',
   'notion', 'obsidian', 'drive', 'smb',
-  'agents', 'install',
+  'agents', 'cloud', 'install',
   'permissions', 'notifications', 'security', 'appearance',
 ] as const;
 type PaneId = typeof PANE_IDS[number];
@@ -88,6 +89,7 @@ const PANES: Record<PaneId, PaneMeta> = {
   drive:         { title: 'Google Drive',   sub: 'Browse, read, and edit Drive files with your Google account', service: 'gdrive' },
   smb:           { title: 'Network Shares', sub: 'Windows / Samba shares for file reading and writing',      icon: Server },
   agents:        { title: 'Agent Access',   sub: 'API keys and the REST surface your agents call',           icon: Bot },
+  cloud:         { title: 'Cloud Bridge',   sub: 'Outbound connection to a remote orchestrator (e.g. a hosted CRM)', icon: Cloud },
   install:       { title: 'Install Skill',  sub: 'Teach any agent the Conduit API in one paste',             icon: Zap },
   permissions:   { title: 'Permissions',    sub: 'What you and each API key can do, per service',            icon: Shield },
   notifications: { title: 'Notifications',  sub: 'Sounds and alerts for each event type',                    icon: Bell },
@@ -99,7 +101,7 @@ const NAV_GROUPS: Array<{ label: string | null; items: PaneId[] }> = [
   { label: null,        items: ['overview'] },
   { label: 'Channels',  items: ['slack', 'discord', 'telegram', 'twitter', 'google'] },
   { label: 'Knowledge', items: ['notion', 'obsidian', 'drive', 'smb'] },
-  { label: 'Agents',    items: ['agents', 'install'] },
+  { label: 'Agents',    items: ['agents', 'cloud', 'install'] },
   { label: 'Workspace', items: ['permissions', 'notifications', 'security', 'appearance'] },
 ];
 
@@ -442,6 +444,7 @@ export default function Connections() {
       case 'drive':         return <div className="card-warm p-4 sm:p-5"><GoogleDriveTab /></div>;
       case 'smb':           return <div className="card-warm p-4 sm:p-5"><SmbSharesTab /></div>;
       case 'agents':        return <div className="card-warm p-4 sm:p-5"><AgentAccessTab /></div>;
+      case 'cloud':         return <div className="card-warm p-4 sm:p-5"><CloudBridgeTab /></div>;
       case 'install':       return <div className="card-warm p-4 sm:p-5"><InstallTab /></div>;
       case 'permissions':   return <div className="card-warm p-4 sm:p-5"><PermissionsTab /></div>;
       case 'notifications': return <div className="card-warm p-4 sm:p-5"><NotificationsTab /></div>;
