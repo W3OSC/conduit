@@ -269,11 +269,11 @@ describe('permission toggles', () => {
 describe('issueSession', () => {
   function cookieCapturingRes() {
     const res = mockRes() as ReturnType<typeof mockRes> & {
-      cookies: Array<{ name: string; opts: Record<string, unknown> }>;
+      cookies: Array<{ name: string; value: string; opts: Record<string, unknown> }>;
     };
     res.cookies = [];
-    res.cookie = ((name: string, _value: string, opts: Record<string, unknown>) => {
-      res.cookies.push({ name, opts });
+    res.cookie = ((name: string, value: string, opts: Record<string, unknown>) => {
+      res.cookies.push({ name, value, opts });
       return res;
     }) as never;
     return res;
@@ -310,5 +310,53 @@ describe('issueSession', () => {
 
     const session = res.cookies.find((c) => c.name === 'conduit-session');
     expect(session!.opts.maxAge).toBe(24 * 60 * 60 * 1000);
+  });
+
+  // The original lockout had TWO halves: issuance (1-second session) and
+  // validation (isSessionValid rejected any duration-0 session outright).
+  // Only the full round trip catches the second half.
+  it('a duration-0 session is ACCEPTED by uiAuthMiddleware right after issue', () => {
+    const cfg = freshCfg(0);
+    const res = cookieCapturingRes();
+    // issueSession persists cfg (with the session hash) to the settings table,
+    // which is exactly what uiAuthMiddleware reads back.
+    issueSession(cfg as never, 'password', mockReq() as never, res as never);
+    const token = res.cookies.find((c) => c.name === 'conduit-session')!.value;
+
+    const req = mockReq({ cookies: { 'conduit-session': token } });
+    const mres = mockRes();
+    let called = false;
+    uiAuthMiddleware(req, mres, () => { called = true; });
+    expect(called).toBe(true);
+  });
+
+  it('a positive-duration session round-trips too', () => {
+    const cfg = freshCfg(24);
+    const res = cookieCapturingRes();
+    issueSession(cfg as never, 'password', mockReq() as never, res as never);
+    const token = res.cookies.find((c) => c.name === 'conduit-session')!.value;
+
+    const req = mockReq({ cookies: { 'conduit-session': token } });
+    const mres = mockRes();
+    let called = false;
+    uiAuthMiddleware(req, mres, () => { called = true; });
+    expect(called).toBe(true);
+  });
+
+  it('garbage tokens are still rejected', () => {
+    const req = mockReq({ cookies: { 'conduit-session': 'not-a-real-token' } });
+    const mres = mockRes();
+    let called = false;
+    uiAuthMiddleware(req, mres, () => { called = true; });
+    expect(called).toBe(false);
+    expect(mres.statusCode).toBe(401);
+  });
+
+  it('/api/health stays reachable while logged out (container healthchecks)', () => {
+    const req = mockReq({ path: '/api/health' });
+    const mres = mockRes();
+    let called = false;
+    uiAuthMiddleware(req, mres, () => { called = true; });
+    expect(called).toBe(true);
   });
 });
