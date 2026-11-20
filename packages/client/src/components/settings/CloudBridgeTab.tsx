@@ -99,8 +99,9 @@ export function CloudBridgeTab() {
           <p className="text-xs text-muted-foreground leading-relaxed mt-0.5">
             Connect this Conduit to a remote orchestrator (for example a hosted Meridian CRM). Conduit
             dials out over one WebSocket, so the remote service can route messaging — and, when the
-            Claude CLI is installed here, AI work — through this machine without any inbound access to
-            your network. Mint the token on the orchestrator (Meridian: Settings → Devices).
+            AI runner is enabled (Settings → Agent Access), AI work — through this machine without any
+            inbound access to your network. Mint the token on the orchestrator (Meridian: Settings →
+            Devices), or paste the connect blob Meridian shows you into the URL field below.
           </p>
         </div>
       </div>
