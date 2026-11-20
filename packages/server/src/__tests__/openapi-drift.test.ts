@@ -150,6 +150,7 @@ const SPEC_OMISSIONS: readonly string[] = [
   '/permissions',               // setup: the very permissions that gate agents
   '/settings',                  // UI: app-level preferences
   '/cloud-agent',               // UI: cloud-bridge config/status (token never exposed)
+  '/ai-runner',                 // UI: AI-runner config/status (token never exposed)
   '/audit-log',                 // UI: operator audit trail
   '/metrics',                   // UI: dashboard charts
   '/test',                      // UI: per-service connection smoke tests

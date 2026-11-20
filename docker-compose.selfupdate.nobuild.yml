@@ -28,6 +28,10 @@ services:
       - PORT=3101
       # - CONDUIT_REPO=https://github.com/you/conduit.git
       # - CONDUIT_AUTO_UPDATE=0
+      # AI runner: a Claude Code CLI is auto-installed into the data volume;
+      # paste a setup token in Settings → Agent Access (or set it here):
+      # - CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+      # - CONDUIT_INSTALL_CLAUDE_CLI=0
     restart: unless-stopped
     # $$ keeps compose from interpolating — the shell resolves these at runtime.
     entrypoint:

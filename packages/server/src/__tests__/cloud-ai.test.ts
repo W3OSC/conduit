@@ -23,6 +23,7 @@ import {
   NO_TOOLS,
   parseAiJobFrame,
   probeClaudeCli,
+  probeClaudeVersion,
   RESEARCH_ALLOWED_TOOLS,
   RESEARCH_DISALLOWED_TOOLS,
   resolveClaudeBin,
@@ -372,17 +373,20 @@ describe('executeAiJob', () => {
 });
 
 describe('probeClaudeCli', () => {
-  it('true on exit 0, false on nonzero exit or spawn error, false on hang (timeout)', async () => {
+  it('true on exit 0 (version captured), false on nonzero exit or spawn error, false on hang (timeout)', async () => {
     const ok = new FakeChild();
     spawnMock.mockImplementationOnce(() => {
-      queueMicrotask(() => ok.emit('exit', 0));
+      queueMicrotask(() => {
+        ok.stdout.emit('data', Buffer.from('9.9.9 (Claude Code)\n'));
+        ok.emit('close', 0);
+      });
       return ok as unknown as ReturnType<typeof spawn>;
     });
-    await expect(probeClaudeCli('claude-fake')).resolves.toBe(true);
+    await expect(probeClaudeVersion('claude-fake')).resolves.toBe('9.9.9 (Claude Code)');
 
     const bad = new FakeChild();
     spawnMock.mockImplementationOnce(() => {
-      queueMicrotask(() => bad.emit('exit', 1));
+      queueMicrotask(() => bad.emit('close', 1));
       return bad as unknown as ReturnType<typeof spawn>;
     });
     await expect(probeClaudeCli('claude-fake')).resolves.toBe(false);

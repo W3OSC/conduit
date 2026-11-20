@@ -109,6 +109,24 @@ export interface CloudAgentStatus {
   tokenSet: boolean;
 }
 
+/** GET/PUT/DELETE /api/ai-runner — the stored token itself is never returned. */
+export interface AiRunnerStatus {
+  enabled: boolean;
+  bin: string;
+  binSource: 'env' | 'settings' | 'default';
+  tokenSet: boolean;
+  tokenSource: 'env' | 'settings' | 'default';
+  cliAvailable: boolean;
+  cliVersion: string | null;
+}
+
+export interface AiRunnerTestResult {
+  ok: boolean;
+  cliVersion?: string | null;
+  errorKind?: string;
+  error?: string;
+}
+
 export const uiAuth = {
   status: () => uiAuthRequest<UiAuthStatus>('/status'),
   config: () => uiAuthRequest<UiAuthConfig>('/config'),
@@ -277,6 +295,13 @@ export const api = {
   cloudAgentConfigure: (body: { url: string; token?: string; ownerEmail?: string; enabled?: boolean }) =>
     request<CloudAgentStatus>('/cloud-agent', { method: 'PUT', body: JSON.stringify(body) }),
   cloudAgentClear: () => request<CloudAgentStatus>('/cloud-agent', { method: 'DELETE' }),
+
+  // AI runner (serves cloud `ai` jobs via the local Claude Code CLI)
+  aiRunnerStatus: () => request<AiRunnerStatus>('/ai-runner'),
+  aiRunnerConfigure: (body: { token?: string; claudeBin?: string; enabled?: boolean }) =>
+    request<AiRunnerStatus>('/ai-runner', { method: 'PUT', body: JSON.stringify(body) }),
+  aiRunnerClear: () => request<AiRunnerStatus>('/ai-runner', { method: 'DELETE' }),
+  aiRunnerTest: () => request<AiRunnerTestResult>('/ai-runner/test', { method: 'POST' }),
 
   // Credentials
   credentials: () => request<CredentialsResponse>('/credentials'),

@@ -190,6 +190,8 @@ Conduit has no configuration files. All credentials are entered through the web 
 | `CLOUD_AGENT_TOKEN` | _(unset)_ | Device bearer token for the cloud-agent connection |
 | `CLOUD_AGENT_OWNER_EMAIL` | _(unset)_ | Advisory email sent in `hello`; the cloud-side device row is authoritative |
 | `CLOUD_AGENT_ENABLED` | _(unset)_ | Defaults to enabled once URL + token are both set; `0`/`false` forces it off |
+| `CLOUD_AGENT_CLAUDE_BIN` | `claude` on PATH | Claude Code CLI binary the [AI runner](#ai-runner) spawns. Env wins over the in-app setting; the self-updating container auto-discovers its own install |
+| `CLAUDE_CODE_OAUTH_TOKEN` | _(unset)_ | Setup token (`claude setup-token`) for the AI runner on hosts without a `claude /login` session. Env wins over the in-app setting |
 
 ---
 
@@ -228,6 +230,29 @@ key minted locally (Settings → Permissions shows it like any other key) —
 and a slimmed stream of outbox/message events is relayed back to accelerate
 the remote's polling. The connection reconnects forever with exponential
 backoff (1 → 16 min, capped) if it drops.
+
+### AI runner
+
+When the bridge is connected, the orchestrator can also route its AI work
+here as `kind:"ai"` jobs: Conduit shells out to a local
+[Claude Code](https://claude.com/claude-code) CLI and ships the result back —
+so a hosted service can use *your* AI session instead of holding its own
+credentials. The `ai` capability is advertised in `hello` only when the CLI
+probe succeeds and the runner is enabled.
+
+Configure it in **Settings → Agent Access** or via `/api/ai-runner`
+(GET status / PUT `{token, claudeBin, enabled}` / DELETE / POST `/test` runs
+one real end-to-end CLI call). Auth resolves in order:
+
+1. `CLAUDE_CODE_OAUTH_TOKEN` env var (env-managed, read-only in the UI)
+2. A setup token stored in-app (from `claude setup-token` on any logged-in
+   machine — the token is held on the settings sensitive list and never
+   returned by any API)
+3. Neither: the CLI rides this machine's own `claude /login` session
+
+The self-updating container installs the CLI into its data volume
+automatically (skip with `CONDUIT_INSTALL_CLAUDE_CLI=0`), so a containerized
+Conduit only needs a setup token pasted in the UI to start serving AI.
 
 A job may mark itself `"auth":"none"`, in which case it runs without that
 API key attached — required for routes behind `uiOnlyAuth` (e.g.

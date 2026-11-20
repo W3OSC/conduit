@@ -25,6 +25,10 @@ services:
       - PORT=3101
       # Point at a fork to follow it instead (only used for the initial clone):
       # - CONDUIT_REPO=https://github.com/you/conduit.git
+      # AI runner: a Claude Code CLI is auto-installed into the data volume;
+      # paste a setup token in Settings → Agent Access (or set it here):
+      # - CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+      # - CONDUIT_INSTALL_CLAUDE_CLI=0
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3101/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
