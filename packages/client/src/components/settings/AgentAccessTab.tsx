@@ -169,8 +169,9 @@ function AiRunnerPanel() {
       </div>
       <div className="p-3 space-y-3">
         <p className="text-xs text-muted-foreground leading-relaxed">
-          When a remote orchestrator is connected via the cloud bridge, it can run its AI work through
-          this machine&rsquo;s Claude Code CLI. By default the runner rides this machine&rsquo;s own{' '}
+          When a remote orchestrator is connected via the cloud bridge (Settings → Cloud Bridge), it
+          can run its AI work through this machine&rsquo;s Claude Code CLI. By default the runner rides
+          this machine&rsquo;s own{' '}
           <code className="font-mono text-[11px]">claude /login</code> session; headless installs
           (e.g. the Docker container) paste a setup token instead.
         </p>
