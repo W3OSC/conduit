@@ -22,6 +22,16 @@ export interface TelegramCodeSent {
   nextVia?: Exclude<TelegramDelivery, 'unknown'> | null;
 }
 
+/** Poll result of the Telegram QR login flow. */
+export interface TelegramQrStatus {
+  status: 'idle' | 'waiting' | 'password' | 'done' | 'error';
+  /** base64url login token; QR payload is `tg://login?token=<token>` */
+  token?: string | null;
+  /** 2FA password hint, present when status === 'password' */
+  hint?: string;
+  error?: string;
+}
+
 /**
  * Error thrown by `request` for non-2xx responses, carrying the HTTP status
  * and, for 429s, the server's retryAfter (seconds) so UIs can count down.
@@ -349,6 +359,20 @@ export const api = {
     request<{ success: boolean; status: unknown }>('/connections/telegram/auth/check-password', {
       method: 'POST', body: JSON.stringify({ password }),
     }),
+
+  // Telegram QR login (Link Desktop Device — no code delivery involved)
+  telegramQrStart: (apiId: string, apiHash: string) =>
+    request<{ success: boolean }>('/connections/telegram/auth/qr/start', {
+      method: 'POST', body: JSON.stringify({ apiId, apiHash }),
+    }),
+  telegramQrStatus: () =>
+    request<TelegramQrStatus>('/connections/telegram/auth/qr/status'),
+  telegramQrPassword: (password: string) =>
+    request<{ success: boolean }>('/connections/telegram/auth/qr/password', {
+      method: 'POST', body: JSON.stringify({ password }),
+    }),
+  telegramQrCancel: () =>
+    request<{ success: boolean }>('/connections/telegram/auth/qr/cancel', { method: 'POST' }),
 
   // Raw (unredacted) credentials for Settings page
   credentialsRaw: (service: string) =>

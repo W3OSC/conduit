@@ -16,6 +16,7 @@ import keysRouter from './keys.js';
 import testRouter from './test.js';
 import credentialsRouter from './credentials.js';
 import telegramAuthRouter from './telegram-auth.js';
+import telegramQrRouter from './telegram-qr.js';
 import serviceDataRouter from './service-data.js';
 import contactsRouter from './contacts.js';
 import identityRouter from './identity.js';
@@ -163,6 +164,7 @@ router.use('/keys', keysRouter);
 router.use('/test', testRouter);
 router.use('/credentials', credentialsRouter);
 router.use('/connections/telegram/auth', telegramAuthRouter);
+router.use('/connections/telegram/auth', telegramQrRouter);
 // identityRouter adds POST /contacts/resolve and GET /contacts/:source/:platformId/chats;
 // contactsRouter is tried first and has no conflicting patterns.
 router.use('/contacts', identityRouter);

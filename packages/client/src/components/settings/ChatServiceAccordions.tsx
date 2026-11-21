@@ -4,8 +4,9 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   ChevronDown, Eye, EyeOff, RefreshCw, Loader2, CheckCircle2, XCircle, AlertTriangle, Database,
   Key, Copy, Check, Send, Server, Shield, Settings, PlugZap, UserCircle2, Clock, Users,
-  ExternalLink, ListFilter, Search, Lock, Hash,
+  ExternalLink, ListFilter, Search, Lock, Hash, QrCode,
 } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import {
   api, ApiError, type DiscordGuildInfo, type Permission, type ContactCriteria,
 } from '@/lib/api';
@@ -332,7 +333,7 @@ function OverviewSection({ service, testSteps, testRunning, runTest, clearTestSt
 // Section: Credentials
 // ─────────────────────────────────────────────────────────────────────────────
 
-type TgStep = 'creds' | 'otp' | 'password' | 'done';
+type TgStep = 'creds' | 'otp' | 'password' | 'qr' | 'done';
 
 interface TelegramOTPFlowProps {
   onDone: () => void;
@@ -467,12 +468,116 @@ function TelegramOTPFlow({ onDone, savedApiId = '', savedApiHash = '', savedPhon
     onError: (e: Error) => setTwoFaErr(e.message),
   });
 
+  // ── QR login (Link Desktop Device) — no code delivery involved ──────────────
+  const [qrPw, setQrPw] = useState('');
+
+  const qrStatus = useQuery({
+    queryKey: ['telegram-qr-status'],
+    queryFn: api.telegramQrStatus,
+    enabled: step === 'qr',
+    refetchInterval: step === 'qr' ? 1500 : false,
+  });
+
+  const startQr = useMutation({
+    mutationFn: async () => {
+      if (hasChanges) await saveCreds.mutateAsync();
+      return api.telegramQrStart(apiId, apiHash);
+    },
+    onSuccess: () => { setQrPw(''); setStep('qr'); qrStatus.refetch(); },
+    onError: (e: Error) => toast({ title: 'Could not start QR login', description: e.message, variant: 'destructive' }),
+  });
+
+  const qrPassword = useMutation({
+    mutationFn: () => api.telegramQrPassword(qrPw),
+    onSuccess: () => { setQrPw(''); qrStatus.refetch(); },
+    onError: (e: Error) => toast({ title: 'Password not accepted', description: e.message, variant: 'destructive' }),
+  });
+
+  const cancelQr = () => {
+    api.telegramQrCancel().catch(() => {});
+    setStep('creds');
+  };
+
+  // The server flips to 'done' once the scan (and 2FA) completes.
+  useEffect(() => {
+    if (step === 'qr' && qrStatus.data?.status === 'done') {
+      setStep('done');
+      toast({ title: 'Telegram authenticated', variant: 'success' });
+      onDone();
+    }
+  }, [step, qrStatus.data?.status]);
+
   if (step === 'done') return (
     <div className="flex items-center gap-2 text-emerald-400 text-sm">
       <CheckCircle2 className="w-4 h-4" />
       Authenticated — session stored in database
     </div>
   );
+
+  if (step === 'qr') {
+    const qs = qrStatus.data;
+    return (
+      <div className="space-y-3">
+        {qs?.status === 'password' ? (
+          <>
+            <div className="flex items-center gap-2 rounded-xl border border-primary/20 bg-primary/5 px-3 py-2.5">
+              <AlertTriangle className="w-4 h-4 text-primary flex-shrink-0" />
+              <p className="text-xs text-primary">
+                Scanned. Two-factor authentication is enabled — enter your Telegram cloud password to finish.
+                {qs.hint ? <> Hint: <span className="font-medium">{qs.hint}</span></> : null}
+              </p>
+            </div>
+            <SecretField label="Cloud Password" value={qrPw} onChange={setQrPw} placeholder="Your Telegram 2FA password" />
+            {qs.error && <p className="text-xs text-red-400">{qs.error} — try again.</p>}
+            <div className="flex gap-2">
+              <button onClick={cancelQr} className="btn-secondary text-xs flex-1">Cancel</button>
+              <button
+                onClick={() => qrPassword.mutate()}
+                disabled={!qrPw || qrPassword.isPending}
+                className="btn-primary text-xs flex-1"
+              >
+                {qrPassword.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                Confirm Password
+              </button>
+            </div>
+          </>
+        ) : qs?.status === 'error' || qs?.status === 'idle' ? (
+          <>
+            <p className="text-xs text-red-400">
+              {qs.status === 'idle' ? 'The QR session expired.' : `QR login failed: ${qs.error || 'unknown error'}`}
+            </p>
+            <div className="flex gap-2">
+              <button onClick={cancelQr} className="btn-secondary text-xs flex-1">Back</button>
+              <button onClick={() => startQr.mutate()} disabled={startQr.isPending} className="btn-primary text-xs flex-1">
+                Try again
+              </button>
+            </div>
+          </>
+        ) : qs?.status === 'waiting' && qs.token ? (
+          <>
+            <p className="text-xs text-muted-foreground">
+              Open Telegram on your phone → <span className="text-foreground font-medium">Settings → Devices → Link Desktop Device</span>, then scan:
+            </p>
+            <div className="flex justify-center">
+              <div className="rounded-xl bg-white p-3">
+                <QRCodeSVG value={`tg://login?token=${qs.token}`} size={176} />
+              </div>
+            </div>
+            <p className="text-[11px] text-muted-foreground text-center">
+              The code refreshes automatically. No login code is sent — nothing to wait for.
+            </p>
+            <button onClick={cancelQr} className="btn-secondary text-xs w-full">Cancel</button>
+          </>
+        ) : (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            {qs?.status === 'waiting' ? 'Verifying…' : 'Preparing QR code…'}
+            <button onClick={cancelQr} className="ml-auto text-primary hover:underline">Cancel</button>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   if (step === 'otp') return (
     <div className="space-y-3">
@@ -600,7 +705,7 @@ function TelegramOTPFlow({ onDone, savedApiId = '', savedApiHash = '', savedPhon
             </ul>
           </li>
           <li>Click <strong className="text-foreground/80">Create application</strong> — your <strong className="text-foreground/80">App api_id</strong> (a number) and <strong className="text-foreground/80">App api_hash</strong> (a 32-character string) will appear on the page</li>
-          <li>Paste them below along with your phone number, then click <strong className="text-foreground/80">Send Code</strong> — Telegram will send a login code to your Telegram app</li>
+          <li>Paste them below, then click <strong className="text-foreground/80">Link with QR Code</strong> and scan from your phone — or enter your phone number and use <strong className="text-foreground/80">Send Code</strong></li>
         </ol>
         <p className="text-[11px] text-primary/80 flex items-start gap-1.5 pt-1 border-t border-border/40">
           <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
@@ -620,16 +725,29 @@ function TelegramOTPFlow({ onDone, savedApiId = '', savedApiHash = '', savedPhon
           </p>
         </div>
       )}
-      <button
-        onClick={handleSendCode}
-        disabled={!apiId || !apiHash || !phone || isBusy || cooldownActive}
-        className="btn-primary text-xs"
-      >
-        {isBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-        {cooldownActive
-          ? `Retry in ${cooldownLeft}s`
-          : hasChanges ? 'Save & Send Code' : 'Send Code'}
-      </button>
+      <div className="flex gap-2">
+        <button
+          onClick={() => startQr.mutate()}
+          disabled={!apiId || !apiHash || startQr.isPending || isBusy}
+          className="btn-primary text-xs flex-1"
+        >
+          {startQr.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <QrCode className="w-3.5 h-3.5" />}
+          Link with QR Code
+        </button>
+        <button
+          onClick={handleSendCode}
+          disabled={!apiId || !apiHash || !phone || isBusy || cooldownActive || startQr.isPending}
+          className="btn-secondary text-xs flex-1"
+        >
+          {isBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+          {cooldownActive
+            ? `Retry in ${cooldownLeft}s`
+            : hasChanges ? 'Save & Send Code' : 'Send Code'}
+        </button>
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        QR is the reliable option: scan from your phone's Telegram (Settings → Devices → Link Desktop Device) — no login code to wait for. Phone number is only needed for the code method.
+      </p>
     </div>
   );
 }
