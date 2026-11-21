@@ -12,6 +12,16 @@ function getCsrfToken(): string | null {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+export type TelegramDelivery = 'app' | 'sms' | 'call' | 'email' | 'unknown';
+
+/** Response of telegram send-code/resend: where the code went and what's next. */
+export interface TelegramCodeSent {
+  success: boolean;
+  sentTo?: TelegramDelivery;
+  resendIn?: number;
+  nextVia?: Exclude<TelegramDelivery, 'unknown'> | null;
+}
+
 /**
  * Error thrown by `request` for non-2xx responses, carrying the HTTP status
  * and, for 429s, the server's retryAfter (seconds) so UIs can count down.
@@ -319,19 +329,18 @@ export const api = {
   aiRunnerTest: () => request<AiRunnerTestResult>('/ai-runner/test', { method: 'POST' }),
 
   // Credentials
-  credentials: () => request<CredentialsResponse>('/credentials'),
-  updateCredentials: (service: string, creds: Record<string, string>) =>
+  credentials: () => request<CredentialsResponse>('/credentials'),  updateCredentials: (service: string, creds: Record<string, string>) =>
     request<Record<string, unknown>>(`/credentials/${service}`, { method: 'PUT', body: JSON.stringify(creds) }),
 
   // Telegram OTP auth
   telegramSendCode: (apiId: string, apiHash: string, phone: string) =>
-    request<{
-      success: boolean;
-      sentTo?: 'app' | 'sms' | 'call' | 'email' | 'unknown';
-      resendIn?: number;
-    }>('/connections/telegram/auth/send-code', {
+    request<TelegramCodeSent>('/connections/telegram/auth/send-code', {
       method: 'POST', body: JSON.stringify({ apiId, apiHash, phone }),
     }),
+  // Escalate the pending sign-in to Telegram's next delivery method
+  // (app → sms → call). 410 = flow expired, start over from send-code.
+  telegramResendCode: () =>
+    request<TelegramCodeSent>('/connections/telegram/auth/resend', { method: 'POST' }),
   telegramSignIn: (code: string) =>
     request<{ success: boolean; passwordRequired?: boolean; status: unknown }>('/connections/telegram/auth/sign-in', {
       method: 'POST', body: JSON.stringify({ code }),
