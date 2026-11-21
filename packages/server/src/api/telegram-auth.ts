@@ -34,6 +34,7 @@ const router = Router();
 interface PendingTelegramAuth {
   client: TelegramClient;
   phoneCodeHash: string;
+  phone: string;
   lockedAt: number; // timestamp — auto-expires after 5 minutes
 }
 
@@ -68,6 +69,19 @@ function deliveryTarget(typeName: string): 'app' | 'sms' | 'call' | 'email' | 'u
   if (typeName.includes('Call')) return 'call';
   if (typeName.includes('Email')) return 'email';
   return 'unknown';
+}
+
+/**
+ * The escalation Telegram offers after the current delivery (auth.SentCode's
+ * nextType — what auth.ResendCode will switch to), or null when there is none.
+ * The initial channel is always Telegram's choice; third-party apps can only
+ * walk this chain, never request SMS/email outright.
+ */
+function nextDelivery(result: { nextType?: unknown }): 'app' | 'sms' | 'call' | 'email' | null {
+  const name = (result.nextType as { className?: string } | undefined)?.className;
+  if (!name) return null;
+  const via = deliveryTarget(name);
+  return via === 'unknown' ? null : via;
 }
 
 /**
@@ -137,14 +151,14 @@ router.post('/send-code', optionalAuth, async (req, res) => {
         `nextType=${(result.nextType as { className?: string } | undefined)?.className ?? 'none'} ` +
         `timeout=${result.timeout ?? 'n/a'} hash=set`
     );
-    pendingAuth = { client, phoneCodeHash: result.phoneCodeHash, lockedAt: Date.now() };
+    pendingAuth = { client, phoneCodeHash: result.phoneCodeHash, phone, lockedAt: Date.now() };
     noteCooldown(phone, resendIn, 'resend');
 
     // Persist credentials immediately so the flow survives a page reload
     const existing = (getCreds('telegram') || {}) as TelegramCreds;
     setCreds('telegram', { ...existing, apiId, apiHash, phone });
 
-    res.json({ success: true, sentTo, resendIn });
+    res.json({ success: true, sentTo, resendIn, nextVia: nextDelivery(result) });
   } catch (e) {
     console.error('[telegram-auth] sendCode failed:', e);
 
@@ -160,6 +174,75 @@ router.post('/send-code', optionalAuth, async (req, res) => {
       return res.status(400).json({
         error: 'Telegram rejected this phone number. Use full international format, e.g. +15551234567.',
       });
+    }
+
+    res.status(500).json({ error: msg });
+  }
+});
+
+// ── Resend via the next delivery method ───────────────────────────────────────
+//
+// auth.ResendCode is Telegram's official "Didn't get the code?" escalation: it
+// re-delivers the SAME login attempt via the SentCode.nextType channel
+// (app → sms → call). It is the only way a third-party app can reach SMS —
+// the initial channel is always Telegram's choice. 410 means the flow died
+// and the UI must start over from /send-code.
+
+router.post('/resend', optionalAuth, async (req, res) => {
+  if (!pendingAuth || isExpired()) {
+    await clearPending();
+    return res.status(410).json({ error: 'The sign-in attempt expired — send a new code first.' });
+  }
+
+  const { client, phoneCodeHash, phone } = pendingAuth;
+
+  const cd = cooldownRemaining(phone);
+  if (cd.seconds > 0 && cd.reason) {
+    return res.status(429).json({ error: cooldownMessage(cd.reason, cd.seconds), retryAfter: cd.seconds });
+  }
+
+  try {
+    const result = await client.invoke(
+      new Api.auth.ResendCode({ phoneNumber: phone, phoneCodeHash })
+    );
+    if (!('phoneCodeHash' in result) || !result.phoneCodeHash) {
+      throw new Error(`Unexpected resendCode response: ${result.className}`);
+    }
+
+    const typeName = (result.type as { className?: string } | undefined)?.className ?? 'unknown';
+    const sentTo = deliveryTarget(typeName);
+    const resendIn = typeof result.timeout === 'number' && result.timeout > 0
+      ? result.timeout
+      : DEFAULT_RESEND_SECONDS;
+    console.log(
+      `[telegram-auth] resendCode ok — type=${typeName} ` +
+        `nextType=${(result.nextType as { className?: string } | undefined)?.className ?? 'none'} ` +
+        `timeout=${result.timeout ?? 'n/a'}`
+    );
+
+    // Telegram may rotate the hash on resend; sign-in must use the fresh one.
+    pendingAuth = { ...pendingAuth, phoneCodeHash: result.phoneCodeHash, lockedAt: Date.now() };
+    noteCooldown(phone, resendIn, 'resend');
+
+    res.json({ success: true, sentTo, resendIn, nextVia: nextDelivery(result) });
+  } catch (e) {
+    console.error('[telegram-auth] resendCode failed:', e);
+
+    const floodSeconds = floodWaitSeconds(e);
+    if (floodSeconds) {
+      noteCooldown(phone, floodSeconds, 'flood');
+      return res.status(429).json({ error: cooldownMessage('flood', floodSeconds), retryAfter: floodSeconds });
+    }
+
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes('SEND_CODE_UNAVAILABLE')) {
+      return res.status(400).json({
+        error: 'Telegram has no alternative delivery method for this number — the code already sent is still valid.',
+      });
+    }
+    if (msg.includes('PHONE_CODE_EXPIRED') || msg.includes('PHONE_CODE_HASH_EMPTY')) {
+      await clearPending();
+      return res.status(410).json({ error: 'The sign-in attempt expired — send a new code first.' });
     }
 
     res.status(500).json({ error: msg });

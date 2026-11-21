@@ -353,6 +353,8 @@ function TelegramOTPFlow({ onDone, savedApiId = '', savedApiHash = '', savedPhon
   const [twoFaErr, setTwoFaErr]     = useState('');
   const [showTwoFaPw, setShowTwoFaPw] = useState(false);
   const [sentTo, setSentTo] = useState<'app' | 'sms' | 'call' | 'email' | 'unknown'>('unknown');
+  // Telegram's offered escalation channel (auth.ResendCode target), if any.
+  const [nextVia, setNextVia] = useState<'app' | 'sms' | 'call' | 'email' | null>(null);
   // Resend/rate-limit window: Telegram only allows one code per phone per
   // window, so the button counts down instead of silently doing nothing.
   const [cooldownUntil, setCooldownUntil] = useState<number | null>(null);
@@ -398,6 +400,7 @@ function TelegramOTPFlow({ onDone, savedApiId = '', savedApiHash = '', savedPhon
     mutationFn: () => api.telegramSendCode(apiId, apiHash, phone),
     onSuccess: (res) => {
       setSentTo(res.sentTo ?? 'unknown');
+      setNextVia(res.nextVia ?? null);
       setRateLimitMsg('');
       startCooldown(res.resendIn ?? 60);
       setStep('otp');
@@ -409,6 +412,32 @@ function TelegramOTPFlow({ onDone, savedApiId = '', savedApiHash = '', savedPhon
         return;
       }
       toast({ title: 'Failed to send code', description: e.message, variant: 'destructive' });
+    },
+  });
+
+  // Escalate delivery of the SAME sign-in attempt (app → sms → call).
+  const resendVia = useMutation({
+    mutationFn: () => api.telegramResendCode(),
+    onSuccess: (res) => {
+      setSentTo(res.sentTo ?? 'unknown');
+      setNextVia(res.nextVia ?? null);
+      setRateLimitMsg('');
+      startCooldown(res.resendIn ?? 60);
+    },
+    onError: (e: Error) => {
+      if (e instanceof ApiError && e.status === 429) {
+        startCooldown(e.retryAfter ?? 60);
+        setRateLimitMsg(e.message);
+        return;
+      }
+      if (e instanceof ApiError && e.status === 410) {
+        // Flow expired server-side — restart cleanly from the creds step.
+        toast({ title: 'Sign-in attempt expired', description: 'Send a new code to start over.', variant: 'destructive' });
+        setNextVia(null);
+        setStep('creds');
+        return;
+      }
+      toast({ title: 'Could not switch delivery method', description: e.message, variant: 'destructive' });
     },
   });
 
@@ -454,6 +483,8 @@ function TelegramOTPFlow({ onDone, savedApiId = '', savedApiHash = '', savedPhon
           <>A code was sent via <span className="text-foreground font-medium">SMS</span> to <span className="text-foreground font-medium">{phone}</span> — delivery can take a couple of minutes.</>
         ) : sentTo === 'call' ? (
           <>Telegram will deliver the code via a <span className="text-foreground font-medium">phone call</span> to <span className="text-foreground font-medium">{phone}</span>.</>
+        ) : sentTo === 'email' ? (
+          <>A code was sent to the <span className="text-foreground font-medium">login email</span> configured on this Telegram account.</>
         ) : (
           <>A verification code was sent to your Telegram app for <span className="text-foreground font-medium">{phone}</span>.</>
         )}
@@ -464,15 +495,34 @@ function TelegramOTPFlow({ onDone, savedApiId = '', savedApiHash = '', savedPhon
       <p className="text-[11px] text-muted-foreground">
         Didn't get a code?{' '}
         {cooldownActive ? (
-          <span>Resend available in <span className="text-foreground font-medium tabular-nums">{cooldownLeft}s</span></span>
+          <span>More options in <span className="text-foreground font-medium tabular-nums">{cooldownLeft}s</span></span>
         ) : (
-          <button
-            onClick={() => sendCode.mutate()}
-            disabled={sendCode.isPending}
-            className="text-primary hover:underline disabled:opacity-50"
-          >
-            {sendCode.isPending ? 'Resending…' : 'Resend code'}
-          </button>
+          <>
+            {nextVia && (
+              <>
+                <button
+                  onClick={() => resendVia.mutate()}
+                  disabled={resendVia.isPending || sendCode.isPending}
+                  className="text-primary hover:underline disabled:opacity-50"
+                >
+                  {resendVia.isPending
+                    ? 'Switching…'
+                    : nextVia === 'sms' ? 'Send via SMS instead'
+                      : nextVia === 'call' ? 'Send via phone call instead'
+                        : nextVia === 'email' ? 'Send via email instead'
+                          : 'Resend to Telegram app'}
+                </button>
+                {' · '}
+              </>
+            )}
+            <button
+              onClick={() => sendCode.mutate()}
+              disabled={sendCode.isPending || resendVia.isPending}
+              className="text-primary hover:underline disabled:opacity-50"
+            >
+              {sendCode.isPending ? 'Resending…' : 'Send a new code'}
+            </button>
+          </>
         )}
       </p>
       <div className="flex gap-2">
