@@ -39,6 +39,7 @@ export class SlackSync {
   private channelCache = new Map<string, string>();
   private syncRunId: number | null = null;
   private _cancelRequested = false;
+  private lastRepliesCallAt = 0;
   public connected = false;
   public accountInfo: {
     userId: string; displayName: string;
@@ -268,7 +269,8 @@ export class SlackSync {
         const latestReply = (msg as { latest_reply?: string }).latest_reply;
         const repliesAreNew = !sinceEpoch
           || (latestReply ? parseFloat(latestReply) >= parseFloat(sinceEpoch) : true);
-        if (msg.thread_ts === ts && replyCount > 0 && repliesAreNew) {
+        if (msg.thread_ts === ts && replyCount > 0 && repliesAreNew
+          && !this.threadUpToDate(channelId, ts, latestReply)) {
           saved += await this.backfillThreadReplies(channelId, channelName, ts);
           await sleep(200);
         }
@@ -309,6 +311,33 @@ export class SlackSync {
   }
 
   /**
+   * True when every reply Slack reports for a thread is already stored, so
+   * the conversations.replies walk can be skipped. Without this, every boot's
+   * catch-up sync re-walked EVERY thread it paged over — the burst behind the
+   * "rate limit was exceeded (conversations.replies)" log spam.
+   */
+  private threadUpToDate(channelId: string, rootTs: string, latestReply?: string): boolean {
+    if (!latestReply) return false;
+    const row = getDb().select({ max: sql<string | null>`MAX(${slackMessages.messageId})` })
+      .from(slackMessages)
+      .where(and(eq(slackMessages.channelId, channelId), eq(slackMessages.threadTs, rootTs)))
+      .get();
+    return !!row?.max && parseFloat(row.max) >= parseFloat(latestReply);
+  }
+
+  /**
+   * Space out conversations.replies calls instance-wide. Slack rate-limits
+   * this method aggressively for non-Marketplace apps; the SDK does retry on
+   * 429, but each burst still stalls sync for the full retry-after window.
+   */
+  private async paceReplies(): Promise<void> {
+    const REPLIES_MIN_GAP_MS = 1200;
+    const wait = this.lastRepliesCallAt + REPLIES_MIN_GAP_MS - Date.now();
+    if (wait > 0) await sleep(wait);
+    this.lastRepliesCallAt = Date.now();
+  }
+
+  /**
    * Store a threaded root's replies (catch-up path; the realtime handler
    * receives replies as ordinary message events). Insert-only, conflict-safe.
    */
@@ -322,6 +351,7 @@ export class SlackSync {
     let cursor: string | undefined;
     try {
       do {
+        await this.paceReplies();
         const res = await this.client.conversations.replies({
           channel: channelId, ts: rootTs, limit: 200, ...(cursor ? { cursor } : {}),
         });
@@ -665,6 +695,7 @@ export class SlackSync {
     const raw: Array<{ ts?: string; thread_ts?: string; user?: string; bot_id?: string; text?: string; type?: string; username?: string }> = [];
     let cursor: string | undefined;
     do {
+      await this.paceReplies();
       const res = await this.client.conversations.replies({
         channel: channelId, ts: threadTs, limit: 200, ...(cursor ? { cursor } : {}),
       });

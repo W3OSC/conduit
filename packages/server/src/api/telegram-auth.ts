@@ -21,6 +21,9 @@ import { LogLevel } from 'telegram/extensions/Logger.js';
 import { optionalAuth } from '../auth/middleware.js';
 import { getCreds, setCreds, type TelegramCreds } from './credentials.js';
 import { getConnectionManager } from '../connections/manager.js';
+import {
+  cooldownRemaining, noteCooldown, floodWaitSeconds, cooldownMessage,
+} from './telegram-auth-rate-limit.js';
 
 const router = Router();
 
@@ -55,11 +58,51 @@ function isExpired(): boolean {
 
 // ── Send OTP code ─────────────────────────────────────────────────────────────
 
+/** Default resend window when Telegram's SentCode carries no timeout. */
+const DEFAULT_RESEND_SECONDS = 60;
+
+/** Map Telegram's SentCodeType class to where the user should look. */
+function deliveryTarget(typeName: string): 'app' | 'sms' | 'call' | 'email' | 'unknown' {
+  if (typeName.includes('App')) return 'app';
+  if (typeName.includes('Sms')) return 'sms';
+  if (typeName.includes('Call')) return 'call';
+  if (typeName.includes('Email')) return 'email';
+  return 'unknown';
+}
+
+/**
+ * Raw auth.SendCode so the response surfaces the delivery type and resend
+ * timeout — the GramJS sendCode helper discards both. AUTH_RESTART is a
+ * Telegram-mandated single retry, same as the helper performs internally.
+ */
+async function invokeSendCode(client: TelegramClient, apiId: number, apiHash: string, phone: string) {
+  const makeReq = () => new Api.auth.SendCode({
+    phoneNumber: phone,
+    apiId,
+    apiHash,
+    settings: new Api.CodeSettings({}),
+  });
+  try {
+    return await client.invoke(makeReq());
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!msg.includes('AUTH_RESTART')) throw e;
+    return await client.invoke(makeReq());
+  }
+}
+
 router.post('/send-code', optionalAuth, async (req, res) => {
   const { apiId, apiHash, phone } = req.body as { apiId?: string; apiHash?: string; phone?: string };
 
   if (!apiId || !apiHash || !phone) {
     return res.status(400).json({ error: 'apiId, apiHash, and phone are required' });
+  }
+
+  // Local cooldown: inside Telegram's resend window (or a FLOOD_WAIT we
+  // already hit), answer 429 ourselves instead of spamming their API.
+  const cd = cooldownRemaining(phone);
+  if (cd.seconds > 0 && cd.reason) {
+    return res.status(429).json({ error: cooldownMessage(cd.reason, cd.seconds), retryAfter: cd.seconds });
   }
 
   // Clear any stale or expired pending session
@@ -77,22 +120,49 @@ router.post('/send-code', optionalAuth, async (req, res) => {
     await client.connect();
 
     console.log(`[telegram-auth] sending code to ${phone} (apiId=${apiId})`);
-    const result = await client.sendCode({ apiId: Number(apiId), apiHash }, phone);
+    const result = await invokeSendCode(client, Number(apiId), apiHash, phone);
+    if (!('phoneCodeHash' in result) || !result.phoneCodeHash) {
+      // auth.SentCodeSuccess — only possible with future-auth logout tokens,
+      // which a fresh StringSession never carries.
+      throw new Error(`Unexpected sendCode response: ${result.className}`);
+    }
+
+    const typeName = (result.type as { className?: string } | undefined)?.className ?? 'unknown';
+    const sentTo = deliveryTarget(typeName);
+    const resendIn = typeof result.timeout === 'number' && result.timeout > 0
+      ? result.timeout
+      : DEFAULT_RESEND_SECONDS;
     console.log(
-      `[telegram-auth] sendCode ok — type=${(result as any)?.type?.className ?? 'unknown'} ` +
-        `nextType=${(result as any)?.nextType?.className ?? 'none'} ` +
-        `timeout=${(result as any)?.timeout ?? 'n/a'} hash=${result.phoneCodeHash ? 'set' : 'MISSING'}`
+      `[telegram-auth] sendCode ok — type=${typeName} ` +
+        `nextType=${(result.nextType as { className?: string } | undefined)?.className ?? 'none'} ` +
+        `timeout=${result.timeout ?? 'n/a'} hash=set`
     );
     pendingAuth = { client, phoneCodeHash: result.phoneCodeHash, lockedAt: Date.now() };
+    noteCooldown(phone, resendIn, 'resend');
 
     // Persist credentials immediately so the flow survives a page reload
     const existing = (getCreds('telegram') || {}) as TelegramCreds;
     setCreds('telegram', { ...existing, apiId, apiHash, phone });
 
-    res.json({ success: true });
+    res.json({ success: true, sentTo, resendIn });
   } catch (e) {
     console.error('[telegram-auth] sendCode failed:', e);
-    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+
+    const floodSeconds = floodWaitSeconds(e);
+    if (floodSeconds) {
+      // Remember the flood window so retries 429 locally until it passes.
+      noteCooldown(phone, floodSeconds, 'flood');
+      return res.status(429).json({ error: cooldownMessage('flood', floodSeconds), retryAfter: floodSeconds });
+    }
+
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes('PHONE_NUMBER_INVALID')) {
+      return res.status(400).json({
+        error: 'Telegram rejected this phone number. Use full international format, e.g. +15551234567.',
+      });
+    }
+
+    res.status(500).json({ error: msg });
   }
 });
 

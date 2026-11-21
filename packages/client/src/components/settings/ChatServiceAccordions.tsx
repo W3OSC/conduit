@@ -7,7 +7,7 @@ import {
   ExternalLink, ListFilter, Search, Lock, Hash,
 } from 'lucide-react';
 import {
-  api, type DiscordGuildInfo, type Permission, type ContactCriteria,
+  api, ApiError, type DiscordGuildInfo, type Permission, type ContactCriteria,
 } from '@/lib/api';
 import { useConnectionStore, useSyncStore } from '@/store';
 import { ServiceIcon, SERVICE_CONFIG } from '@/components/shared/ServiceBadge';
@@ -352,6 +352,30 @@ function TelegramOTPFlow({ onDone, savedApiId = '', savedApiHash = '', savedPhon
   const [twoFaPassword, setTwoFaPassword] = useState('');
   const [twoFaErr, setTwoFaErr]     = useState('');
   const [showTwoFaPw, setShowTwoFaPw] = useState(false);
+  const [sentTo, setSentTo] = useState<'app' | 'sms' | 'call' | 'email' | 'unknown'>('unknown');
+  // Resend/rate-limit window: Telegram only allows one code per phone per
+  // window, so the button counts down instead of silently doing nothing.
+  const [cooldownUntil, setCooldownUntil] = useState<number | null>(null);
+  const [cooldownPhone, setCooldownPhone] = useState('');
+  const [rateLimitMsg, setRateLimitMsg] = useState('');
+  const [nowTick, setNowTick] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!cooldownUntil || cooldownUntil <= Date.now()) return;
+    const t = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [cooldownUntil]);
+
+  const cooldownLeft = cooldownUntil ? Math.max(0, Math.ceil((cooldownUntil - nowTick) / 1000)) : 0;
+  // The cooldown is per phone number — editing the number (e.g. fixing a
+  // missing "+") should not keep the button locked.
+  const cooldownActive = cooldownLeft > 0 && phone === cooldownPhone;
+
+  const startCooldown = (seconds: number) => {
+    setCooldownUntil(Date.now() + seconds * 1000);
+    setCooldownPhone(phone);
+    setNowTick(Date.now());
+  };
 
   // Pre-populate if saved values arrive after initial render (async fetch)
   useEffect(() => { if (savedApiId  && !apiId)   setApiId(savedApiId); },   [savedApiId]);
@@ -372,8 +396,20 @@ function TelegramOTPFlow({ onDone, savedApiId = '', savedApiHash = '', savedPhon
 
   const sendCode = useMutation({
     mutationFn: () => api.telegramSendCode(apiId, apiHash, phone),
-    onSuccess: () => setStep('otp'),
-    onError: (e: Error) => toast({ title: 'Failed to send code', description: e.message, variant: 'destructive' }),
+    onSuccess: (res) => {
+      setSentTo(res.sentTo ?? 'unknown');
+      setRateLimitMsg('');
+      startCooldown(res.resendIn ?? 60);
+      setStep('otp');
+    },
+    onError: (e: Error) => {
+      if (e instanceof ApiError && e.status === 429) {
+        startCooldown(e.retryAfter ?? 60);
+        setRateLimitMsg(e.message);
+        return;
+      }
+      toast({ title: 'Failed to send code', description: e.message, variant: 'destructive' });
+    },
   });
 
   const handleSendCode = async () => {
@@ -412,10 +448,33 @@ function TelegramOTPFlow({ onDone, savedApiId = '', savedApiHash = '', savedPhon
   if (step === 'otp') return (
     <div className="space-y-3">
       <p className="text-xs text-muted-foreground">
-        A verification code was sent to your Telegram app for <span className="text-foreground font-medium">{phone}</span>.
+        {sentTo === 'app' ? (
+          <>A code was sent to the <span className="text-foreground font-medium">Telegram app</span> on a device where <span className="text-foreground font-medium">{phone}</span> is already signed in — look for the chat named “Telegram” (check Archived chats too). It is <span className="text-foreground font-medium">not</span> an SMS.</>
+        ) : sentTo === 'sms' ? (
+          <>A code was sent via <span className="text-foreground font-medium">SMS</span> to <span className="text-foreground font-medium">{phone}</span> — delivery can take a couple of minutes.</>
+        ) : sentTo === 'call' ? (
+          <>Telegram will deliver the code via a <span className="text-foreground font-medium">phone call</span> to <span className="text-foreground font-medium">{phone}</span>.</>
+        ) : (
+          <>A verification code was sent to your Telegram app for <span className="text-foreground font-medium">{phone}</span>.</>
+        )}
       </p>
       <TextField label="Verification Code" value={otp} onChange={setOtp} placeholder="5-digit code" type="text" />
       {otpErr && <p className="text-xs text-red-400">{otpErr}</p>}
+      {rateLimitMsg && cooldownActive && <p className="text-xs text-amber-400">{rateLimitMsg}</p>}
+      <p className="text-[11px] text-muted-foreground">
+        Didn't get a code?{' '}
+        {cooldownActive ? (
+          <span>Resend available in <span className="text-foreground font-medium tabular-nums">{cooldownLeft}s</span></span>
+        ) : (
+          <button
+            onClick={() => sendCode.mutate()}
+            disabled={sendCode.isPending}
+            className="text-primary hover:underline disabled:opacity-50"
+          >
+            {sendCode.isPending ? 'Resending…' : 'Resend code'}
+          </button>
+        )}
+      </p>
       <div className="flex gap-2">
         <button onClick={() => setStep('creds')} className="btn-secondary text-xs flex-1">Back</button>
         <button
@@ -503,13 +562,23 @@ function TelegramOTPFlow({ onDone, savedApiId = '', savedApiHash = '', savedPhon
         <SecretField label="API Hash" value={apiHash} onChange={setApiHash} placeholder="32-char hash" />
       </div>
       <TextField label="Phone Number" value={phone} onChange={setPhone} placeholder="+15551234567" type="tel" />
+      {rateLimitMsg && cooldownActive && (
+        <div className="flex items-start gap-2 rounded-xl border border-amber-400/20 bg-amber-400/5 px-3 py-2.5">
+          <Clock className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+          <p className="text-xs text-amber-400">
+            {rateLimitMsg} Retry available in <span className="font-medium tabular-nums">{cooldownLeft}s</span>.
+          </p>
+        </div>
+      )}
       <button
         onClick={handleSendCode}
-        disabled={!apiId || !apiHash || !phone || isBusy}
+        disabled={!apiId || !apiHash || !phone || isBusy || cooldownActive}
         className="btn-primary text-xs"
       >
         {isBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-        {hasChanges ? 'Save & Send Code' : 'Send Code'}
+        {cooldownActive
+          ? `Retry in ${cooldownLeft}s`
+          : hasChanges ? 'Save & Send Code' : 'Send Code'}
       </button>
     </div>
   );
