@@ -12,6 +12,21 @@ function getCsrfToken(): string | null {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+/**
+ * Error thrown by `request` for non-2xx responses, carrying the HTTP status
+ * and, for 429s, the server's retryAfter (seconds) so UIs can count down.
+ */
+export class ApiError extends Error {
+  status: number;
+  retryAfter?: number;
+  constructor(message: string, status: number, retryAfter?: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.retryAfter = retryAfter;
+  }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const method = options?.method?.toUpperCase() ?? 'GET';
   const extraHeaders: Record<string, string> = {};
@@ -40,8 +55,8 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error(body.error || 'Authentication required');
   }
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error((err as { error: string }).error || `HTTP ${res.status}`);
+    const err = await res.json().catch(() => ({ error: res.statusText })) as { error?: string; retryAfter?: number };
+    throw new ApiError(err.error || `HTTP ${res.status}`, res.status, err.retryAfter);
   }
   return res.json() as Promise<T>;
 }
@@ -310,7 +325,11 @@ export const api = {
 
   // Telegram OTP auth
   telegramSendCode: (apiId: string, apiHash: string, phone: string) =>
-    request<{ success: boolean }>('/connections/telegram/auth/send-code', {
+    request<{
+      success: boolean;
+      sentTo?: 'app' | 'sms' | 'call' | 'email' | 'unknown';
+      resendIn?: number;
+    }>('/connections/telegram/auth/send-code', {
       method: 'POST', body: JSON.stringify({ apiId, apiHash, phone }),
     }),
   telegramSignIn: (code: string) =>
