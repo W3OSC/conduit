@@ -74,6 +74,9 @@ export async function executeHttpJob(job: HttpJob, port: number, apiKey: string)
   }
 
   const method = (job.method || 'GET').toUpperCase();
+  // The orchestrator can serialize an absent payload as null. Fetch rejects
+  // any GET/HEAD body, including JSON "null", before reaching our API.
+  const hasBody = method !== 'GET' && method !== 'HEAD' && job.body !== undefined;
   const url = `http://127.0.0.1:${port}${job.path}`;
 
   try {
@@ -82,9 +85,9 @@ export async function executeHttpJob(job: HttpJob, port: number, apiKey: string)
       headers: {
         ...(job.auth === 'none' ? {} : { 'X-API-Key': apiKey }),
         Accept: 'application/json',
-        ...(job.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
       },
-      ...(job.body !== undefined ? { body: JSON.stringify(job.body) } : {}),
+      ...(hasBody ? { body: JSON.stringify(job.body) } : {}),
       signal: AbortSignal.timeout(JOB_TIMEOUT_MS),
     });
 
