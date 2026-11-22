@@ -76,15 +76,21 @@ export async function executeHttpJob(job: HttpJob, port: number, apiKey: string)
   const method = (job.method || 'GET').toUpperCase();
   const url = `http://127.0.0.1:${port}${job.path}`;
 
+  // `body: null` on the wire means "no body" (clouds predating the omit-body
+  // fix send it on every GET), and fetch rejects ANY body on GET/HEAD
+  // ("Request with GET/HEAD method cannot have body") — so a body is only
+  // ever attached when it is both present and legal for the method.
+  const hasBody = job.body !== undefined && job.body !== null && method !== 'GET' && method !== 'HEAD';
+
   try {
     const res = await fetch(url, {
       method,
       headers: {
         ...(job.auth === 'none' ? {} : { 'X-API-Key': apiKey }),
         Accept: 'application/json',
-        ...(job.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
       },
-      ...(job.body !== undefined ? { body: JSON.stringify(job.body) } : {}),
+      ...(hasBody ? { body: JSON.stringify(job.body) } : {}),
       signal: AbortSignal.timeout(JOB_TIMEOUT_MS),
     });
 

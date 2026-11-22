@@ -361,6 +361,65 @@ describe('executeHttpJob response bodies', () => {
   });
 });
 
+describe('executeHttpJob request bodies', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubFetchCapturingInit() {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      status: 200,
+      headers: { get: () => 'application/json' },
+      text: async () => '{}',
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    return fetchSpy;
+  }
+
+  it('never attaches a body to a GET — clouds predating the omit-body fix send body:null on every GET, and fetch throws "Request with GET/HEAD method cannot have body"', async () => {
+    const fetchSpy = stubFetchCapturingInit();
+
+    const result = await executeHttpJob(
+      { jobId: 'job-get-null', kind: 'http', method: 'GET', path: '/api/meet-notes?limit=5', body: null },
+      3101,
+      'sk-arb-test',
+    );
+
+    expect(result.ok).toBe(true);
+    const init = fetchSpy.mock.calls[0][1] as { headers: Record<string, string>; body?: unknown };
+    expect(init).not.toHaveProperty('body');
+    expect(init.headers).not.toHaveProperty('Content-Type');
+  });
+
+  it('treats body:null as absent on non-GET methods too', async () => {
+    const fetchSpy = stubFetchCapturingInit();
+
+    await executeHttpJob(
+      { jobId: 'job-post-null', kind: 'http', method: 'POST', path: '/api/sync/telegram', body: null },
+      3101,
+      'sk-arb-test',
+    );
+
+    const init = fetchSpy.mock.calls[0][1] as { headers: Record<string, string>; body?: unknown };
+    expect(init).not.toHaveProperty('body');
+    expect(init.headers).not.toHaveProperty('Content-Type');
+  });
+
+  it('still attaches a real POST body unchanged', async () => {
+    const fetchSpy = stubFetchCapturingInit();
+
+    await executeHttpJob(
+      { jobId: 'job-post', kind: 'http', method: 'POST', path: '/api/outbox', body: { source: 'slack', message: 'hi' } },
+      3101,
+      'sk-arb-test',
+    );
+
+    const init = fetchSpy.mock.calls[0][1] as { headers: Record<string, string>; body?: unknown };
+    expect(init.body).toBe(JSON.stringify({ source: 'slack', message: 'hi' }));
+    expect(init.headers['Content-Type']).toBe('application/json');
+  });
+});
+
 describe('executeHttpJob auth header', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
