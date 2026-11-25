@@ -74,6 +74,9 @@ export async function executeHttpJob(job: HttpJob, port: number, apiKey: string)
   }
 
   const method = (job.method || 'GET').toUpperCase();
+  // The orchestrator can serialize an absent payload as null. Fetch rejects
+  // any GET/HEAD body, including JSON "null", before reaching our API.
+  const hasBody = method !== 'GET' && method !== 'HEAD' && job.body !== undefined;
   const url = `http://127.0.0.1:${port}${job.path}`;
 
   // `body: null` on the wire means "no body" (clouds predating the omit-body
