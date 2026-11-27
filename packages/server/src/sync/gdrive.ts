@@ -867,6 +867,35 @@ export class GdriveSyncManager {
     return occurrences;
   }
 
+  /**
+   * Create a new Google Doc from text content. Drive converts the uploaded
+   * media (markdown / HTML / plain text) into Docs format when the target
+   * mimeType is the Docs type — the same conversion the Drive importer uses
+   * (markdown import is the inverse of the markdown export readFile relies on).
+   */
+  async createGoogleDoc(
+    name: string,
+    content: string,
+    contentMime: 'text/markdown' | 'text/html' | 'text/plain',
+    parentFolderId: string,
+  ): Promise<{ fileId: string; name: string; webViewLink?: string }> {
+    const res = await this.drive.files.create({
+      supportsAllDrives: true,
+      requestBody: {
+        name,
+        parents: [parentFolderId],
+        mimeType: 'application/vnd.google-apps.document',
+      },
+      media: { mimeType: contentMime, body: content },
+      fields: 'id,name,webViewLink',
+    });
+    return {
+      fileId: res.data.id!,
+      name: res.data.name ?? name,
+      webViewLink: res.data.webViewLink ?? undefined,
+    };
+  }
+
   // ── Google Sheets batchUpdate (findReplace) ────────────────────────────────
 
   private async applySheetsEdits(spreadsheetId: string, edits: DriveEditDelta[]): Promise<void> {

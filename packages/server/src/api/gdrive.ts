@@ -105,6 +105,13 @@ const CopyBody = z.object({
   targetParentId: z.string().optional().openapi({ description: 'Destination folder ID (must belong to this folder config). Defaults to the config root.' }),
 });
 
+const CreateDocBody = z.object({
+  name: trimmedString('name').openapi({ description: 'Title for the new Google Doc.' }),
+  content: z.string().min(1, 'content is required').openapi({ description: 'Document body; Drive converts it into Docs format.' }),
+  contentType: z.enum(['markdown', 'html', 'text']).default('markdown').openapi({ description: 'How to interpret `content` for the conversion.' }),
+  parentFolderId: z.string().optional().openapi({ description: 'Destination folder ID (must belong to this folder config). Defaults to the config root.' }),
+});
+
 const ReplaceTextParams = z.object({
   folderId: intParam('folder'),
   fileId: trimmedString('fileId').openapi({ description: 'Google Doc file ID. Must belong to this folder config.' }),
@@ -137,6 +144,14 @@ documentRoute({
   body: CopyBody,
   summary: 'Copy a Drive file within a whitelisted folder',
   description: 'Copies a file (e.g. a Google Docs template) into a destination folder inside the same folder config. Requires gdrive write permission. Returns the new file ID and webViewLink.',
+});
+documentRoute({
+  method: 'post',
+  path: '/gdrive/folders/{folderId}/docs',
+  params: FolderIdParam,
+  body: CreateDocBody,
+  summary: 'Create a new Google Doc in a whitelisted folder',
+  description: 'Creates a Google Doc from markdown/HTML/plain-text content (Drive converts it into Docs format). Requires gdrive write permission. Returns the new file ID and webViewLink.',
 });
 documentRoute({
   method: 'post',
@@ -568,6 +583,60 @@ router.post('/folders/:folderId/copy', optionalAuth, validateParams(FolderIdPara
       name: copyRes.data.name,
       webViewLink: copyRes.data.webViewLink,
     });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// ── POST /gdrive/folders/:id/docs — create a new Google Doc from content ──────
+
+router.post('/folders/:folderId/docs', optionalAuth, validateParams(FolderIdParam), validateBody(CreateDocBody), async (req, res) => {
+  const { folderId: id } = paramsOf(FolderIdParam, req);
+  const { name, content, contentType, parentFolderId } = bodyOf(CreateDocBody, req);
+  const apiKeyId = (req as AuthedRequest).apiKey?.id;
+
+  const db = getDb();
+  const row = db.select().from(googleDriveFolderConfig).where(eq(googleDriveFolderConfig.id, id)).get();
+  if (!row) return res.status(404).json({ error: 'Folder not found' });
+
+  // Destination must live inside this folder config (same rule as copy)
+  let target = row.folderId;
+  if (parentFolderId && parentFolderId !== row.folderId) {
+    const targetCached = db.select().from(googleDriveFileCache).where(eq(googleDriveFileCache.fileId, parentFolderId)).get();
+    if (!targetCached || targetCached.folderConfigId !== id) {
+      return res.status(403).json({ error: 'parentFolderId is not part of this folder (POST /gdrive/folders/:id/sync refreshes the file index)' });
+    }
+    target = parentFolderId;
+  }
+
+  if (!isSendEnabled('gdrive', apiKeyId)) {
+    return res.status(403).json({ error: 'Write access to gdrive is not enabled for this actor' });
+  }
+  if (!canWriteFolder(id, apiKeyId)) {
+    return res.status(403).json({ error: 'Write access to this folder is not permitted for this API key' });
+  }
+
+  const manager = getConnectionManager();
+  const gdrive = manager.getGdrive(row.email);
+  if (!gdrive) return res.status(503).json({ error: `No active Drive connection for ${row.email}` });
+
+  const contentMime =
+    contentType === 'html' ? 'text/html' as const
+    : contentType === 'text' ? 'text/plain' as const
+    : 'text/markdown' as const;
+
+  try {
+    const created = await gdrive.createGoogleDoc(name, content, contentMime, target);
+
+    gdrive.syncFolder(id).catch(() => {});
+    writeAuditLog('send', (req as AuthedRequest).actor, {
+      service: 'gdrive',
+      apiKeyId,
+      targetId: created.fileId,
+      detail: { action: 'create_doc', name },
+    });
+
+    res.status(201).json(created);
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   }
