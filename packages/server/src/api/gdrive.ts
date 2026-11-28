@@ -88,6 +88,12 @@ const FileTreeQuery = z.object({
   refresh: booleanFlag.openapi({ description: 'Bypass the cache and re-fetch from Drive.' }),
 });
 
+const DownloadQuery = z.object({
+  format: z.enum(['pdf', 'html']).default('pdf').openapi({
+    description: 'Export format for Google Workspace files (Docs support both; Sheets/Slides are pdf-only). Ignored for regular files, which download as-is.',
+  }),
+});
+
 const CreateFolderBody = z.object({
   email: trimmedString('email'),
   folderId: trimmedString('folderId'),
@@ -128,8 +134,9 @@ documentRoute({
   method: 'get',
   path: '/gdrive/folders/{folderId}/download/{fileId}',
   params: FolderFileParams,
+  query: DownloadQuery,
   summary: 'Download the raw bytes of a Google Drive file',
-  description: 'Returns the file as a binary attachment. Google Workspace files are exported as PDF. Use GET /gdrive/folders/{folderId}/files/{fileId} for text content instead.',
+  description: 'Returns the file as a binary attachment. Google Workspace files are exported as PDF by default; ?format=html exports Docs as styled HTML (useful for rendering a visual preview). Use GET /gdrive/folders/{folderId}/files/{fileId} for text content instead.',
   responses: {
     200: { description: 'Raw file bytes', content: { 'application/octet-stream': { schema: { type: 'string', format: 'binary' } } } },
     403: { description: 'The file does not belong to the specified folder config' },
@@ -394,7 +401,7 @@ router.get('/folders/:folderId/files', optionalAuth, requireRead('gdrive'), vali
 
 // ── GET /gdrive/folders/:id/download/* — download raw file as browser blob ─────
 
-router.get('/folders/:folderId/download/*fileId', optionalAuth, requireRead('gdrive'), validateParams(FolderFileParams), async (req, res) => {
+router.get('/folders/:folderId/download/*fileId', optionalAuth, requireRead('gdrive'), validateParams(FolderFileParams), validateQuery(DownloadQuery), async (req, res) => {
   const { folderId: id } = paramsOf(FolderIdParam, req);
 
   const fileId = paramsOf(FolderFileParams, req).fileId;
@@ -442,13 +449,18 @@ router.get('/folders/:folderId/download/*fileId', optionalAuth, requireRead('gdr
       // files.export, not files.get — get ignores mimeType and returns the
       // file's metadata JSON, so this path used to ship a JSON blob labeled
       // application/pdf. Export is what the preview route uses too.
+      // ?format=html exports styled HTML — only Docs support it; Sheets and
+      // Slides fall back to PDF rather than erroring.
+      const { format } = queryOf(DownloadQuery, req);
+      const wantHtml = format === 'html' && mimeType === 'application/vnd.google-apps.document';
+      const exportMime = wantHtml ? 'text/html' : 'application/pdf';
       const res2 = await driveApi.files.export(
-        { fileId, mimeType: 'application/pdf' },
+        { fileId, mimeType: exportMime },
         { responseType: 'arraybuffer' },
       );
       buf = Buffer.from(res2.data as ArrayBuffer);
-      contentType = 'application/pdf';
-      downloadName = `${fileName}.pdf`;
+      contentType = exportMime;
+      downloadName = `${fileName}.${wantHtml ? 'html' : 'pdf'}`;
     } else {
       const res2 = await driveApi.files.get(
         { fileId, alt: 'media', supportsAllDrives: true } as object,
